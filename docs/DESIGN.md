@@ -20,7 +20,7 @@ discard them. A branch must cost roughly what a process and a map cost, so thous
 - Branch-local indexes, or any promise about query plans.
 - Correct data-layer aggregates and calculations over a branch (they are computed on the base and documented as such).
 - Multi-node branches. A branch lives on one node; persistence makes it movable, not distributed.
-- A UI. The inspector is a separate package (`ramal_live`) in a later milestone.
+- A UI. The inspector is a separate package (`ramal_live/`, section 12).
 
 ## 2. Concepts
 
@@ -344,7 +344,42 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 7. ~~Should `Ramal.Storage.Postgres` take a host callback for actors?~~ No: actors are stored as the term, with the
    attributes marked `sensitive?` dropped from resource records (ADR 0008, ADR 0010).
 
-## 12. Decision log (summary; details in `docs/adr/`)
+## 12. Inspector (`ramal_live`, 0.3)
+
+A separate Mix project, `ramal_live/`, that depends on `ramal` by path. Core never depends on it. Public modules:
+
+- `RamalLive.Router`: the macro `ramal_inspector path, domain: ..., pubsub: ...` (options `:actor`, `:debounce`). It
+  expands to one `live` route, so the host puts it inside its own scope, pipeline and `live_session` and the page uses the
+  host's root layout, LiveView socket and JavaScript (ADR 0015).
+- `RamalLive.Broadcaster`: a process the host starts. It attaches telemetry handlers (the branch lifecycle events,
+  `[:ramal, :write, :capture]`, `[:ramal, :merge, :stop]`) and broadcasts `{:ramal_live, branch_id, event}` on the host's
+  PubSub, topic `"ramal_live:" <> domain`. No row data travels in the message.
+- `RamalLive`: the setup guide.
+
+Internal (`@moduledoc false`): `RamalLive.InspectorLive` (the page), `RamalLive.BranchColumn` (a LiveComponent per branch),
+`RamalLive.Column` (the pure view model: facts and before/after rows as strings), `RamalLive.Events` (event names, topic,
+the telemetry handler) and `RamalLive.Style` (the inline CSS).
+
+**The page.** Open branches, then proposals, each oldest first, as columns. A column shows the name, status, short id, age,
+overlay size (rows and writes), `forked_from`, the proposal's proposer and reason, and `Ramal.diff/1` as before and after
+rows (the first 100 changes; the rest are counted). Buttons: fork, merge and discard on an open branch; approve and reject
+on a proposal. Merge, discard, approve and reject show an inline "are you sure?" first, and the server accepts the second
+event only after the first. Merge and approve run in `start_async`.
+
+**What it reads.** `Ramal.list/2` for the ids, then `Ramal.get/1` and `Ramal.diff/1` per branch, so the page shows what
+the public API shows, and loads the processes of the branches on screen. A telemetry event re-reads only the branch it
+names, after a `:debounce` window (default 50 ms) that coalesces a burst of writes. Each read emits
+`[:ramal_live, :column, :read]` with `%{branch_id, domain}` and a `duration`.
+
+**Identity.** Slate `#243044` for the base line, copper `#D98324` only for branches; the dark theme uses the dark logo's
+cream and light amber. Barlow Condensed for headings and IBM Plex Mono for data, with system fallbacks, because the page
+does not load fonts. No Tailwind and no asset pipeline: the CSS is inline, scoped to `.ramal`, and follows
+`prefers-color-scheme` unless the buttons in the header pick a theme.
+
+**Authorization** is the host's: put the route behind its pipeline or `on_mount`. The `:actor` option supplies the actor
+recorded as `decided_by` and used to replay a merge.
+
+## 13. Decision log (summary; details in `docs/adr/`)
 
 | # | Decision | Why |
 |---|---|---|
@@ -368,3 +403,4 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 18 | A proposal is a branch status (`:proposed`, `:rejected`) and a `proposal` field of the stored state; approving is merging | A second table and storage API for one record per branch would duplicate what the branch row already persists, and the decision must land in the same step as the merge. [ADR 0012](adr/0012-proposals.md) |
 | 19 | `Ramal.aggregate/4` aggregates in the database the rows outside the overlay, reads the overlaid ones through the patched path and joins the two; limit, offset and distinct keep the read-every-row path; the database's part is not fingerprinted | Reading every row made scoring a state cost a table scan (measured in `bench/`). The delta is exact and its cost follows the overlay. [ADR 0013](adr/0013-aggregate-delta.md) |
 | 20 | A many_to_many join resource gets overlay entries like any resource; an update that changes no attribute is logged; a many_to_many load and `manage_relationship` do not see links the branch changed (documented limit) | Hooks and managed relationships write nested rows that only the outer action can replay; AshPostgres loads the relationship in SQL over the base join table. [ADR 0014](adr/0014-many-to-many-join-resources.md) |
+| 21 | The inspector is a separate project whose router macro expands to one `live` route in the host's own `live_session`; options travel as route metadata; a supervised broadcaster turns telemetry into PubSub messages naming a branch, and the page re-reads only that branch | A `live_session` of its own would need its own root layout, socket and JavaScript, which is an asset pipeline; telemetry is node-local, so a handler attached on first page view would miss events. [ADR 0015](adr/0015-inspector-mounting.md) |

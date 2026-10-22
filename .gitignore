@@ -13,6 +13,10 @@ ramal-*.tar
 /.lexical/
 .DS_Store
 
+# The inspector is its own Mix project
+/ramal_live/_build/
+/ramal_live/deps/
+
 # The benchmark is its own Mix project
 /bench/_build/
 /bench/deps/

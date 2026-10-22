@@ -31,7 +31,9 @@ README runs as written; every **[confirm]** mark in `docs/DESIGN.md` is resolved
 ## 0.3 Inspector
 
 - `ramal_live`, a separate package: a LiveView component showing open branches as columns, the diff per branch filling
-  in live from telemetry, buttons to fork, merge, discard. This is the demo GIF.
+  in live from telemetry, buttons to fork, merge, discard. This is the demo GIF. The page is done in `ramal_live/`
+  (a router macro the host mounts in its own `live_session`, ADR 0015), with approve and reject for proposals; the demo
+  GIF comes with the demo app.
 
 ## 0.4 Benchmark
 

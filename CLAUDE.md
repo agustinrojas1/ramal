@@ -4,7 +4,7 @@ This file is the contract every contributor follows, human or agent. Read `docs/
 
 ## What Ramal is
 
-A library. No OTP application of its own beyond `Ramal.Supervisor`, which the host adds to its supervision tree. No Phoenix dependency in core, ever: UI lives in a separate package (`ramal_live`, later). AshPostgres is optional. The public surface is `Ramal` plus the modules `docs/DESIGN.md` names as public; everything else is `@moduledoc false`.
+A library. No OTP application of its own beyond `Ramal.Supervisor`, which the host adds to its supervision tree. No Phoenix dependency in core, ever: UI lives in a separate package (`ramal_live/`). AshPostgres is optional. The public surface is `Ramal` plus the modules `docs/DESIGN.md` names as public; everything else is `@moduledoc false`.
 
 ## Layout
 
@@ -30,6 +30,7 @@ lib/mix/tasks/               ramal.install, ramal.gen.migration
 test/support/farm/           the test domain (Paddock, Herd, Move) and its repo
 docs/                        DESIGN.md, ROADMAP.md, ADRs under docs/adr/
 bench/                       a separate Mix project, never a dependency of the library
+ramal_live/                  a separate Mix project, the LiveView inspector; depends on ramal, never the other way round
 ```
 
 Do not add a module `docs/DESIGN.md` does not name without first adding it there with one line on why.
@@ -61,7 +62,7 @@ Do not add a module `docs/DESIGN.md` does not name without first adding it there
 ## Git
 
 - `main` is always green. Work on short-lived branches named `kind/short-topic` (`feat/overlay-patching`, `fix/fork-shares-base`, `docs/merge-semantics`). One topic per branch, one pull request per branch.
-- Commit subject: imperative, under 72 characters, with an area prefix: `core:`, `overlay:`, `storage:`, `merge:`, `docs:`, `ci:`, `bench:`. Body says why and what was considered. No "WIP" commits on `main`.
+- Commit subject: imperative, under 72 characters, with an area prefix: `core:`, `overlay:`, `storage:`, `merge:`, `live:`, `docs:`, `ci:`, `bench:`. Body says why and what was considered. No "WIP" commits on `main`.
 - Only `git add` the paths you changed.
 - Every user-facing change adds a line under `Unreleased` in `CHANGELOG.md` (Keep a Changelog format).
 - A design decision that changes `docs/DESIGN.md` gets an ADR in `docs/adr/NNNN-title.md` (context, decision, consequences, half a page at most).

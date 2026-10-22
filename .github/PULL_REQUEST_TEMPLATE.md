@@ -1,4 +1,4 @@
-<!-- Title like the commit subject: `area: imperative summary`, under 72 characters. Areas: core, overlay, storage, merge, docs, ci, bench. -->
+<!-- Title like the commit subject: `area: imperative summary`, under 72 characters. Areas: core, overlay, storage, merge, live, docs, ci, bench. -->
 
 ## What
 
