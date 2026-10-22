@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Design questions and ideas
+    url: https://github.com/agustinrojas1/ramal/blob/main/docs/DESIGN.md
+    about: Read the design first; if it does not answer your question, open a feature request.
+  - name: Security vulnerability
+    url: https://github.com/agustinrojas1/ramal/security/policy
+    about: Do not open a public issue. Follow SECURITY.md.

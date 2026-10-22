@@ -10,8 +10,11 @@ All notable changes to this project are documented here. The format follows [Kee
 - `Ramal.propose/2`, `Ramal.approve/2` and `Ramal.reject/2`: a branch can be frozen as a proposal (status `:proposed`) that a decider approves, which merges it, or rejects. The proposer, the decider, the reasons, the replay count and the stale rows are recorded on the branch and stored with it; `list(domain, status: :proposed)` finds the pending ones. Telemetry `[:ramal, :branch, :propose | :approve | :reject]`. Branches stored by 0.1.0 load unchanged.
 - `Ramal.aggregate/4` and `Ramal.aggregate!/4`: count, exists, sum, min, max and avg over the rows a read returns inside a branch, so a branch's creates, updates and destroys are included. Outside a branch they call the matching `Ash` function. `Ramal.Aggregate` holds the pure computation.
 
+- Community files for the public launch: `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), `SECURITY.md`, bug and feature issue templates, a pull request template that mirrors the rules in `CLAUDE.md`, and Dependabot for the root Mix project, `bench/` and GitHub Actions.
+
 ### Fixed
 
+- `docs/ROADMAP.md` and `bench/README.md` no longer say the DAPLab article was unreachable; they link it and state how the benchmark differs from theirs.
 - README: the DAPLab quotation now matches the article word for word, and the Neon and Dolt summary matches its findings.
 
 ## [0.1.0] - 2026-10-22

@@ -1,0 +1,29 @@
+name: Feature request
+description: A change to the public API or the behaviour of branches.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [docs/DESIGN.md](https://github.com/agustinrojas1/ramal/blob/main/docs/DESIGN.md) and the "Not planned" list in [docs/ROADMAP.md](https://github.com/agustinrojas1/ramal/blob/main/docs/ROADMAP.md) first. A change to the design needs an ADR, so agree on it here before opening a PR.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do with branches that you cannot do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: Show the calls you would write and what they return.
+      render: elixir
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
