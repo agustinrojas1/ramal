@@ -23,6 +23,11 @@ defmodule Ramal.MixProject do
     ]
   end
 
+  # `mix ci` runs the tests, which need the test environment (the Farm domain lives in test/support).
+  def cli do
+    [preferred_envs: [ci: :test]]
+  end
+
   def application do
     [extra_applications: [:logger]]
   end
