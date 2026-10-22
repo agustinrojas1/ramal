@@ -51,6 +51,29 @@ returns the actor that is recorded as `decided_by` and replays a merge) and `:de
 - **Telemetry.** Every read of a branch emits `[:ramal_live, :column, :read]` with `%{branch_id, domain}` metadata and a
   `duration` measurement.
 
+## Try it
+
+A runnable demo, the one to record the GIF from, lives in `examples/farm_demo.exs`. It is a single file that installs its own
+dependencies with `Mix.install` (so the first start compiles for a few minutes), runs a [Phoenix
+Playground](https://github.com/phoenixframework/phoenix_playground) app on a seeded farm in Postgres, and mounts the
+inspector with the `ramal_inspector` line above.
+
+```bash
+docker compose up -d db                 # from the repository root: Postgres on port 5435
+elixir ramal_live/examples/farm_demo.exs
+```
+
+Open <http://localhost:4000> and press **Explore 4 alternatives**. Four branches open one after the other, each moves herd R7
+out of paddock L07 into a different paddock, and the columns fill in as the writes happen. Merge one: the database now has
+R7 in its new paddock, and merging any other column is refused as stale, because that branch read R7 where it used to be.
+**Reset** discards every branch and seeds the farm again.
+
+The demo uses a `ramal_dev` database on the server of the test database, creates it if it is missing, and drops and
+recreates its three tables on every start, so do not point it at data you want to keep. `RAMAL_PG_HOST`, `RAMAL_PG_PORT`,
+`RAMAL_PG_USER` and `RAMAL_PG_PASSWORD` change the server and `PORT` changes the HTTP port. Branches are kept in ETS, so
+they do not survive a restart. The page is the demo's own LiveView with the inspector in an iframe, so one URL shows both
+the button and the columns.
+
 ## Development
 
 ```bash

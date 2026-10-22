@@ -15,6 +15,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - `ramal_live/`: a separate Mix project with a LiveView inspector for branches. `ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub` mounts it inside the host's own `live_session`, so it uses the host's LiveView socket and JavaScript; there is no asset pipeline, the CSS is inline and has light and dark themes. Open and proposed branches are columns with their `Ramal.diff/1` as before and after rows, and buttons to fork, merge, discard, approve and reject, each destructive one with an inline confirmation. `RamalLive.Broadcaster` turns Ramal's telemetry into PubSub messages so the columns update live. Core is unchanged. Decision in ADR 0015.
 
+- `ramal_live/examples/farm_demo.exs`: a runnable demo of the inspector for a screen recording. One command starts a Phoenix Playground app on a seeded farm in the `ramal_dev` database; "Explore 4 alternatives" opens four branches that each move a herd to a different paddock while the columns fill in live, and merging one makes the others stale. How to run it is in `ramal_live/README.md`.
+
 ### Fixed
 
 - `docs/ROADMAP.md` and `bench/README.md` no longer say the DAPLab article was unreachable; they link it and state how the benchmark differs from theirs.
