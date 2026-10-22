@@ -21,6 +21,7 @@ lib/ramal/change.ex          the Change struct that diff returns
 lib/ramal/capture.ex         write side: capture creates/updates/destroys into the overlay
 lib/ramal/error.ex           the Error exception
 lib/ramal/storage.ex         behaviour + Ramal.Storage.ETS, Ramal.Storage.Postgres
+lib/ramal/storage/codec.ex   a branch to a JSON-safe map and back (pure)
 lib/ramal/merge.ex           staleness check and replay
 lib/ramal/merge/result.ex    the Result struct that merge returns
 lib/ramal/telemetry.ex       event names and helpers
