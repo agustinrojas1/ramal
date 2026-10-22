@@ -125,6 +125,50 @@ defmodule Ramal.Resource do
     end
   end
 
+  @doc """
+  The attribute values of an Ash record as a plain map, leaving out relationships, calculations, aggregates and any
+  attribute that was not loaded (a read with `select` leaves the others as `%Ash.NotLoaded{}`).
+
+  ## Example
+
+      iex> herd = struct(Ramal.Test.Farm.Herd, id: "r7", name: "R7", head: 30)
+      iex> Ramal.Resource.attributes(herd) |> Map.take([:id, :name, :head])
+      %{id: "r7", name: "R7", head: 30}
+  """
+  @spec attributes(struct) :: %{optional(atom) => term}
+  def attributes(%resource{} = record) do
+    record
+    |> Map.take(attribute_names(resource))
+    |> Map.reject(fn {_name, value} ->
+      match?(%Ash.NotLoaded{}, value) or match?(%Ash.ForbiddenField{}, value)
+    end)
+  end
+
+  @doc """
+  The fingerprint of a record: `:erlang.phash2/1` of its attributes, or `nil` when some attribute is not loaded,
+  because a hash of part of a row cannot be compared with a hash of the whole row.
+
+  ## Example
+
+      iex> a = struct(Ramal.Test.Farm.Herd, id: "r7", name: "R7", head: 30)
+      iex> b = struct(Ramal.Test.Farm.Herd, id: "r7", name: "R7", head: 31)
+      iex> Ramal.Resource.fingerprint(a) == Ramal.Resource.fingerprint(a)
+      true
+      iex> Ramal.Resource.fingerprint(a) == Ramal.Resource.fingerprint(b)
+      false
+  """
+  @spec fingerprint(struct) :: non_neg_integer | nil
+  def fingerprint(%resource{} = record) do
+    attributes = attributes(record)
+
+    if map_size(attributes) == length(attribute_names(resource)) do
+      :erlang.phash2(attributes)
+    end
+  end
+
+  defp attribute_names(resource),
+    do: resource |> Ash.Resource.Info.attribute_names() |> Enum.to_list()
+
   defp extended?(resource) do
     Code.ensure_loaded?(resource) and function_exported?(resource, :spark_is, 0) and
       __MODULE__ in Spark.extensions(resource)

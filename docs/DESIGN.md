@@ -23,7 +23,7 @@ discard them. A branch must cost roughly what a process and a map cost, so thous
 ## 2. Concepts
 
 **Branch.** `%Ramal.Branch{}`: `id` (UUID string), `name`, `domain` (the Ash domain whose resources it covers; several
-domains is a 0.2 question), `status` (`:open | :merged | :discarded`), `base` (fingerprints, section 7), `overlay`,
+domains is a 0.2 question), `status` (`:open | :merged | :discarded`), `base` (fingerprints and snapshots, section 7), `overlay`,
 `log`, `inserted_at`, `metadata` (a map the host uses freely).
 
 **Overlay.** A map from `{resource_module, primary_key}` to one of `{:created, record}`, `{:updated, record}` or
@@ -38,8 +38,11 @@ log does.
 write the branch captured, newest first so recording one is O(1); readers reverse it. The log is what `merge/2` replays. The overlay is derived from the log in
 principle, but kept materialized because reads need it on every query.
 
-**Fingerprints.** For every base row the branch read or wrote, the hash of its attributes at the moment it was first
-touched. Section 7 uses them to detect that the base moved under the branch.
+**Fingerprints and snapshots.** `base` maps `{resource, key}` to `%{fingerprint, snapshot}` for every base row the branch
+touched. The fingerprint is `:erlang.phash2` of the row's attributes (`Ramal.Resource.fingerprint/1`) at the first read
+or write; it is `nil` when the row was read with `select`, since a hash of part of a row cannot be compared with a
+hash of the whole. The snapshot is the row as the first write found it, `nil` for rows only read. Section 7 uses
+fingerprints to detect that the base moved under the branch; `diff/1` uses snapshots.
 
 **Change.** `%Ramal.Change{resource, key, kind, changes}` where `kind` is `:created | :updated | :deleted` and
 `changes` maps attribute names to `{before, after}`. `diff/1` returns a list of them in log order. (The Ash change
@@ -222,13 +225,15 @@ skipping action logic; it is faster and less safe, and needs its own ADR.
 
 ## 8. Fork and diff
 
-- `fork/2` copies overlay, log and fingerprints into a new branch. Both branches share the base; neither sees the
-  other. Persistent data structures make the copy cheap; the log is a list and gets shared structurally.
+- `fork/2` copies overlay, log and `base` into a new open branch with its own process, a fresh id, the parent's name
+  and metadata unless given, and `metadata.forked_from`. Both branches share the database; neither sees the other's later
+  changes. Persistent data structures make the copy cheap; the log is a list and gets shared structurally. A fork of a
+  branch that is not open is `:not_open`. It emits `[:ramal, :branch, :fork]` with `parent_id`, then `:load`.
 - `diff/1` walks the overlay: for `:updated`, compare the overlay record with the base row as the branch first saw it
   (kept alongside the fingerprint, so diff never queries the base) and keep only the attributes that differ; for
   `:created`, every attribute is `{nil, value}`; for `:deleted`, `{value, nil}`. An updated row whose values ended equal
   to the base is left out. Output order is the log order of first touch: `Ramal.Overlay.diff/3` computes the changes
-  (sorted by ref, because the overlay map has no order) and `diff/1` reorders them by the log. An updated or deleted
+  (sorted by ref, because the overlay map has no order) and `diff/1` reorders them by the log (`Ramal.Branch.diff/2`, with the Ash-aware `Ramal.Resource.attributes/1`). An updated or deleted
   entry with no base snapshot is `{:error, %Ramal.Error{reason: :missing_snapshot}}`: the write layer forgot to keep one.
 
 ## 9. Telemetry
@@ -285,3 +290,4 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 9 | Idle timeout and heap limit belong to the supervisor; discard keeps the record; storage takes config last | A per-branch value is lost on unload, and a kept record gives `:not_open` a meaning. [ADR 0003](adr/0003-branch-process-lifecycle.md) |
 | 10 | Reads are patched in `before_action`/`after_action` hooks; nothing is stripped when the overlay has no entry for the resource; the preparation sorts and pages the list itself | The hooks are where Ash allows changing the data-layer query and seeing its rows; `runtime_sort` takes a list, not a comparator. [ADR 0004](adr/0004-read-patching-hooks.md) |
 | 11 | Writes are captured by a last `before_action` that sets the result; atomic updates fall back through `atomic/3` and `require_atomic? false`; every bulk action and upsert action is refused; notifications are dropped unless the resource opts in; a failed action undoes its writes; `Ramal.Error` is a Splode error | `around_action` cannot skip the data layer by itself, the atomic path never reaches a hook, and Ash flattens other exceptions to strings. [ADR 0005](adr/0005-write-capture.md) |
+| 12 | `base` holds `%{fingerprint, snapshot}` per touched row; every read fingerprints the base rows it returns, except when it selects some attributes; a fork copies everything and records `forked_from` | Staleness needs the state at first read, diff needs the state at first write, and a partial row has no comparable hash. [ADR 0006](adr/0006-fingerprints-and-fork.md) |

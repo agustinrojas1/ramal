@@ -8,6 +8,7 @@ defmodule Ramal.Telemetry do
   | event | when |
   |---|---|
   | `[:ramal, :branch, :create]` | a branch was created |
+  | `[:ramal, :branch, :fork]` | a branch was forked from another (extra metadata: `parent_id`) |
   | `[:ramal, :branch, :load]` | a branch process started from storage, or right after creation |
   | `[:ramal, :branch, :unload]` | a branch process stopped after persisting (`reason`: `:idle` or `:shutdown`) |
   | `[:ramal, :branch, :discard]` | a branch was discarded |
@@ -35,7 +36,8 @@ defmodule Ramal.Telemetry do
   """
   @spec branch_events() :: [[atom]]
   def branch_events do
-    for step <- [:create, :load, :unload, :discard, :too_large], do: [:ramal, :branch, step]
+    for step <- [:create, :fork, :load, :unload, :discard, :too_large],
+        do: [:ramal, :branch, step]
   end
 
   @doc """

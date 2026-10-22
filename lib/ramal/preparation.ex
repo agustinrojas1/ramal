@@ -18,6 +18,9 @@ defmodule Ramal.Preparation do
     * Filters are evaluated on overlay records with `Ash.Filter.Runtime.filter_matches/4` and sorting uses
       `Ash.Actions.Sort.runtime_sort/3`.
 
+  Every base row the read returns is also fingerprinted (`Ramal.Resource.fingerprint/1`) for the staleness check at
+  merge time, unless the query selected only some attributes.
+
   Known limits in 0.1, documented rather than hidden:
 
     * aggregates and calculations the data layer computes do not see the overlay; reading one emits
@@ -77,6 +80,7 @@ defmodule Ramal.Preparation do
 
   defp after_data_layer(query, results, id) do
     %{slice: slice, limit: limit, offset: offset} = query.context.ramal
+    record_fingerprints(query.resource, results, id)
 
     if map_size(slice) == 0 do
       {:ok, results}
@@ -98,6 +102,19 @@ defmodule Ramal.Preparation do
         {:ok, patched}
       end
     end
+  end
+
+  # Staleness at merge time is measured from the first time the branch saw a row, so every base row a read returns is
+  # fingerprinted before it is patched. Rows with an attribute that was not selected cannot be compared and are skipped.
+  defp record_fingerprints(resource, results, id) do
+    fingerprints =
+      for row <- results,
+          fingerprint = Resource.fingerprint(row),
+          into: %{},
+          do: {{resource, Resource.key(resource, row)}, fingerprint}
+
+    if fingerprints != %{}, do: Server.fingerprints(id, fingerprints)
+    :ok
   end
 
   defp patch(query, results, slice, limit, offset) do

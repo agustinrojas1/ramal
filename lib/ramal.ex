@@ -17,7 +17,7 @@ defmodule Ramal do
   Every function that takes a branch also takes its id, and starts the branch process from storage when it is
   not running, so callers never need to know whether a branch is in memory.
 
-  Fork, diff and merge arrive in later 0.1 issues; see `docs/ROADMAP.md`.
+  Merge arrives in a later 0.1 issue; see `docs/ROADMAP.md`.
   """
 
   alias Ramal.{Branch, Current, Error, Resource, Supervisor, Telemetry}
@@ -157,6 +157,58 @@ defmodule Ramal do
   def list(domain, opts \\ []) when is_atom(domain) do
     with {:ok, config} <- Supervisor.config() do
       {:ok, config.storage.list(domain, Keyword.take(opts, [:status]), config.storage_config)}
+    end
+  end
+
+  @doc """
+  Forks a branch: a new open branch, with its own process, that starts with the parent's overlay, log and base.
+
+  The fork sees the parent's changes as of the moment of the fork and nothing after; the parent never sees the fork's.
+  Both share the same database. `metadata.forked_from` holds the parent's id.
+
+  ## Options
+
+    * `:name` - default: the parent's name
+    * `:metadata` - default: the parent's metadata
+
+  ## Example
+
+      {:ok, branch} = Ramal.branch(MyApp.Farm)
+      {:ok, fork} = Ramal.fork(branch, name: "variant")
+      fork.metadata.forked_from == branch.id
+      #=> true
+  """
+  @spec fork(branch_or_id, keyword) :: {:ok, Branch.t()} | {:error, Error.t()}
+  def fork(branch_or_id, opts \\ []) do
+    with {:ok, config} <- Supervisor.config(),
+         {:ok, parent} <- Server.get(id_of(branch_or_id)),
+         :ok <- ensure_open(parent),
+         fork = Branch.fork(parent, opts),
+         :ok <- config.storage.put(fork, config.storage_config),
+         {:ok, _pid} <- Server.start(fork, config) do
+      Telemetry.branch(:fork, fork, %{parent_id: parent.id})
+      {:ok, fork}
+    end
+  end
+
+  @doc """
+  The changes a branch holds, as `Ramal.Change` structs in the order the branch first touched each row.
+
+  Never queries the database: updated and deleted rows are compared with the copy the branch kept when it first wrote
+  them. A row the branch changed and then changed back is left out. A fork's diff includes what it inherited.
+
+  ## Example
+
+      {:ok, [change]} = Ramal.diff(branch)
+      change.kind
+      #=> :updated
+      change.changes
+      #=> %{head: {30, 31}}
+  """
+  @spec diff(branch_or_id) :: {:ok, [Ramal.Change.t()]} | {:error, Error.t()}
+  def diff(branch_or_id) do
+    with {:ok, branch} <- branch_or_id |> id_of() |> Server.get() do
+      Branch.diff(branch, attributes: &Resource.attributes/1)
     end
   end
 

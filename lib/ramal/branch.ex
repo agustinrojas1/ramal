@@ -6,7 +6,9 @@ defmodule Ramal.Branch do
   * `name` - free text for people
   * `domain` - the Ash domain whose resources the branch covers
   * `status` - `:open`, `:merged` or `:discarded`
-  * `base` - what the branch knows about the base rows it touched (fingerprints and snapshots)
+  * `base` - what the branch knows about the base rows it touched, by `{resource, key}`: `%{fingerprint: hash | nil,
+    snapshot: record | nil}`. The fingerprint is taken when a row is first read or written, the snapshot when it is first
+    written, so `diff/2` never queries the database
   * `overlay` - see `Ramal.Overlay`
   * `log` - the writes the branch captured, newest first so that recording one is O(1); readers use `Enum.reverse/1`
   * `inserted_at` - when the branch was created
@@ -23,7 +25,7 @@ defmodule Ramal.Branch do
       true
   """
 
-  alias Ramal.Overlay
+  alias Ramal.{Change, Overlay}
 
   @type status :: :open | :merged | :discarded
   @type kind :: :created | :updated | :deleted
@@ -37,8 +39,16 @@ defmodule Ramal.Branch do
   @type log_entry ::
           {Ash.Resource.Actions.action_type(), module, atom, map, term, keyword, DateTime.t()}
 
+  @typedoc "What the branch knows about one base row."
+  @type base_row :: %{fingerprint: non_neg_integer | nil, snapshot: map | nil}
+
   @typedoc "What `put_write/6` replaced, so `undo/2` can put it back."
-  @type undo :: %{ref: ref, overlay: Overlay.entry() | :none, base: map | :none, entry: log_entry}
+  @type undo :: %{
+          ref: ref,
+          overlay: Overlay.entry() | :none,
+          base: base_row | :none,
+          entry: log_entry
+        }
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -120,9 +130,9 @@ defmodule Ramal.Branch do
   @doc """
   The branch after one captured write.
 
-  `kind` says what the write did to the row `ref`, `record` is the row as the action left it, and `snapshot` is the
-  row as the action found it. The snapshot is kept in `base` the first time the branch touches an existing row, so
-  `Ramal.Overlay.diff/3` never needs the database. `entry` is prepended to the log.
+  `kind` says what the write did to the row `ref`, `record` is the row as the action left it, and `base_row` is the
+  row as the action found it (`nil` for a created row). The first time the branch writes an existing row, its snapshot
+  goes into `base`, keeping a fingerprint taken by an earlier read if there is one. `entry` is prepended to the log.
 
   Returns the new branch and an `undo` that `undo/2` uses to take the write back when the action that made it fails.
 
@@ -130,12 +140,13 @@ defmodule Ramal.Branch do
 
       iex> branch = Ramal.Branch.new(MyApp.Farm)
       iex> entry = {:update, MyApp.Herd, :update, %{name: "b"}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
-      iex> {branch, _undo} = Ramal.Branch.put_write(branch, :updated, {MyApp.Herd, 1}, %{id: 1, name: "b"}, %{id: 1, name: "a"}, entry)
+      iex> before = %{fingerprint: 7, snapshot: %{id: 1, name: "a"}}
+      iex> {branch, _undo} = Ramal.Branch.put_write(branch, :updated, {MyApp.Herd, 1}, %{id: 1, name: "b"}, before, entry)
       iex> {branch.overlay, branch.base, length(branch.log)}
-      {%{{MyApp.Herd, 1} => {:updated, %{id: 1, name: "b"}}}, %{{MyApp.Herd, 1} => %{id: 1, name: "a"}}, 1}
+      {%{{MyApp.Herd, 1} => {:updated, %{id: 1, name: "b"}}}, %{{MyApp.Herd, 1} => %{fingerprint: 7, snapshot: %{id: 1, name: "a"}}}, 1}
   """
-  @spec put_write(t, kind, ref, map, map | nil, log_entry) :: {t, undo}
-  def put_write(%__MODULE__{} = branch, kind, ref, record, snapshot, entry) do
+  @spec put_write(t, kind, ref, map, base_row | nil, log_entry) :: {t, undo}
+  def put_write(%__MODULE__{} = branch, kind, ref, record, base_row, entry) do
     undo = %{
       ref: ref,
       overlay: Map.get(branch.overlay, ref, :none),
@@ -152,13 +163,115 @@ defmodule Ramal.Branch do
 
     # An overlay entry means the branch already holds the row's snapshot, or created the row itself.
     base =
-      if kind != :created and snapshot != nil and not Map.has_key?(branch.overlay, ref) do
-        Map.put_new(branch.base, ref, snapshot)
+      if kind != :created and base_row != nil and not Map.has_key?(branch.overlay, ref) do
+        Map.update(branch.base, ref, base_row, fn read ->
+          %{base_row | fingerprint: read.fingerprint || base_row.fingerprint}
+        end)
       else
         branch.base
       end
 
     {%{branch | overlay: overlay, base: base, log: [entry | branch.log]}, undo}
+  end
+
+  @doc """
+  The branch after reading base rows with these fingerprints.
+
+  A row the branch already knows keeps its first fingerprint: staleness is measured from the first touch.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> branch = Ramal.Branch.put_fingerprints(branch, %{{MyApp.Herd, 1} => 7})
+      iex> branch = Ramal.Branch.put_fingerprints(branch, %{{MyApp.Herd, 1} => 8})
+      iex> branch.base
+      %{{MyApp.Herd, 1} => %{fingerprint: 7, snapshot: nil}}
+  """
+  @spec put_fingerprints(t, %{optional(ref) => non_neg_integer}) :: t
+  def put_fingerprints(%__MODULE__{} = branch, fingerprints) do
+    base =
+      Enum.reduce(fingerprints, branch.base, fn {ref, fingerprint}, base ->
+        Map.put_new(base, ref, %{fingerprint: fingerprint, snapshot: nil})
+      end)
+
+    %{branch | base: base}
+  end
+
+  @doc """
+  A new open branch that starts as a copy of `parent`: same domain, overlay, log and base.
+
+  Overlays, logs and the base are immutable, so the copy shares structure with the parent and neither sees the
+  other's later changes. `metadata` gets `forked_from: parent.id`.
+
+  ## Options
+
+    * `:name` - default: the parent's name
+    * `:metadata` - default: the parent's metadata
+
+  ## Example
+
+      iex> parent = Ramal.Branch.new(MyApp.Farm, name: "what if")
+      iex> parent = %{parent | overlay: %{{MyApp.Herd, 1} => :deleted}}
+      iex> fork = Ramal.Branch.fork(parent, name: "variant")
+      iex> {fork.name, fork.overlay == parent.overlay, fork.metadata.forked_from == parent.id, fork.id != parent.id}
+      {"variant", true, true, true}
+  """
+  @spec fork(t, keyword) :: t
+  def fork(%__MODULE__{} = parent, opts \\ []) do
+    metadata =
+      opts |> Keyword.get(:metadata, parent.metadata) |> Map.put(:forked_from, parent.id)
+
+    %{
+      parent
+      | id: Ash.UUID.generate(),
+        name: Keyword.get(opts, :name, parent.name),
+        inserted_at: DateTime.utc_now(),
+        metadata: metadata
+    }
+  end
+
+  @doc """
+  The branch's changes as `Ramal.Change` structs, in the order the log first touched each row.
+
+  Never reads the database: updated and deleted rows are compared with the snapshot in `base`. See
+  `Ramal.Overlay.diff/3` for the rules; the options are the same.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> entry = fn key -> {:create, MyApp.Herd, :create, %{}, nil, [key: key], ~U[2026-01-01 00:00:00Z]} end
+      iex> {branch, _} = Ramal.Branch.put_write(branch, :created, {MyApp.Herd, 2}, %{id: 2}, nil, entry.(2))
+      iex> {branch, _} = Ramal.Branch.put_write(branch, :created, {MyApp.Herd, 1}, %{id: 1}, nil, entry.(1))
+      iex> {:ok, changes} = Ramal.Branch.diff(branch)
+      iex> Enum.map(changes, & &1.key)
+      [2, 1]
+  """
+  @spec diff(t, keyword) :: {:ok, [Change.t()]} | {:error, Ramal.Error.t()}
+  def diff(%__MODULE__{} = branch, opts \\ []) do
+    snapshots =
+      for {ref, %{snapshot: snapshot}} <- branch.base,
+          snapshot != nil,
+          into: %{},
+          do: {ref, snapshot}
+
+    with {:ok, changes} <- Overlay.diff(branch.overlay, snapshots, opts) do
+      {:ok, in_log_order(changes, branch.log)}
+    end
+  end
+
+  # The first entry of the oldest write to each row decides its position; rows the log does not mention go last.
+  defp in_log_order(changes, log) do
+    order =
+      log
+      |> Enum.reverse()
+      |> Enum.map(fn {_type, resource, _action, _input, _actor, opts, _at} ->
+        {resource, opts[:key]}
+      end)
+      |> Enum.uniq()
+      |> Enum.with_index()
+      |> Map.new()
+
+    Enum.sort_by(changes, &Map.get(order, {&1.resource, &1.key}, map_size(order)))
   end
 
   @doc """

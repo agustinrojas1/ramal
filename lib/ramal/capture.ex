@@ -123,22 +123,22 @@ defmodule Ramal.Capture do
       {:skip, record} ->
         Ash.Changeset.set_result(changeset, {:ok, record})
 
-      {:ok, kind, record, snapshot} ->
+      {:ok, kind, record, base_row} ->
         resource = changeset.resource
         key = Resource.key(resource, record)
         entry = log_entry(changeset, key, nested?)
 
         put = fn branch ->
           {branch, undo} =
-            Branch.put_write(branch, kind, {resource, key}, record, snapshot, entry)
+            Branch.put_write(branch, kind, {resource, key}, record, base_row, entry)
 
           {undo, branch}
         end
 
         case Server.write(id, put) do
-          {:ok, undo, branch} ->
+          {:ok, undo, summary} ->
             remember(undo)
-            emit(branch, changeset, nested?)
+            emit(summary, changeset, nested?)
             Ash.Changeset.set_result(changeset, {:ok, result_record(kind, record, resource)})
 
           {:error, %Error{} = error} ->
@@ -163,7 +163,7 @@ defmodule Ramal.Capture do
   defp written(%{action_type: :update} = changeset) do
     if Ash.Changeset.changing_attributes?(changeset) do
       {:ok, record} = Ash.Changeset.apply_attributes(changeset)
-      {:ok, :updated, record, changeset.data}
+      {:ok, :updated, record, base_row(changeset.data)}
     else
       # Ash does not call the data layer for an update that changes nothing, and neither do we.
       {:skip, changeset.data}
@@ -171,7 +171,11 @@ defmodule Ramal.Capture do
   end
 
   defp written(%{action_type: :destroy} = changeset) do
-    {:ok, :deleted, changeset.data, changeset.data}
+    {:ok, :deleted, changeset.data, base_row(changeset.data)}
+  end
+
+  defp base_row(record) do
+    %{fingerprint: Resource.fingerprint(record), snapshot: record}
   end
 
   defp result_record(:deleted, record, resource), do: put_state(record, resource, :deleted)
@@ -193,8 +197,8 @@ defmodule Ramal.Capture do
     Process.put(@frame, %{frame | undos: [undo | frame.undos]})
   end
 
-  defp emit(branch, changeset, nested?) do
-    Telemetry.write(:capture, branch, %{
+  defp emit(summary, changeset, nested?) do
+    Telemetry.write(:capture, summary, %{
       action_type: changeset.action_type,
       resource: changeset.resource,
       action: changeset.action.name,
