@@ -30,9 +30,11 @@ README runs as written; every **[confirm]** mark in `docs/DESIGN.md` is resolved
 - Many-to-many join resources inside a branch. Done: they get overlay entries like any resource; a many_to_many load and
   `manage_relationship` do not see links the branch changed, which is a documented limit (ADR 0014).
 - Several domains per branch if a real host needs it.
-- Publish 0.2 to Hex.
+- Publish 0.2 to Hex. Prepared (versions, changelog, `mix hex.build`); the tag and the publish are the maintainer's, see "Releasing" in `CONTRIBUTING.md`.
 
 ## 0.3 Inspector
+
+Done; ships with 0.2 in the `ramal_live` package.
 
 - `ramal_live`, a separate package: a LiveView component showing open branches as columns, the diff per branch filling
   in live from telemetry, buttons to fork, merge, discard. This is the demo GIF. The page is done in `ramal_live/`
@@ -40,6 +42,8 @@ README runs as written; every **[confirm]** mark in `docs/DESIGN.md` is resolved
   app to record the GIF from is `ramal_live/examples/farm_demo.exs`; the recording itself is not in the repository.
 
 ## 0.4 Benchmark
+
+Done; ships with 0.2 (`bench/` is not published to Hex).
 
 - `bench/`: an agentic workload modelled on the one the
   [DAPLab article](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html)

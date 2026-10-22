@@ -4,20 +4,21 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-22
+
+Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspector, a benchmark, and a security pass. No breaking change to the public API of 0.1.0: a branch stored by 0.1.0 loads unchanged, and the public functions of 0.1.0 behave as before.
+
 ### Added
 
-- Many-to-many join resources inside a branch are tested and documented (DESIGN section 4.1 point 7, ADR 0014): the join resource gets overlay entries keyed by its primary key, and a branch diffs, merges and stores them. A many_to_many load and `manage_relationship` do not see links the branch changed; both are listed as known limits.
-- `bench/`: a separate Mix project that measures fork, read, write, merge, fingerprinting and a tree search against two plain-Postgres baselines (a table copied per fork, and a shared delta table). `mix bench` runs it, `mix bench --quick` is a smoke run that CI compiles and executes. Results and their limits are in `bench/README.md`.
 - `Ramal.propose/2`, `Ramal.approve/2` and `Ramal.reject/2`: a branch can be frozen as a proposal (status `:proposed`) that a decider approves, which merges it, or rejects. The proposer, the decider, the reasons, the replay count and the stale rows are recorded on the branch and stored with it; `list(domain, status: :proposed)` finds the pending ones. Telemetry `[:ramal, :branch, :propose | :approve | :reject]`. Branches stored by 0.1.0 load unchanged.
 - `Ramal.aggregate/4` and `Ramal.aggregate!/4`: count, exists, sum, min, max and avg over the rows a read returns inside a branch, so a branch's creates, updates and destroys are included. Outside a branch they call the matching `Ash` function. `Ramal.Aggregate` holds the pure computation. The database aggregates the rows the overlay does not touch and the branch reads only the overlaid ones, so the cost follows the overlay and not the table; a query with a limit, an offset or a distinct reads every matching row. The rows the database aggregates are not fingerprinted for the merge staleness check (ADR 0013).
-- `bench/` results rerun after fast aggregates: the tree search takes 183 ms instead of 5,705 ms (1.07 times the delta baseline instead of 23 times), and every table in `bench/README.md` now comes from that one run. The earlier raw samples stay in `bench/results/published/` next to the new ones.
-
-- Community files for the public launch: `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), `SECURITY.md`, bug and feature issue templates, a pull request template that mirrors the rules in `CLAUDE.md`, and Dependabot for the root Mix project, `bench/` and GitHub Actions.
-
+- Many-to-many join resources inside a branch are tested and documented (DESIGN section 4.1 point 7, ADR 0014): the join resource gets overlay entries keyed by its primary key, and a branch diffs, merges and stores them. A many_to_many load and `manage_relationship` do not see links the branch changed; both are listed as known limits.
 - `ramal_live/`: a separate Mix project with a LiveView inspector for branches. `ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub` mounts it inside the host's own `live_session`, so it uses the host's LiveView socket and JavaScript; there is no asset pipeline, the CSS is inline and has light and dark themes. Open and proposed branches are columns with their `Ramal.diff/1` as before and after rows, and buttons to fork, merge, discard, approve and reject, each destructive one with an inline confirmation. `RamalLive.Broadcaster` turns Ramal's telemetry into PubSub messages so the columns update live. Core is unchanged. Decision in ADR 0015.
-
 - `ramal_live/examples/farm_demo.exs`: a runnable demo of the inspector for a screen recording. One command starts a Phoenix Playground app on a seeded farm in the `ramal_dev` database; "Explore 4 alternatives" opens four branches that each move a herd to a different paddock while the columns fill in live, and merging one makes the others stale. How to run it is in `ramal_live/README.md`.
-
+- `bench/`: a separate Mix project that measures fork, read, write, merge, fingerprinting and a tree search against two plain-Postgres baselines (a table copied per fork, and a shared delta table). `mix bench` runs it, `mix bench --quick` is a smoke run that CI compiles and executes. Results and their limits are in `bench/README.md`.
+- `bench/` results rerun after fast aggregates: the tree search takes 183 ms instead of 5,705 ms (1.07 times the delta baseline instead of 23 times), and every table in `bench/README.md` now comes from that one run. The earlier raw samples stay in `bench/results/published/` next to the new ones.
+- `ramal_live` is versioned with Ramal (0.2.0) and builds as a Hex package: `RAMAL_LIVE_HEX=1` makes its `mix.exs` depend on the published `ramal ~> 0.2.0` instead of the checkout next to it, and the package ships its `LICENSE` and builds its docs with ExDoc.
+- Community files for the public launch: `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), `SECURITY.md`, bug and feature issue templates, a pull request template that mirrors the rules in `CLAUDE.md`, and Dependabot for the root Mix project, `bench/` and GitHub Actions.
 - A "Security model and defaults" section in `SECURITY.md`, and ADR 0016: what Ramal enforces and what it leaves to the host, how stored state is treated, and how to mount the inspector in production. CI runs `mix hex.audit` for the library, `bench/` and `ramal_live/`.
 
 ### Security
@@ -30,7 +31,6 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Fixed
 
 - `Ramal.merge/2` and `Ramal.approve/2` on resources backed by `Ash.DataLayer.Ets` returned a `CaseClauseError` instead of `{:error, %Ramal.Error{}}` when the staleness check or the replay failed. The error is now returned as with Postgres. ETS cannot roll back, so rows replayed before a failing entry stay written; the error message and `details.not_rolled_back` say so (ADR 0007).
-
 - `docs/ROADMAP.md` and `bench/README.md` no longer say the DAPLab article was unreachable; they link it and state how the benchmark differs from theirs.
 - An update that changes no attribute is now logged, so a merge replays it. Before, the rows its hooks or managed relationships wrote (the links of a `manage_relationship`, a record created in an `after_action`) were logged as nested under an update that was not logged, and the merge dropped them.
 - A load of a many_to_many (or a limited has_many) inside a branch no longer loses a destination row the branch updated: the patched row keeps the source record Ash groups the load by.
@@ -54,5 +54,6 @@ All notable changes to this project are documented here. The format follows [Kee
 - A multitenant resource used with a tenant inside a branch is refused with `:multitenancy_unsupported` (`Ramal.Resource.ensure_untenanted/2`), instead of mixing tenants in one overlay or failing at merge.
 - Stored branches no longer hold the `sensitive?` attributes of an actor that is an Ash record (they are stored as `nil`); other actors are stored as before.
 
-[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/agustinrojas1/ramal/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/agustinrojas1/ramal/releases/tag/v0.1.0

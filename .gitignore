@@ -7,6 +7,7 @@
 erl_crash.dump
 *.ez
 ramal-*.tar
+ramal_live-*.tar
 
 # Editors and tooling
 /.elixir_ls/
@@ -16,6 +17,7 @@ ramal-*.tar
 # The inspector is its own Mix project
 /ramal_live/_build/
 /ramal_live/deps/
+/ramal_live/doc/
 
 # The benchmark is its own Mix project
 /bench/_build/

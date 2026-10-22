@@ -27,11 +27,12 @@ Open an issue first. If we agree, the PR adds an ADR under `docs/adr/` and updat
 
 A maintainer with a Hex account does this; CI has no Hex key.
 
-1. A PR bumps `@version` in `mix.exs` and turns `Unreleased` in `CHANGELOG.md` into the version with its date.
+1. A PR bumps `@version` in `mix.exs` and in `ramal_live/mix.exs` (the two packages share a version) and turns `Unreleased` in `CHANGELOG.md` into the version with its date.
 2. After it merges, tag the merge commit `vX.Y.Z` (the docs link to source at that tag).
-3. `mix hex.build` and read the file list and dependencies it prints, then `mix hex.publish`. The package ships `lib`,
+3. Check `mix hex.build` and `mix docs`, read the file list and dependencies `hex.build` prints, then `mix hex.publish`. The package ships `lib`,
    `mix.exs`, the README, the license, the changelog and the logo; nothing under `priv/` or `test/`.
-4. Replace "Not on Hex yet" in the README install section.
+4. Publish `ramal_live` after `ramal`, since it depends on it: Hex refuses a path dependency, so run it with `RAMAL_LIVE_HEX=1` (`RAMAL_LIVE_HEX=1 mix deps.get`, `mix hex.build`, `mix hex.publish`, all inside `ramal_live/`). Do not commit the `mix.lock` change that makes.
+5. Replace "Not on Hex yet" in the README install section, and in `ramal_live/README.md` and `RamalLive`'s module doc.
 
 ## Code of conduct
 

@@ -1,6 +1,6 @@
 # RamalLive
 
-A LiveView inspector for [Ramal](../README.md) branches. Not on Hex yet.
+A LiveView inspector for [Ramal](https://github.com/agustinrojas1/ramal) branches. Not on Hex yet.
 
 It shows the open and proposed branches of one Ash domain as columns. Each column has the branch's name, status, age and
 overlay size, and its `Ramal.diff/1` as before and after rows. Buttons fork, merge and discard an open branch and approve
@@ -9,7 +9,7 @@ telemetry updates the columns, and only the branch that changed is read again.
 
 There is no JavaScript, no Tailwind and no asset pipeline. The page is a LiveView with inline CSS (slate for the base line,
 copper for branches, light and dark themes), mounted by your router inside your own `live_session`, so it uses your
-LiveView socket and your JavaScript. The decision is in [ADR 0015](../docs/adr/0015-inspector-mounting.md).
+LiveView socket and your JavaScript. The decision is in [ADR 0015](https://github.com/agustinrojas1/ramal/blob/main/docs/adr/0015-inspector-mounting.md).
 
 ## Setup
 
@@ -44,7 +44,7 @@ returns the actor that is recorded as `decided_by` and replays a merge) and `:de
   decided and never checks. Mount it behind your own authentication in a `live_session` with an `on_mount` that checks the
   same, and give `:actor` so decisions have a decider: when that function returns `nil` the page refuses every action.
   Mounts that differ in who may use them need separate `live_session`s, because the page reads its options from the URL the
-  browser joins with. [SECURITY.md](../SECURITY.md) has the whole list.
+  browser joins with. [SECURITY.md](https://github.com/agustinrojas1/ramal/blob/main/SECURITY.md) has the whole list.
 - **Secrets.** Attributes marked `sensitive?: true` show as `[redacted]` in the diff.
 - **Fonts.** Headings ask for Barlow Condensed and data for IBM Plex Mono. The page loads neither; add the link tag to your
   root layout if you want them, or the system's condensed and monospace fonts are used.
