@@ -41,7 +41,11 @@ returns the actor that is recorded as `decided_by` and replays a merge) and `:de
 ## Things to know
 
 - **Authorization is yours.** Whoever opens the page can merge and discard any branch of the domain. Ramal records who
-  decided and never checks.
+  decided and never checks. Mount it behind your own authentication in a `live_session` with an `on_mount` that checks the
+  same, and give `:actor` so decisions have a decider: when that function returns `nil` the page refuses every action.
+  Mounts that differ in who may use them need separate `live_session`s, because the page reads its options from the URL the
+  browser joins with. [SECURITY.md](../SECURITY.md) has the whole list.
+- **Secrets.** Attributes marked `sensitive?: true` show as `[redacted]` in the diff.
 - **Fonts.** Headings ask for Barlow Condensed and data for IBM Plex Mono. The page loads neither; add the link tag to your
   root layout if you want them, or the system's condensed and monospace fonts are used.
 - **Content security policy.** The CSS is an inline `<style>`; a policy without `style-src 'unsafe-inline'` blocks it.

@@ -54,6 +54,24 @@ defmodule RamalLive.ColumnTest do
              ]
     end
 
+    test "a sensitive attribute keeps its row but not its values" do
+      alias RamalLive.Test.Farm.Herd
+
+      change = %Change{
+        resource: Herd,
+        key: "R7",
+        kind: :updated,
+        changes: %{head: {30, 31}, vet_pin: {"1111", "2222"}}
+      }
+
+      assert %{changes: [shown]} = Column.build(branch(), [change])
+
+      assert shown.rows == [
+               %{attribute: "head", before: "30", after: "31"},
+               %{attribute: "vet_pin", before: "[redacted]", after: "[redacted]"}
+             ]
+    end
+
     test "shows the first changes and counts the rest" do
       changes =
         for n <- 1..130,

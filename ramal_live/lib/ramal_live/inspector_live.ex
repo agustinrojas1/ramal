@@ -16,6 +16,8 @@ defmodule RamalLive.InspectorLive do
 
   @tick :timer.seconds(30)
 
+  @anonymous "Nothing was done: the :actor function of this inspector returned nil, so nobody is signed in to act."
+
   # `phx-value-action` arrives as a string. A closed lookup, never `String.to_atom/1`, since it is client input.
   @actions %{
     "fork" => :fork,
@@ -206,8 +208,11 @@ defmodule RamalLive.InspectorLive do
   def handle_event("cancel", _params, socket), do: {:noreply, assign(socket, confirming: nil)}
 
   def handle_event("fork", %{"id" => id}, socket) do
-    case find_column(socket, id) do
-      %Column{status: :open} = column -> {:noreply, fork(socket, column)}
+    with %Column{status: :open} = column <- find_column(socket, id),
+         {:ok, _actor} <- actor(socket) do
+      {:noreply, fork(socket, column)}
+    else
+      :anonymous -> {:noreply, fail(socket, id, @anonymous)}
       _missing_or_not_open -> {:noreply, socket}
     end
   end
@@ -217,12 +222,14 @@ defmodule RamalLive.InspectorLive do
   def handle_event("ask", %{"id" => id, "action" => action}, socket) do
     with %Column{} = column <- find_column(socket, id),
          action when action in [:merge, :discard, :approve, :reject] <- Map.get(@actions, action),
-         true <- allowed?(column, action) do
+         true <- allowed?(column, action),
+         {:ok, _actor} <- actor(socket) do
       {:noreply,
        socket
        |> update_column(id, &%{&1 | notice: nil})
        |> assign(confirming: {id, action})}
     else
+      :anonymous -> {:noreply, fail(socket, id, @anonymous)}
       _unknown -> {:noreply, socket}
     end
   end
@@ -231,9 +238,11 @@ defmodule RamalLive.InspectorLive do
     with {^id, confirmed} <- socket.assigns.confirming,
          ^confirmed <- Map.get(@actions, action),
          %Column{} = column <- find_column(socket, id),
-         true <- allowed?(column, confirmed) do
-      {:noreply, socket |> assign(confirming: nil) |> perform(confirmed, column)}
+         true <- allowed?(column, confirmed),
+         {:ok, actor} <- actor(socket) do
+      {:noreply, socket |> assign(confirming: nil) |> perform(confirmed, column, actor)}
     else
+      :anonymous -> {:noreply, socket |> assign(confirming: nil) |> fail(id, @anonymous)}
       _not_confirmed -> {:noreply, socket}
     end
   end
@@ -254,7 +263,7 @@ defmodule RamalLive.InspectorLive do
     end
   end
 
-  defp perform(socket, :discard, column) do
+  defp perform(socket, :discard, column, _actor) do
     case Ramal.discard(column.id) do
       :ok ->
         socket |> drop_column(column.id) |> assign(banner: {:info, "Discarded #{label(column)}."})
@@ -264,8 +273,8 @@ defmodule RamalLive.InspectorLive do
     end
   end
 
-  defp perform(socket, :reject, column) do
-    case Ramal.reject(column.id, decided_by: actor(socket)) do
+  defp perform(socket, :reject, column, actor) do
+    case Ramal.reject(column.id, decided_by: actor) do
       {:ok, _rejected} ->
         socket |> drop_column(column.id) |> assign(banner: {:info, "Rejected #{label(column)}."})
 
@@ -276,8 +285,8 @@ defmodule RamalLive.InspectorLive do
 
   # A merge replays the whole log in a transaction and can take a while, so it runs in a task and the column shows
   # a disabled button until it answers.
-  defp perform(socket, action, column) when action in [:merge, :approve] do
-    opts = decision_opts(action, actor(socket))
+  defp perform(socket, action, column, actor) when action in [:merge, :approve] do
+    opts = decision_opts(action, actor)
 
     socket
     |> update_column(column.id, &%{&1 | busy: action, notice: nil})
@@ -323,10 +332,17 @@ defmodule RamalLive.InspectorLive do
     end
   end
 
-  defp actor(%{assigns: %{config: %{actor: nil}}}), do: nil
+  # With no `:actor` option nothing is recorded and a merge replays each write as the actor it was captured with. With
+  # one, the host has said that the page acts for somebody, so a function that returns `nil` (a session that ended, an
+  # assign nobody set) means nobody is signed in and the page refuses to act rather than act as no one.
+  defp actor(%{assigns: %{config: %{actor: nil}}}), do: {:ok, nil}
 
-  defp actor(%{assigns: %{config: %{actor: {module, function}}}} = socket),
-    do: apply(module, function, [socket])
+  defp actor(%{assigns: %{config: %{actor: {module, function}}}} = socket) do
+    case apply(module, function, [socket]) do
+      nil -> :anonymous
+      actor -> {:ok, actor}
+    end
+  end
 
   defp label(%{name: nil, id: id}), do: "branch #{Column.short_id(id)}"
   defp label(%{name: name}), do: "“#{name}”"
