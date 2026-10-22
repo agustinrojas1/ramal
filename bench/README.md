@@ -92,4 +92,4 @@ About 1.4 microseconds per row. A `wide` read in an empty branch takes 11.93 ms 
 
 ## What this is not
 
-It is not a reproduction of the DAPLab benchmark. The article could not be fetched when this was written, so the workload is modelled on the ROADMAP's description of it (a tree search that keeps forking promising partial states, mutates, queries and prunes) and none of its figures are quoted. It compares one Postgres schema at one size on one machine; Neon, Dolt and other branching databases are not measured.
+It is not a reproduction of the [DAPLab benchmark](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html) (BranchBench). The workload is modelled on the workload the article focuses on, a Monte Carlo tree search that keeps forking promising partial states, mutates, queries and prunes; ours is a fixed-shape tree search, not MCTS, and it does not use their harness, schemas or step counts, and none of its figures are quoted. It compares one Postgres schema at one size on one machine; Neon, Dolt and other branching databases are not measured.

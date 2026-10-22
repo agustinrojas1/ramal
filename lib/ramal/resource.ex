@@ -97,7 +97,13 @@ defmodule Ramal.Resource do
   ## Example
 
       iex> Ramal.Resource.branchable_resources(Ramal.Test.Farm) |> Enum.sort()
-      [Ramal.Test.Farm.Herd, Ramal.Test.Farm.Move, Ramal.Test.Farm.Paddock]
+      [
+        Ramal.Test.Farm.Herd,
+        Ramal.Test.Farm.HerdVet,
+        Ramal.Test.Farm.Move,
+        Ramal.Test.Farm.Paddock,
+        Ramal.Test.Farm.Vet
+      ]
   """
   @spec branchable_resources(module) :: [module]
   def branchable_resources(domain) when is_atom(domain) do

@@ -1,6 +1,6 @@
 # 0011. Aggregates over a branch are computed from the patched rows
 
-Status: accepted, 2026-10-22. Issue: #23. Replaces the "0.2 revisits" note in design section 4.4.
+Status: accepted, 2026-10-22. Issue: #23. Partly superseded by [ADR 0013](0013-aggregate-delta.md): the answer is no longer computed from every matching row, and the aggregate no longer fingerprints the rows it did not read. Replaces the "0.2 revisits" note in design section 4.4.
 
 ## Context
 

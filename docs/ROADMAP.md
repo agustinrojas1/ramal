@@ -37,11 +37,12 @@ README runs as written; every **[confirm]** mark in `docs/DESIGN.md` is resolved
 
 ## 0.4 Benchmark
 
-- `bench/`: an agentic workload modelled on the DAPLab description (a tree search that keeps forking promising partial
-  states, mutates, queries and prunes) run against Ramal and two plain-Postgres baselines, including the cases where
-  Ramal loses. Implemented; see `bench/README.md`. The DAPLab article was not reachable when it was written, so it
-  is not a reproduction of their harness and quotes none of their figures. Nothing in the README cites a number this
-  project cannot reproduce.
+- `bench/`: an agentic workload modelled on the one the
+  [DAPLab article](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html)
+  focuses on, a Monte Carlo tree search that keeps forking promising partial states, mutates, queries and prunes. It
+  runs against Ramal and two plain-Postgres baselines, including the cases where Ramal loses. Implemented; see
+  `bench/README.md`. Ours is a fixed-shape tree search, not MCTS, and not a reproduction of their harness
+  (BranchBench); it quotes none of their figures. Nothing in the README cites a number this project cannot reproduce.
 
 ## 1.0
 

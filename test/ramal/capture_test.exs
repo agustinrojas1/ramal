@@ -171,12 +171,17 @@ defmodule Ramal.CaptureTest do
       assert DateTime.compare(updated.updated_at, herds.r7.updated_at) in [:gt, :eq]
     end
 
-    test "an update that changes nothing writes nothing", %{branch: branch, herds: herds} do
+    test "an update that changes nothing is logged, leaves the row as it was and is not in the diff",
+         %{
+           branch: branch,
+           herds: herds
+         } do
       inside(branch, fn -> Ash.update!(herds.r7, %{head: 30}, authorize?: false) end)
 
-      branch = state(branch)
-      assert branch.overlay == %{}
-      assert branch.log == []
+      assert {:ok, []} = Ramal.diff(branch)
+      state = state(branch)
+      assert [{:update, Herd, :update, %{head: 30}, nil, _, _}] = state.log
+      assert {:updated, %{head: 30}} = state.overlay[{Herd, herds.r7.id}]
     end
 
     test "updating a row the branch created keeps it created", %{branch: branch} do

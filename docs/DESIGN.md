@@ -119,14 +119,28 @@ This is the section that decides correctness. In a read action's preparation, wh
 4. **Aggregates and calculations:** data-layer aggregates (`count`, `sum`, `exists`) and calculations with
    expressions are computed on the base and do not see the overlay. 0.1 documents this and emits a
    `[:ramal, :read, :unpatched_aggregate]` telemetry event when a query inside a branch selects one, so a host can
-   detect it in tests. `Ramal.aggregate/4` (ADR 0011) gives the exact answer for the common kinds by reading the patched
-   rows and computing in Elixir; aggregates and calculations declared on resources stay unpatched.
+   detect it in tests. `Ramal.aggregate/4` (ADR 0011, ADR 0013) gives the exact answer for the common kinds: the database
+   aggregates the rows the overlay does not touch and the branch reads only the ones it does; aggregates and
+   calculations declared on resources stay unpatched.
 5. **Pagination:** Ash adds a page's limit and offset after the `before_action` hooks, so a paginated read is paged
    by the database and patched afterwards. Deleted rows shorten a page, rows created in the branch can be missing
    from or misplaced across pages, and `count` is the database's. 0.1 documents this. Patching the whole list and
    paging it in Elixir is possible but means rebuilding `Ash.Page` values, and is left to a later version.
 6. **Policies:** the query's filter, including one a policy added, is applied to overlay records. Checks that act on
    results (`authorize_results`) run before the `after_action` hooks and so do not see overlay records.
+7. **Many-to-many:** the join resource is a resource like any other and gets its own overlay entries, keyed by its
+   primary key (a tuple when the key is the pair of foreign keys). Covered by tests with a join resource that has such a
+   key ([ADR 0014](adr/0014-many-to-many-join-resources.md)). A read of the join resource and a load of its
+   `has_many` join relationship see the branch's links, and a many_to_many load sees destination rows the branch
+   created, updated or destroyed. Two limits follow from how Ash and AshPostgres work, and 0.2 documents them:
+   - AshPostgres loads a many_to_many with one SQL query that joins the join table in the database
+     (`lateral_join?/4` in `lib/ash/actions/read/relationships.ex`), so **a many_to_many load does not see links the
+     branch created or destroyed**. Read the join resource, or load the join relationship, to see them.
+   - `manage_relationship` decides what to create and remove from that same load. So `type: :append_and_remove` is
+     refused with `:bulk_unsupported` when it has a link to remove (Ash unrelates with `Ash.bulk_destroy/4`,
+     `bulk_delete_unused_unrelate/8` in `lib/ash/actions/managed_relationships.ex`), `type: :remove` cannot find a
+     link the branch created, and `type: :append` of a vet the branch already linked creates the link twice, which
+     fails the merge. Use it for links the branch has not changed, or write the join resource directly.
 
 ### 4.2 How writes are captured
 
@@ -145,8 +159,10 @@ This is the section that decides correctness. In a read action's preparation, wh
 - Destroys mark the key `:deleted`. Updates of a `:created` row stay `:created` with the new record. The first write to
   an existing row keeps the row as the action found it in `base`, which `diff/1` compares against.
 - Every write is appended to the log as `{action_type, resource, action_name, params, actor, opts, at}`; `opts` has
-  `key`, `tenant` and `nested?`. A write made by a hook of another captured action is `nested?: true`, and merge skips
-  it because replaying the outer action runs the hook again.
+  `key`, `tenant` and `nested?`. A write made by a hook of another captured action (or by a managed relationship) is
+  `nested?: true`, and merge skips it because replaying the outer action runs the hook again. An update that changes
+  no attribute is logged too, with the row left as it was and out of `diff/1`, because its hooks and managed
+  relationships can write other rows and only the outer action can replay them (ADR 0014).
 - A failing action takes back its own writes and those of the actions its hooks ran.
 - **Notifications** are dropped by default. `Ramal.run/2` runs the function inside `Ash.transaction([], ...,
   return_notifications?: true)` and sends only the notifications of resources with `notify_in_branch? true`.
@@ -293,12 +309,15 @@ and is not followed by `unload`.
 
 ## 10. Test domain
 
-`test/support/farm/`: domain `Ramal.Test.Farm` with three resources on `Ramal.TestRepo` (AshPostgres), all with UUID
-primary keys and timestamps:
+`test/support/farm/`: domain `Ramal.Test.Farm` with five resources on `Ramal.TestRepo` (AshPostgres), all with
+timestamps and, except the join resource, UUID primary keys:
 
 - `Paddock`: `name`, `hectares`, `capacity_head` (integer).
 - `Herd`: `name`, `head` (integer), `belongs_to :paddock`.
 - `Move`: `belongs_to :herd`, `from_paddock_id`, `to_paddock_id`, `moved_on` (date).
+- `Vet` and the join resource `HerdVet` (`assigned_on`, primary key `{herd_id, vet_id}`): `Herd` and `Vet` are
+  `many_to_many` through it. `Herd` has three update actions, `add_vets`, `drop_vets` and `set_vets`, that manage the
+  relationship with `type: :append`, `:remove` and `:append_and_remove`.
 
 Actions: `Herd.move(to_paddock_id)` with a validation "destination capacity not exceeded" that reads the
 destination's herds (so a branch must see its own earlier moves for the validation to be right), creating a `Move`
@@ -311,8 +330,9 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 
 1. Several domains per branch, or one branch per domain? 0.1: one domain. Revisit when a real host needs more.
 2. Should `run/2` be reentrant (a branch inside a branch)? 0.1: no, `{:error, %Ramal.Error{reason: :nested_branch}}`; `merge/2` refuses the same way.
-3. Where do many-to-many join resources sit in the overlay? They are resources, so they get overlay entries like any
-   other; test it.
+3. ~~Where do many-to-many join resources sit in the overlay?~~ Answered: they are resources, so they get overlay
+   entries like any other, keyed by the join resource's primary key (section 4.1 point 7, ADR 0014). A many_to_many
+   load and `manage_relationship` do not see links the branch changed; that is the open part, for a later version.
 4. ~~Does the read preparation need to handle `Ash.Query.select`?~~ Answered: Ash always selects the primary key, and
    the preparation trims overlay records to the select (section 4.1).
 5. Should fingerprints cover rows read through relationship loads? 0.1: yes, because they are reads like any other
@@ -381,4 +401,6 @@ recorded as `decided_by` and used to replay a merge.
 | 16 | A stored actor that is an Ash record loses its `sensitive?` attributes; other actors are stored as they are | The branch table should not hold password hashes or tokens, and Ash already has the flag. A serializer callback has one use. [ADR 0010](adr/0010-stored-actors.md) |
 | 17 | `Ramal.aggregate/4` reads the patched rows and computes the aggregate in Elixir; `Ramal.Aggregate` holds the pure part | The data layer's aggregates cannot see the overlay, and Ash offers no hook to make them. Exact for the branch, as expensive as reading the matching rows. [ADR 0011](adr/0011-branch-aggregates.md) |
 | 18 | A proposal is a branch status (`:proposed`, `:rejected`) and a `proposal` field of the stored state; approving is merging | A second table and storage API for one record per branch would duplicate what the branch row already persists, and the decision must land in the same step as the merge. [ADR 0012](adr/0012-proposals.md) |
-| 19 | The inspector is a separate project whose router macro expands to one `live` route in the host's own `live_session`; options travel as route metadata; a supervised broadcaster turns telemetry into PubSub messages naming a branch, and the page re-reads only that branch | A `live_session` of its own would need its own root layout, socket and JavaScript, which is an asset pipeline; telemetry is node-local, so a handler attached on first page view would miss events. [ADR 0015](adr/0015-inspector-mounting.md) |
+| 19 | `Ramal.aggregate/4` aggregates in the database the rows outside the overlay, reads the overlaid ones through the patched path and joins the two; limit, offset and distinct keep the read-every-row path; the database's part is not fingerprinted | Reading every row made scoring a state cost a table scan (measured in `bench/`). The delta is exact and its cost follows the overlay. [ADR 0013](adr/0013-aggregate-delta.md) |
+| 20 | A many_to_many join resource gets overlay entries like any resource; an update that changes no attribute is logged; a many_to_many load and `manage_relationship` do not see links the branch changed (documented limit) | Hooks and managed relationships write nested rows that only the outer action can replay; AshPostgres loads the relationship in SQL over the base join table. [ADR 0014](adr/0014-many-to-many-join-resources.md) |
+| 21 | The inspector is a separate project whose router macro expands to one `live` route in the host's own `live_session`; options travel as route metadata; a supervised broadcaster turns telemetry into PubSub messages naming a branch, and the page re-reads only that branch | A `live_session` of its own would need its own root layout, socket and JavaScript, which is an asset pipeline; telemetry is node-local, so a handler attached on first page view would miss events. [ADR 0015](adr/0015-inspector-mounting.md) |

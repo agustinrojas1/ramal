@@ -6,14 +6,20 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- Many-to-many join resources inside a branch are tested and documented (DESIGN section 4.1 point 7, ADR 0014): the join resource gets overlay entries keyed by its primary key, and a branch diffs, merges and stores them. A many_to_many load and `manage_relationship` do not see links the branch changed; both are listed as known limits.
 - `bench/`: a separate Mix project that measures fork, read, write, merge, fingerprinting and a tree search against two plain-Postgres baselines (a table copied per fork, and a shared delta table). `mix bench` runs it, `mix bench --quick` is a smoke run that CI compiles and executes. Results and their limits are in `bench/README.md`.
 - `Ramal.propose/2`, `Ramal.approve/2` and `Ramal.reject/2`: a branch can be frozen as a proposal (status `:proposed`) that a decider approves, which merges it, or rejects. The proposer, the decider, the reasons, the replay count and the stale rows are recorded on the branch and stored with it; `list(domain, status: :proposed)` finds the pending ones. Telemetry `[:ramal, :branch, :propose | :approve | :reject]`. Branches stored by 0.1.0 load unchanged.
-- `Ramal.aggregate/4` and `Ramal.aggregate!/4`: count, exists, sum, min, max and avg over the rows a read returns inside a branch, so a branch's creates, updates and destroys are included. Outside a branch they call the matching `Ash` function. `Ramal.Aggregate` holds the pure computation.
+- `Ramal.aggregate/4` and `Ramal.aggregate!/4`: count, exists, sum, min, max and avg over the rows a read returns inside a branch, so a branch's creates, updates and destroys are included. Outside a branch they call the matching `Ash` function. `Ramal.Aggregate` holds the pure computation. The database aggregates the rows the overlay does not touch and the branch reads only the overlaid ones, so the cost follows the overlay and not the table; a query with a limit, an offset or a distinct reads every matching row. The rows the database aggregates are not fingerprinted for the merge staleness check (ADR 0013).
+
+- Community files for the public launch: `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), `SECURITY.md`, bug and feature issue templates, a pull request template that mirrors the rules in `CLAUDE.md`, and Dependabot for the root Mix project, `bench/` and GitHub Actions.
 
 - `ramal_live/`: a separate Mix project with a LiveView inspector for branches. `ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub` mounts it inside the host's own `live_session`, so it uses the host's LiveView socket and JavaScript; there is no asset pipeline, the CSS is inline and has light and dark themes. Open and proposed branches are columns with their `Ramal.diff/1` as before and after rows, and buttons to fork, merge, discard, approve and reject, each destructive one with an inline confirmation. `RamalLive.Broadcaster` turns Ramal's telemetry into PubSub messages so the columns update live. Core is unchanged. Decision in ADR 0015.
 
 ### Fixed
 
+- `docs/ROADMAP.md` and `bench/README.md` no longer say the DAPLab article was unreachable; they link it and state how the benchmark differs from theirs.
+- An update that changes no attribute is now logged, so a merge replays it. Before, the rows its hooks or managed relationships wrote (the links of a `manage_relationship`, a record created in an `after_action`) were logged as nested under an update that was not logged, and the merge dropped them.
+- A load of a many_to_many (or a limited has_many) inside a branch no longer loses a destination row the branch updated: the patched row keeps the source record Ash groups the load by.
 - README: the DAPLab quotation now matches the article word for word, and the Neon and Dolt summary matches its findings.
 
 ## [0.1.0] - 2026-10-22

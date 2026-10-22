@@ -130,7 +130,8 @@ defmodule Ramal.Preparation do
       patched =
         results
         |> Overlay.patch(slice, &MapSet.member?(matching, Resource.key(resource, &1)),
-          key: &Resource.key(resource, &1)
+          key: &Resource.key(resource, &1),
+          replace: &carry_lateral_source/2
         )
         |> sort(query)
         |> Enum.drop(offset || 0)
@@ -140,6 +141,19 @@ defmodule Ramal.Preparation do
       {:ok, patched}
     end
   end
+
+  # A many_to_many load (and a has_many load with a limit) is one SQL query whose rows each carry the source record they
+  # belong to. Ash groups the rows by it (`lib/ash/actions/read/relationships.ex`) and drops a row without one, so an
+  # overlay record that takes a base row's place has to keep that row's source.
+  defp carry_lateral_source(
+         %{__lateral_join_source__: source},
+         %{__lateral_join_source__: nil} = record
+       )
+       when source != nil do
+    %{record | __lateral_join_source__: source}
+  end
+
+  defp carry_lateral_source(_row, record), do: record
 
   # The keys of overlay records that satisfy the query's filter. Computed once for the whole slice, so a filter that
   # needs relationship data loads it in one batch.
