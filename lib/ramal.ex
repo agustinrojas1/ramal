@@ -20,7 +20,7 @@ defmodule Ramal do
   Fork, diff and merge arrive in later 0.1 issues; see `docs/ROADMAP.md`.
   """
 
-  alias Ramal.{Branch, Current, Error, Supervisor, Telemetry}
+  alias Ramal.{Branch, Current, Error, Resource, Supervisor, Telemetry}
   alias Ramal.Branch.Server
 
   @type branch_or_id :: Branch.t() | String.t()
@@ -33,7 +33,9 @@ defmodule Ramal do
     * `:name` - a label for people
     * `:metadata` - a map the host uses freely
 
-  Returns `{:error, %Ramal.Error{reason: :not_started}}` when `Ramal.Supervisor` is not running.
+  Returns `{:error, %Ramal.Error{reason: :not_started}}` when `Ramal.Supervisor` is not running, and
+  `:no_branchable_resources` when no resource of the domain uses `Ramal.Resource` (or all of them opted out), since
+  such a branch could never change what a read returns.
 
   ## Example
 
@@ -44,6 +46,7 @@ defmodule Ramal do
   @spec branch(module, keyword) :: {:ok, Branch.t()} | {:error, Error.t()}
   def branch(domain, opts \\ []) when is_atom(domain) do
     with {:ok, config} <- Supervisor.config(),
+         :ok <- ensure_branchable(domain),
          branch = Branch.new(domain, opts),
          :ok <- config.storage.put(branch, config.storage_config),
          {:ok, _pid} <- Server.start(branch, config) do
@@ -168,6 +171,20 @@ defmodule Ramal do
   """
   @spec discard(branch_or_id) :: :ok | {:error, Error.t()}
   def discard(branch_or_id), do: branch_or_id |> id_of() |> Server.discard()
+
+  defp ensure_branchable(domain) do
+    if Resource.branchable_resources(domain) == [] do
+      {:error,
+       Error.new(
+         :no_branchable_resources,
+         "#{inspect(domain)} has no resource with `extensions: [Ramal.Resource]` that is branchable; " <>
+           "add the extension to the resources a branch should cover",
+         %{domain: domain}
+       )}
+    else
+      :ok
+    end
+  end
 
   defp id_of(%Branch{id: id}), do: id
   defp id_of(id) when is_binary(id), do: id

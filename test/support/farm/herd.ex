@@ -2,6 +2,7 @@ defmodule Ramal.Test.Farm.Herd do
   @moduledoc false
   use Ash.Resource,
     domain: Ramal.Test.Farm,
+    extensions: [Ramal.Resource],
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer]
 
@@ -68,5 +69,6 @@ defmodule Ramal.Test.Farm.Herd do
 
   relationships do
     belongs_to(:paddock, Ramal.Test.Farm.Paddock, public?: true, attribute_writable?: true)
+    has_many(:moves, Ramal.Test.Farm.Move, public?: true)
   end
 end

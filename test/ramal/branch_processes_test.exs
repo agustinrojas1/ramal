@@ -4,8 +4,7 @@ defmodule Ramal.BranchProcessesTest do
 
   alias Ramal.Storage.ETS
   alias Ramal.Supervisor, as: RamalSupervisor
-  alias Ramal.Test.Farm
-  alias Ramal.Test.Other
+  alias Ramal.Test.{Farm, Other, Plain}
 
   doctest Ramal.Supervisor
   doctest Ramal.Telemetry
@@ -18,6 +17,15 @@ defmodule Ramal.BranchProcessesTest do
   end
 
   describe "branch/2" do
+    test "refuses a domain with no branchable resource and creates nothing" do
+      for domain <- [Plain, NotADomain] do
+        assert {:error, %Error{reason: :no_branchable_resources, details: %{domain: ^domain}}} =
+                 Ramal.branch(domain)
+      end
+
+      assert {:ok, []} = Ramal.list(Plain)
+    end
+
     test "creates an open branch, starts its process and makes it readable by id" do
       assert {:ok, branch} =
                Ramal.branch(Farm, name: "what if", metadata: %{ticket: 1})

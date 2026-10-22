@@ -7,9 +7,23 @@ defmodule Ramal.Current do
   # plain `Ash.update!/3` inside `Ramal.run/2` passes no options.
 
   @key :ramal_current_branch_id
+  @shared_key :ramal_branch_id
 
   @spec id() :: String.t() | nil
   def id, do: Process.get(@key)
+
+  @doc """
+  The branch id a hook should use for a query or changeset context.
+
+  The process dictionary wins; the id in `context[:shared]` covers the tasks Ash spawns for relationship loads, which
+  do not inherit the process dictionary but do receive the shared context of the query that started them.
+  """
+  @spec resolve(map) :: String.t() | nil
+  def resolve(context), do: id() || get_in(context, [:shared, @shared_key])
+
+  @doc "The context map that carries `id` into the queries and changesets Ash derives from this one."
+  @spec shared_context(String.t()) :: map
+  def shared_context(id), do: %{shared: %{@shared_key => id}}
 
   @doc """
   Runs `fun` with `id` as the current branch of the calling process and restores the previous state afterwards,

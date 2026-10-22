@@ -2,6 +2,7 @@ defmodule Ramal.Test.Farm.Paddock do
   @moduledoc false
   use Ash.Resource,
     domain: Ramal.Test.Farm,
+    extensions: [Ramal.Resource],
     data_layer: AshPostgres.DataLayer
 
   postgres do
