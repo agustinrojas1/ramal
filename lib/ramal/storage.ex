@@ -35,5 +35,6 @@ defmodule Ramal.Storage do
   @callback delete(id :: String.t(), config) :: :ok | {:error, Error.t()}
 
   @doc "The branches of a domain, optionally filtered by `status:`, oldest first."
-  @callback list(domain :: module, filters :: keyword, config) :: [Branch.t()]
+  @callback list(domain :: module, filters :: keyword, config) ::
+              {:ok, [Branch.t()]} | {:error, Error.t()}
 end

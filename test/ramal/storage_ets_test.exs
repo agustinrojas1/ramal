@@ -40,10 +40,10 @@ defmodule Ramal.Storage.ETSTest do
     other_domain = Branch.new(MyApp.Other)
     for branch <- [newer, other_domain, older], do: :ok = ETS.put(branch, [])
 
-    assert ETS.list(MyApp.Farm, [], []) == [older, newer]
-    assert ETS.list(MyApp.Farm, [status: :merged], []) == [newer]
-    assert ETS.list(MyApp.Farm, [status: :open], []) == [older]
-    assert ETS.list(MyApp.Other, [], []) == [other_domain]
+    assert ETS.list(MyApp.Farm, [], []) == {:ok, [older, newer]}
+    assert ETS.list(MyApp.Farm, [status: :merged], []) == {:ok, [newer]}
+    assert ETS.list(MyApp.Farm, [status: :open], []) == {:ok, [older]}
+    assert ETS.list(MyApp.Other, [], []) == {:ok, [other_domain]}
   end
 
   @tag supervisor: false

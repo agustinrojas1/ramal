@@ -189,7 +189,7 @@ This is the section that decides correctness. In a read action's preparation, wh
 ## 6. Persistence
 
 `Ramal.Storage` is a behaviour: `put(branch, config)`, `fetch(id, config)`, `delete(id, config)`,
-`list(domain, filters, config)`, where `config` is the `Ramal.Supervisor` options that are not its own (the Postgres
+`list(domain, filters, config)` (which returns `{:ok, branches}` or `{:error, error}`), where `config` is the `Ramal.Supervisor` options that are not its own (the Postgres
 backend reads `:repo` from it). Two implementations:
 
 - `Ramal.Storage.ETS`: a named table owned by `Ramal.Supervisor`. Default in tests and development. Lost on restart.
@@ -197,11 +197,14 @@ backend reads `:repo` from it). Two implementations:
   inserted_at, updated_at`). `mix ramal.gen.migration` writes the migration into the host's repo. Requires AshPostgres
   (or at least Ecto SQL); the module compiles only when it is present.
 
-Serialization: overlay records are stored as `%{"resource" => "Elixir.MyApp.Herd", "key" => ..., "op" => "updated",
-"attrs" => %{...}}` with attribute values dumped through their Ash types (`Ash.Type.dump_to_embedded/3`
-**[confirm]**) and loaded back with `Ash.Type.cast_stored/3` **[confirm]**. The log stores inputs as given; actors are
-stored as whatever the host's `Ramal.Actor` serializer returns (default: the actor's primary key and resource name,
-rehydrated on merge by a host callback; without a callback, merge requires an explicit `actor:` option).
+Serialization is `Ramal.Storage.Codec`, a pure module any text-based backend can use. The branch columns hold `id`,
+`domain`, `name` and `status`; `state` holds the overlay (`resource`, `key`, `op`, `record`), the base (`resource`,
+`key`, `fingerprint`, `snapshot`), the log, the metadata and `inserted_at`. A record is `attrs` (each attribute dumped
+with `Ash.Type.dump_to_embedded/3` and loaded with `Ash.Type.cast_from_embedded/3`, both confirmed in Ash 3.37), the
+names of unloaded attributes, and the other struct fields when they differ from a fresh struct. Action input,
+primary keys, options and actors are stored as tagged terms; actors are stored as the term itself, not through a
+serializer (pass `actor:` to `merge/2` to replace a stored one). Atoms are never created from stored data. See
+[ADR 0008](adr/0008-postgres-storage.md).
 
 ## 7. Staleness and merge
 
@@ -298,3 +301,4 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 11 | Writes are captured by a last `before_action` that sets the result; atomic updates fall back through `atomic/3` and `require_atomic? false`; every bulk action and upsert action is refused; notifications are dropped unless the resource opts in; a failed action undoes its writes; `Ramal.Error` is a Splode error | `around_action` cannot skip the data layer by itself, the atomic path never reaches a hook, and Ash flattens other exceptions to strings. [ADR 0005](adr/0005-write-capture.md) |
 | 12 | `base` holds `%{fingerprint, snapshot}` per touched row; every read fingerprints the base rows it returns, except when it selects some attributes; a fork copies everything and records `forked_from` | Staleness needs the state at first read, diff needs the state at first write, and a partial row has no comparable hash. [ADR 0006](adr/0006-fingerprints-and-fork.md) |
 | 13 | Merge claims the branch first, checks staleness inside the replay transaction with row locks where possible, and forces created rows to keep their branch primary keys; entries logged by hooks are not replayed | Writes between check and replay would be lost, a check outside the transaction races, and later log entries name rows by key. [ADR 0007](adr/0007-merge.md) |
+| 14 | Branches are stored through `Ramal.Storage.Codec`: attributes through the Ash embedded dump and cast, everything else as tagged terms, atoms never created, actors stored as the term; `list/3` can fail | A round trip must be `==`, the Ash `cast_stored` is the data layer's form, not JSON's, and a database can fail. [ADR 0008](adr/0008-postgres-storage.md) |

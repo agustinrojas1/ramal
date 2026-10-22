@@ -155,7 +155,7 @@ defmodule Ramal do
   @spec list(module, keyword) :: {:ok, [Branch.t()]} | {:error, Error.t()}
   def list(domain, opts \\ []) when is_atom(domain) do
     with {:ok, config} <- Supervisor.config() do
-      {:ok, config.storage.list(domain, Keyword.take(opts, [:status]), config.storage_config)}
+      config.storage.list(domain, Keyword.take(opts, [:status]), config.storage_config)
     end
   end
 

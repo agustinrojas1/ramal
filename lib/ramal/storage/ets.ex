@@ -56,11 +56,16 @@ defmodule Ramal.Storage.ETS do
   def list(domain, filters, _config) do
     status = Keyword.get(filters, :status)
 
-    table()
-    |> :ets.tab2list()
-    |> Enum.map(fn {_id, branch} -> branch end)
-    |> Enum.filter(&(&1.domain == domain and (is_nil(status) or &1.status == status)))
-    |> Enum.sort_by(& &1.inserted_at, DateTime)
+    branches =
+      table()
+      |> :ets.tab2list()
+      |> Enum.map(fn {_id, branch} -> branch end)
+      |> Enum.filter(&(&1.domain == domain and (is_nil(status) or &1.status == status)))
+      |> Enum.sort_by(& &1.inserted_at, DateTime)
+
+    {:ok, branches}
+  rescue
+    ArgumentError -> unavailable()
   end
 
   defp unavailable do
