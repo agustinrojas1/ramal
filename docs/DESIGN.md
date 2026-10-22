@@ -34,8 +34,8 @@ a row deleted and then created again becomes `:updated` (the base row is replace
 table of how an entry combines with the next write. The overlay is a plain map and does not remember write order; the
 log does.
 
-**Log.** An ordered list of entries `{action_type, resource, action_name, input, actor, opts, at}` recording every
-write the branch captured, in order. The log is what `merge/2` replays. The overlay is derived from the log in
+**Log.** A list of entries `{action_type, resource, action_name, input, actor, opts, at}` recording every
+write the branch captured, newest first so recording one is O(1); readers reverse it. The log is what `merge/2` replays. The overlay is derived from the log in
 principle, but kept materialized because reads need it on every query.
 
 **Fingerprints.** For every base row the branch read or wrote, the hash of its attributes at the moment it was first
@@ -53,16 +53,19 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
   log; every write inside the branch is a `GenServer.call` to it, every read asks it for the overlay slice of one
   resource. Reads of the overlay are frequent and small; if they become a bottleneck, the server publishes the
   overlay to an ETS table it owns. Not before the benchmark says so.
-- Idle branches unload: after `idle_timeout` (default 5 minutes) the server persists its state through the storage
-  backend and stops. `Ramal.branch/2`, `run/2`, `fork/1`, `diff/1`, `merge/2` and `discard/1` all accept a branch id and
+- Idle branches unload: after `idle_timeout` (default 5 minutes, a `Ramal.Supervisor` option) the server persists its
+  state through the storage backend and stops. A branch is also persisted when it is created, discarded, and when the
+  supervisor shuts down; writes in between live only in the process (ADR 0003). `Ramal.branch/2`, `run/2`, `fork/1`, `diff/1`, `merge/2` and `discard/1` all accept a branch id and
   rehydrate the process on demand. The host never needs to know whether the process is alive.
-- Memory: `max_heap_size` on the server process, configurable, default generous. A branch that exceeds it is killed
-  and its last persisted state remains; the host gets a telemetry event and a `{:error, :branch_too_large}` on next use.
-- "Current branch" is process-local. `Ramal.run(branch, fun)` sets it in the process dictionary for the duration of
-  `fun`, and also in the Ash context of every query and changeset it can reach. Tasks spawned inside `fun` do not
-  inherit it automatically; `Ramal.current/0` and `Ramal.run/2` exist so callers can propagate it explicitly.
-  **[confirm]** whether Ash's `shared` context (`Ash.Context`) is a better carrier than the process dictionary for
-  nested action calls; use whichever reaches every hook, and document the choice in an ADR.
+- Memory: `max_heap_size` on the server process, a `Ramal.Supervisor` option, default 25 million words. A branch that
+  exceeds it is killed and its last persisted state remains; a watcher process notices the untrappable kill, emits
+  `[:ramal, :branch, :too_large]` and marks the branch, and the next use returns `{:error, :branch_too_large}` until
+  the branch is discarded (ADR 0003).
+- "Current branch" is process-local. `Ramal.run(branch, fun)` stores the branch id in the process dictionary
+  (`Ramal.Current`) for the duration of `fun`, restoring the previous state afterwards even when `fun` raises. The
+  first hook that runs also copies the id into the query's or changeset's Ash `shared` context, because Ash runs some
+  loads in tasks that do not inherit the process dictionary. Tasks the host spawns inside `fun` do not inherit the
+  branch; `Ramal.run/2` inside the task propagates it explicitly. Resolved in ADR 0002.
 
 ## 4. Interception: the Spark extension
 
@@ -132,7 +135,7 @@ In a create, update or destroy action's change, when a branch is current:
 
 ```elixir
 @spec branch(domain :: module, keyword) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
-# opts: name, metadata, storage (override), idle_timeout
+# opts: name, metadata
 
 @spec run(branch | id, (-> result)) :: {:ok, result} | {:error, Ramal.Error.t()}
 @spec run!(branch | id, (-> result)) :: result
@@ -150,16 +153,19 @@ In a create, update or destroy action's change, when a branch is current:
 @spec discard(branch | id) :: :ok | {:error, Ramal.Error.t()}
 
 @spec get(id) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
-@spec list(domain, keyword) :: [Ramal.Branch.t()]   # status filter; from storage, not from the registry
+@spec list(domain, keyword) :: {:ok, [Ramal.Branch.t()]} | {:error, Ramal.Error.t()}
+# status filter; from storage, not from the registry
 ```
 
 `Ramal.Error` has `reason` (an atom from a documented list), `message`, and `details` (a map). Reasons in 0.1:
 `:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:branch_too_large`,
-`:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:storage`.
+`:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`.
 
 ## 6. Persistence
 
-`Ramal.Storage` is a behaviour: `put(branch)`, `fetch(id)`, `delete(id)`, `list(domain, opts)`. Two implementations:
+`Ramal.Storage` is a behaviour: `put(branch, config)`, `fetch(id, config)`, `delete(id, config)`,
+`list(domain, filters, config)`, where `config` is the `Ramal.Supervisor` options that are not its own (the Postgres
+backend reads `:repo` from it). Two implementations:
 
 - `Ramal.Storage.ETS`: a named table owned by `Ramal.Supervisor`. Default in tests and development. Lost on restart.
 - `Ramal.Storage.Postgres`: one table `ramal_branches` (`id uuid pk, domain text, name text, status text, state jsonb,
@@ -212,6 +218,10 @@ Events, all with `%{branch_id, domain}` metadata:
 `[:ramal, :read, :patch]` with measurements `%{base_rows, overlay_rows, result_rows, duration}`,
 `[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource}`.
 
+`[:ramal, :branch, :load]` is emitted every time a branch process starts, including right after creation, so
+`create` is followed by `load`. `unload` carries `reason: :idle | :shutdown`. `discard` is emitted once per discard
+and is not followed by `unload`.
+
 ## 10. Test domain
 
 `test/support/farm/`: domain `Ramal.Test.Farm` with three resources on `Ramal.TestRepo` (AshPostgres), all with UUID
@@ -249,3 +259,5 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 5 | Limit and offset applied after patching | The only way a branch-created row can appear in a limited query. Documented as the cost of correctness. |
 | 6 | No Phoenix in core; AshPostgres optional | Keeps the dependency surface small for the first users. |
 | 7 | `Ramal.Change` is the diff struct, `Ramal.Capture` the write hook; the overlay records net effect | One name for one thing, and `diff` can rely on `:deleted` meaning the base had the row. [ADR 0001](adr/0001-change-struct-and-capture-module.md) |
+| 8 | The current branch id lives in the process dictionary and in Ash's shared context | Ash has no ambient context, and it runs some loads in tasks that lose the process dictionary. [ADR 0002](adr/0002-current-branch-carrier.md) |
+| 9 | Idle timeout and heap limit belong to the supervisor; discard keeps the record; storage takes config last | A per-branch value is lost on unload, and a kept record gives `:not_open` a meaning. [ADR 0003](adr/0003-branch-process-lifecycle.md) |
