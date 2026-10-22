@@ -29,6 +29,10 @@ domains is a 0.2 question), `status` (`:open | :merged | :discarded`), `base` (f
 **Overlay.** A map from `{resource_module, primary_key}` to one of `{:created, record}`, `{:updated, record}` or
 `:deleted`. The record is the full Ash struct as the action left it. The primary key is the value of the resource's
 primary key attribute, or a tuple for composite keys. The overlay is the branch's only state that matters for reads.
+Entries record the net effect on the base, so a row created and then deleted in the same branch leaves no entry, and
+a row deleted and then created again becomes `:updated` (the base row is replaced). `Ramal.Overlay` documents the full
+table of how an entry combines with the next write. The overlay is a plain map and does not remember write order; the
+log does.
 
 **Log.** An ordered list of entries `{action_type, resource, action_name, input, actor, opts, at}` recording every
 write the branch captured, in order. The log is what `merge/2` replays. The overlay is derived from the log in
@@ -38,7 +42,8 @@ principle, but kept materialized because reads need it on every query.
 touched. Section 7 uses them to detect that the base moved under the branch.
 
 **Change.** `%Ramal.Change{resource, key, kind, changes}` where `kind` is `:created | :updated | :deleted` and
-`changes` maps attribute names to `{before, after}`. `diff/1` returns a list of them in log order.
+`changes` maps attribute names to `{before, after}`. `diff/1` returns a list of them in log order. (The Ash change
+module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Change` belongs to this public struct.)
 
 ## 3. Process model
 
@@ -84,7 +89,9 @@ This is the section that decides correctness. In a read action's preparation, wh
    - add every `:created` and `:updated` overlay record that is not already present and that **matches the query's
      filter**, evaluated in Elixir with `Ash.Filter.Runtime` **[confirm exact function and arity]**. An updated row
      that no longer matches the filter is dropped;
-   - re-apply the sort in Elixir (`Ash.Sort.runtime_sort/3` **[confirm]**), then the remembered `limit` and `offset`;
+   - re-apply the sort in Elixir (`Ash.Actions.Sort.runtime_sort/3` **[confirm]**; it lives in `Ash.Actions.Sort`, not
+     `Ash.Sort`), then the remembered `limit` and `offset`. `Ramal.Overlay.patch/4` does the merge, sort, offset and
+     limit as a pure function; the preparation only supplies the filter predicate and the comparator;
    - record a fingerprint (section 7) for every base row that survived or was replaced.
 3. **Loads and relationships:** Ash loads relationships through further read actions on the related resource, so they
    go through the same preparation. **[confirm]** that this holds for both the default and the `lazy?` load paths and
@@ -148,7 +155,7 @@ In a create, update or destroy action's change, when a branch is current:
 
 `Ramal.Error` has `reason` (an atom from a documented list), `message`, and `details` (a map). Reasons in 0.1:
 `:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:branch_too_large`,
-`:no_branchable_resources`, `:storage`.
+`:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:storage`.
 
 ## 6. Persistence
 
@@ -190,8 +197,11 @@ skipping action logic; it is faster and less safe, and needs its own ADR.
 - `fork/2` copies overlay, log and fingerprints into a new branch. Both branches share the base; neither sees the
   other. Persistent data structures make the copy cheap; the log is a list and gets shared structurally.
 - `diff/1` walks the overlay: for `:updated`, compare the overlay record with the base row as the branch first saw it
-  (kept alongside the fingerprint, so diff never queries the base); for `:created`, every attribute is `{nil, value}`;
-  for `:deleted`, `{value, nil}`. Output order is the log order of first touch.
+  (kept alongside the fingerprint, so diff never queries the base) and keep only the attributes that differ; for
+  `:created`, every attribute is `{nil, value}`; for `:deleted`, `{value, nil}`. An updated row whose values ended equal
+  to the base is left out. Output order is the log order of first touch: `Ramal.Overlay.diff/3` computes the changes
+  (sorted by ref, because the overlay map has no order) and `diff/1` reorders them by the log. An updated or deleted
+  entry with no base snapshot is `{:error, %Ramal.Error{reason: :missing_snapshot}}`: the write layer forgot to keep one.
 
 ## 9. Telemetry
 
@@ -238,3 +248,4 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 4 | Merge replays actions rather than writing state | Validations and policies run against the real base at merge time. Slower and right. |
 | 5 | Limit and offset applied after patching | The only way a branch-created row can appear in a limited query. Documented as the cost of correctness. |
 | 6 | No Phoenix in core; AshPostgres optional | Keeps the dependency surface small for the first users. |
+| 7 | `Ramal.Change` is the diff struct, `Ramal.Capture` the write hook; the overlay records net effect | One name for one thing, and `diff` can rely on `:deleted` meaning the base had the row. [ADR 0001](adr/0001-change-struct-and-capture-module.md) |

@@ -7,3 +7,4 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - Project scaffold: design document, roadmap, conventions, CI, test database setup, logo.
+- `Ramal.Overlay`: the pure overlay of a branch (put, slice, patch, diff, merge for forks), `Ramal.Change` and `Ramal.Error`.
