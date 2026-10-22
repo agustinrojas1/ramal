@@ -18,6 +18,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- `Ramal.merge/2` and `Ramal.approve/2` on resources backed by `Ash.DataLayer.Ets` returned a `CaseClauseError` instead of `{:error, %Ramal.Error{}}` when the staleness check or the replay failed. The error is now returned as with Postgres. ETS cannot roll back, so rows replayed before a failing entry stay written; the error message and `details.not_rolled_back` say so (ADR 0007).
+
 - `docs/ROADMAP.md` and `bench/README.md` no longer say the DAPLab article was unreachable; they link it and state how the benchmark differs from theirs.
 - An update that changes no attribute is now logged, so a merge replays it. Before, the rows its hooks or managed relationships wrote (the links of a `manage_relationship`, a record created in an `after_action`) were logged as nested under an update that was not logged, and the merge dropped them.
 - A load of a many_to_many (or a limited has_many) inside a branch no longer loses a destination row the branch updated: the patched row keeps the source record Ash groups the load by.

@@ -25,6 +25,12 @@ defmodule Ramal.Merge do
     * `:on_stale` - `:error` (default), `:ignore`, or a function from the stale rows to `:continue` or `:abort`
     * `:mode` - only `:replay`
 
+  Data layers that cannot run transactions, such as `Ash.DataLayer.Ets`, cannot roll a failed replay back. The staleness
+  check still runs before the first write, so a stale base writes nothing. A replayed action that fails after earlier
+  entries were written leaves those writes in place, the branch stays open, and the `:merge_failed` error lists the
+  resources in `details.not_rolled_back`. `Ash.transact/3` runs the function as it is for such a data layer and returns
+  its `{:error, _}` inside `{:ok, _}`, which the merge unwraps.
+
   Known limits, documented in `docs/adr/0007-merge.md`: tenants are refused inside a branch (ADR 0009), so the staleness check has none, a top-level action
   that targets a row created by a hook cannot be replayed, and changes made with `Ash.Changeset.change_attribute/3`
   outside the action's own inputs are not in the log.
@@ -45,8 +51,8 @@ defmodule Ramal.Merge do
   Merges the branch with `id`. See the module doc for the steps and the options.
 
   Returns `{:error, %Ramal.Error{reason: :stale}}` with the stale rows in `details.rows`, `:merge_failed` with the log
-  index, resource, action and Ash error in `details` when a replayed action fails, `:not_open` for a merged,
-  discarded or already-merging branch, and `:nested_branch` when called inside `Ramal.run/2`.
+  index, resource, action, Ash error and `not_rolled_back` resources in `details` when a replayed action fails,
+  `:not_open` for a merged, discarded or already-merging branch, and `:nested_branch` when called inside `Ramal.run/2`.
 
   ## Example
 
@@ -166,10 +172,18 @@ defmodule Ramal.Merge do
            stale: stale
          }}
 
+      # A data layer that cannot run transactions (Ash.DataLayer.Ets) runs the function as it is, so a failure comes
+      # back inside `{:ok, _}` instead of as `{:error, _}`; see `Ash.DataLayer.transaction/5` in `lib/ash/data_layer/data_layer.ex`.
+      {:ok, {:error, error}} ->
+        {:error, to_error(error)}
+
       {:error, error} ->
-        {:error,
-         Error.find(error) || Error.new(:merge_failed, Exception.message(error), %{error: error})}
+        {:error, to_error(error)}
     end
+  end
+
+  defp to_error(error) do
+    Error.find(error) || Error.new(:merge_failed, Exception.message(error), %{error: error})
   end
 
   # -- staleness ----------------------------------------------------------------------------------------------------
@@ -254,9 +268,20 @@ defmodule Ramal.Merge do
           {:cont, {:ok, record_in(records, kind, ref, record), count + 1}}
 
         {:error, error} ->
-          {:halt, {:error, merge_failed(entry, index, error)}}
+          {:halt, {:error, merge_failed(entry, index, error, written_before(entries, index))}}
       end
     end)
+  end
+
+  # The resources the replay wrote to before the entry at `index` failed, restricted to the ones whose data layer has
+  # no transaction to roll those writes back with.
+  defp written_before(entries, index) do
+    for {{_type, resource, _action, _params, _actor, entry_opts, _at}, i} <- entries,
+        i < index,
+        not entry_opts[:nested?],
+        not Ash.DataLayer.data_layer_can?(resource, :transact),
+        uniq: true,
+        do: resource
   end
 
   defp replay_entry({type, resource, action, params, recorded_actor, entry_opts, _at}, opts) do
@@ -322,13 +347,32 @@ defmodule Ramal.Merge do
   defp record_in(records, :updated, ref, record), do: Overlay.put_updated(records, ref, record)
   defp record_in(records, :deleted, ref, _record), do: Overlay.put_deleted(records, ref)
 
-  defp merge_failed({type, resource, action, _params, _actor, _opts, _at}, index, error) do
+  defp merge_failed(
+         {type, resource, action, _params, _actor, _opts, _at},
+         index,
+         error,
+         not_rolled_back
+       ) do
     Error.new(
       :merge_failed,
       "replaying log entry #{index} (#{type} #{inspect(resource)}.#{action}) failed: #{Exception.message(error)}; " <>
-        "nothing was written and the branch is still open",
-      %{index: index, type: type, resource: resource, action: action, error: error}
+        written_note(not_rolled_back) <> "the branch is still open",
+      %{
+        index: index,
+        type: type,
+        resource: resource,
+        action: action,
+        error: error,
+        not_rolled_back: not_rolled_back
+      }
     )
+  end
+
+  defp written_note([]), do: "nothing was written and "
+
+  defp written_note(resources) do
+    "the rows already replayed into #{Enum.map_join(resources, ", ", &inspect/1)} stay written, " <>
+      "because its data layer cannot roll back, and "
   end
 
   # -- telemetry ----------------------------------------------------------------------------------------------------
