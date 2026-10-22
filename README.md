@@ -81,6 +81,19 @@ children = [
 `mix ramal.gen.migration` writes the migration for the `ramal_branches` table. Without `storage:` branches live in
 ETS and are lost when the supervisor stops.
 
+## Inspector
+
+[`ramal_live/`](https://github.com/agustinrojas1/ramal/tree/main/ramal_live) is a separate package with a LiveView page that shows the open and proposed branches as
+columns, each with its diff as before and after rows, and buttons to fork, merge, discard, approve and reject. It is
+mounted by your router inside your own `live_session`, so it uses your LiveView socket and JavaScript, and has no asset
+pipeline. Ramal itself never depends on it.
+
+```elixir
+ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub
+```
+
+See the [ramal_live README](https://github.com/agustinrojas1/ramal/blob/main/ramal_live/README.md) for the setup and [ADR 0014](docs/adr/0014-inspector-mounting.md) for why it is built this way.
+
 ## Name
 
 *Ramal* is Spanish for a railway branch line: it leaves the main line, serves its own stations, and often rejoins it. Pronounced rah-MAHL.

@@ -77,3 +77,27 @@ jobs:
       - run: mix deps.get
       - run: mix compile --warnings-as-errors
       - run: mix bench --quick --no-json
+
+  # The inspector is its own Mix project. Its suite runs on the ETS data layer, so it needs no database.
+  ramal-live:
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+    defaults:
+      run:
+        working-directory: ramal_live
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28.5"
+          elixir-version: "1.19.6"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ramal_live/deps
+            ramal_live/_build
+          key: ${{ runner.os }}-ramal-live-${{ hashFiles('ramal_live/mix.lock', 'mix.lock') }}
+          restore-keys: ${{ runner.os }}-ramal-live-
+      - run: mix deps.get
+      - run: mix ci
