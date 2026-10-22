@@ -16,6 +16,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - `ramal_live/`: a separate Mix project with a LiveView inspector for branches. `ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub` mounts it inside the host's own `live_session`, so it uses the host's LiveView socket and JavaScript; there is no asset pipeline, the CSS is inline and has light and dark themes. Open and proposed branches are columns with their `Ramal.diff/1` as before and after rows, and buttons to fork, merge, discard, approve and reject, each destructive one with an inline confirmation. `RamalLive.Broadcaster` turns Ramal's telemetry into PubSub messages so the columns update live. Core is unchanged. Decision in ADR 0015.
 
+- A "Security model and defaults" section in `SECURITY.md`, and ADR 0016: what Ramal enforces and what it leaves to the host, how stored state is treated, and how to mount the inspector in production. CI runs `mix hex.audit` for the library, `bench/` and `ramal_live/`.
+
+### Security
+
+- `ramal_live`: attributes marked `sensitive?: true` show as `[redacted]` in a branch's diff. The page printed every value, so a password hash or token written in a branch was visible to everyone who could open the inspector.
+- `ramal_live`: when the `:actor` function returns `nil` the page refuses fork, merge, discard, approve and reject. Before, a session without a user merged as the recorded actors with no decider.
+- `inspect/1` of a `Ramal.Branch` prints only its id, name, domain, status and creation time. The log holds the raw input of every captured write, which Ash does not redact, and a crash report prints the state of a branch process.
+- `Ramal.Storage.Codec.decode_state/2` returns `{:error, %Ramal.Error{reason: :storage}}` for a malformed stored state instead of raising, never echoes stored values in the error, rejects a module name that is not a name (`Elixir.../../x`) before it touches the code path, and rejects a stored struct whose module is not a struct.
+
 ### Fixed
 
 - `docs/ROADMAP.md` and `bench/README.md` no longer say the DAPLab article was unreachable; they link it and state how the benchmark differs from theirs.

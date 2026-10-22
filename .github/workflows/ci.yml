@@ -37,6 +37,8 @@ jobs:
           key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
           restore-keys: ${{ runner.os }}-mix-
       - run: mix deps.get
+      # Fails on a retired package or a published security advisory in mix.lock.
+      - run: mix hex.audit
       - run: mix ci
       - run: mix docs --warnings-as-errors
         env:
@@ -75,6 +77,7 @@ jobs:
           key: ${{ runner.os }}-bench-${{ hashFiles('bench/mix.lock') }}
           restore-keys: ${{ runner.os }}-bench-
       - run: mix deps.get
+      - run: mix hex.audit
       - run: mix compile --warnings-as-errors
       - run: mix bench --quick --no-json
 
@@ -100,4 +103,5 @@ jobs:
           key: ${{ runner.os }}-ramal-live-${{ hashFiles('ramal_live/mix.lock', 'mix.lock') }}
           restore-keys: ${{ runner.os }}-ramal-live-
       - run: mix deps.get
+      - run: mix hex.audit
       - run: mix ci
