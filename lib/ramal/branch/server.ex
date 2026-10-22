@@ -12,7 +12,7 @@ defmodule Ramal.Branch.Server do
   #     `timeout` ms, which is how idle detection works without timers.
   use GenServer
 
-  alias Ramal.{Branch, Error, Supervisor, Telemetry}
+  alias Ramal.{Branch, Error, Overlay, Supervisor, Telemetry}
 
   @max_attempts 6
 
@@ -129,6 +129,13 @@ defmodule Ramal.Branch.Server do
   def get(id), do: call(id, :get)
 
   @doc """
+  The overlay slice of one resource, for read patching. Only that slice crosses the process boundary, not the whole
+  overlay. Rejected unless the branch is open.
+  """
+  @spec slice(String.t(), module) :: {:ok, Overlay.slice()} | {:error, Error.t()}
+  def slice(id, resource), do: call(id, {:slice, resource})
+
+  @doc """
   Replaces the branch with the result of `fun`, which runs inside the process, so concurrent updates are serialised.
   `fun` receives the branch and returns the new branch. Rejected unless the branch is open.
   """
@@ -178,6 +185,14 @@ defmodule Ramal.Branch.Server do
 
   @impl true
   def handle_call(:get, _from, state), do: reply(state, {:ok, state.branch})
+
+  def handle_call({:slice, resource}, _from, state) do
+    if Branch.open?(state.branch) do
+      reply(state, {:ok, Overlay.slice(state.branch.overlay, resource)})
+    else
+      reply(state, {:error, not_open(state.branch)})
+    end
+  end
 
   def handle_call({:update, fun}, _from, state) do
     if Branch.open?(state.branch) do

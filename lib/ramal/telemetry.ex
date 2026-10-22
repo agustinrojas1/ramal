@@ -12,6 +12,8 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :branch, :unload]` | a branch process stopped after persisting (`reason`: `:idle` or `:shutdown`) |
   | `[:ramal, :branch, :discard]` | a branch was discarded |
   | `[:ramal, :branch, :too_large]` | a branch process was killed for exceeding `max_heap_size` |
+  | `[:ramal, :read, :patch]` | a read inside a branch was patched with the overlay (measurements: `base_rows`, `overlay_rows`, `result_rows`, `duration`) |
+  | `[:ramal, :read, :unpatched_aggregate]` | a read inside a branch selected an aggregate, which the database computes without the overlay |
 
   ## Example
 
@@ -33,6 +35,19 @@ defmodule Ramal.Telemetry do
   @spec branch_events() :: [[atom]]
   def branch_events do
     for step <- [:create, :load, :unload, :discard, :too_large], do: [:ramal, :branch, step]
+  end
+
+  @doc """
+  Emits a read event (`:patch` or `:unpatched_aggregate`) with the given measurements and metadata.
+
+  ## Example
+
+      iex> Ramal.Telemetry.read(:patch, %{base_rows: 3}, %{branch_id: "b1", resource: MyApp.Herd})
+      :ok
+  """
+  @spec read(atom, map, map) :: :ok
+  def read(step, measurements, metadata) do
+    :telemetry.execute([:ramal, :read, step], measurements, metadata)
   end
 
   @doc """

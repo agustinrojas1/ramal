@@ -15,6 +15,7 @@ lib/ramal/branch/server.ex   GenServer: one process per open branch
 lib/ramal/current.ex         the current branch id of the calling process (process dictionary and Ash shared context)
 lib/ramal/overlay.ex         the overlay map: apply, patch, diff (pure)
 lib/ramal/resource.ex        Spark extension: adds the read preparation and the write change
+lib/ramal/resource/transformer.ex  the extension's transformer (Spark needs a module for it)
 lib/ramal/preparation.ex     read side: strip limit/offset, patch results
 lib/ramal/change.ex          the Change struct that diff returns
 lib/ramal/capture.ex         write side: capture creates/updates/destroys into the overlay
