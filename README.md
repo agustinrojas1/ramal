@@ -51,7 +51,7 @@ On the BEAM a branch is a process with a map. That is the whole library.
 ## What it is not
 
 - Not a database branch. No schema changes inside a branch, no branch-local indexes.
-- Aggregates and calculations computed in the database do not see the overlay (`[:ramal, :read, :unpatched_aggregate]` is emitted so tests can notice). `Ramal.aggregate/4` gives the exact count, sum, min, max, avg or exists for a branch by reading the patched rows, at the cost of reading them.
+- Aggregates and calculations computed in the database do not see the overlay (`[:ramal, :read, :unpatched_aggregate]` is emitted so tests can notice). `Ramal.aggregate/4` gives the exact count, sum, min, max, avg or exists for a branch: the database aggregates the rows the branch did not touch and the branch reads the ones it did, so the cost follows the size of the overlay, not of the table.
 - Bulk actions and upserts are refused inside a branch, resources whose primary key the database generates cannot be created in one, and notifications are dropped unless a resource opts in with `notify_in_branch? true`.
 - Meant for OLTP-sized working sets: the rows a session touches, not an analytics table.
 

@@ -219,8 +219,14 @@ defmodule Ramal do
   `Ash.sum/3` and the like, so the same call works in both places.
 
   This exists because the aggregates Ash hands to the data layer (`Ash.count/2`, `aggregates do ... end`) never see the
-  overlay. Here the rows are read through the patched path and the aggregate is computed in Elixir (`Ramal.Aggregate`),
-  which makes it exact for the branch and as expensive as reading every matching row.
+  overlay. The answer is exact and its cost follows the overlay, not the table: the database aggregates the rows the
+  overlay does not touch, and the branch reads only the rows it does. A query with a `limit`, an `offset` or a
+  `distinct` is answered by reading every matching row instead, because the aggregate then depends on which rows come
+  first. See `Ramal.Aggregate`.
+
+  The rows the database aggregates are not read, so they are not fingerprinted and do not join the merge staleness
+  check (ADR 0013): a branch that only aggregated a row and never read or wrote it does not go stale when that row
+  changes.
 
   `kind` is `:count`, `:exists`, `:sum`, `:min`, `:max` or `:avg`; `field` is an attribute (not needed for `:count` and
   `:exists`). `opts` go to the read: `:actor`, `:authorize?`, `:tenant`, `:domain`. Returns `{:ok, value}` or the error
@@ -268,7 +274,26 @@ defmodule Ramal do
     end
   end
 
+  # With overlay entries the database aggregates the rows outside the overlay and the branch reads only the overlaid
+  # ones (Ramal.Aggregate). Without any, the base is the branch, so the data layer's answer is exact.
   defp in_branch(query, kind, field, opts) do
+    case Server.slice(Current.id(), query.resource) do
+      {:ok, slice} when map_size(slice) == 0 ->
+        outside_branch(query, kind, field, opts)
+
+      {:ok, slice} ->
+        if Ramal.Aggregate.applies?(query, map_size(slice)) do
+          Ramal.Aggregate.delta(query, kind, field, opts, Map.keys(slice))
+        else
+          read_every_row(query, kind, field, opts)
+        end
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp read_every_row(query, kind, field, opts) do
     with {:ok, records} <- Ash.read(query, opts) do
       {:ok, Ramal.Aggregate.compute(kind, field, records, query.resource)}
     end

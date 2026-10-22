@@ -4,8 +4,9 @@ defmodule Ramal.AggregateTest do
 
   require Ash.Query
 
+  alias Ash.DataLayer.Ets
   alias Ramal.Aggregate
-  alias Ramal.Test.Other.Note
+  alias Ramal.Test.Other.{Note, Slot}
 
   doctest Ramal.Aggregate
 
@@ -56,6 +57,62 @@ defmodule Ramal.AggregateTest do
 
       assert_raise ArgumentError, ~r/not an attribute/, fn ->
         Aggregate.compute(:sum, nil, [], Herd)
+      end
+    end
+  end
+
+  describe "Ramal.Aggregate.combine/5" do
+    test "an empty overlay leaves the database's answer, an empty base leaves the branch's" do
+      for {kind, base} <- [count: 4, exists: true, sum: 10, min: 2, max: 9, avg: {10, 4}] do
+        assert Aggregate.combine(kind, :head, Herd, base, []) ==
+                 Aggregate.combine(kind, :head, Herd, base, [])
+      end
+
+      assert Aggregate.combine(:count, nil, Herd, 4, []) == 4
+      assert Aggregate.combine(:sum, :head, Herd, 10, []) == 10
+      assert Aggregate.combine(:avg, :head, Herd, {10, 4}, []) == 2.5
+
+      rows = [%{head: 5}, %{head: 7}]
+      assert Aggregate.combine(:count, nil, Herd, 0, rows) == 2
+      assert Aggregate.combine(:sum, :head, Herd, nil, rows) == 12
+      assert Aggregate.combine(:min, :head, Herd, nil, rows) == 5
+      assert Aggregate.combine(:max, :head, Herd, nil, rows) == 7
+      assert Aggregate.combine(:avg, :head, Herd, {nil, 0}, rows) == 6.0
+      assert Aggregate.combine(:exists, nil, Herd, false, rows)
+    end
+
+    test "nothing on either side is nil, count zero and exists false" do
+      assert Aggregate.combine(:count, nil, Herd, 0, []) == 0
+      refute Aggregate.combine(:exists, nil, Herd, false, [])
+
+      for kind <- [:sum, :min, :max] do
+        assert Aggregate.combine(kind, :head, Herd, nil, []) == nil
+        assert Aggregate.combine(kind, :head, Herd, nil, [%{head: nil}]) == nil
+      end
+
+      assert Aggregate.combine(:avg, :head, Herd, {nil, 0}, [%{head: nil}]) == nil
+    end
+
+    test "nil values in the branch's rows are skipped, and do not count towards the average" do
+      rows = [%{head: nil}, %{head: 8}]
+      assert Aggregate.combine(:count, nil, Herd, 1, rows) == 3
+      assert Aggregate.combine(:sum, :head, Herd, 2, rows) == 10
+      assert Aggregate.combine(:avg, :head, Herd, {2, 1}, rows) == 5.0
+    end
+
+    test "decimals add as decimals and average to a float" do
+      rows = [%{score: Decimal.new("1.10")}, %{score: nil}]
+      base = Decimal.new("2.20")
+
+      assert Aggregate.combine(:sum, :score, Note, base, rows) == Decimal.new("3.30")
+      assert Aggregate.combine(:max, :score, Note, base, rows) == Decimal.new("2.20")
+      assert Aggregate.combine(:min, :score, Note, base, rows) == Decimal.new("1.10")
+      assert Aggregate.combine(:avg, :score, Note, {base, 1}, rows) == 1.65
+    end
+
+    test "refuses what compute/4 refuses" do
+      assert_raise ArgumentError, ~r/not an attribute/, fn ->
+        Aggregate.combine(:sum, :nope, Herd, 1, [])
       end
     end
   end
@@ -159,4 +216,133 @@ defmodule Ramal.AggregateTest do
       end
     end
   end
+
+  describe "Ramal.aggregate/4 reads only what the overlay touches" do
+    setup do
+      start_supervised!(Ramal.Supervisor)
+      seeds = Seeds.seed!()
+      {:ok, branch} = Ramal.branch(Farm)
+      {:ok, Map.merge(seeds, %{branch: branch})}
+    end
+
+    test "rows the branch only aggregated are not fingerprinted", %{branch: branch, herds: herds} do
+      Ramal.run!(branch, fn ->
+        Ash.update!(herds.r7, %{head: 31}, authorize?: false)
+        assert Ramal.aggregate!(Herd, :sum, :head, authorize?: false) == 91
+      end)
+
+      {:ok, stored} = Ramal.get(branch.id)
+      keys = for {{Herd, key}, _} <- stored.base, do: key
+      # the update read R7 to write it; R8 and R9 were only counted by the database
+      assert keys == [herds.r7.id]
+    end
+
+    test "a limit, an offset or a distinct is answered over the rows that come first", %{
+      branch: branch,
+      herds: herds
+    } do
+      Ramal.run!(branch, fn ->
+        Ash.update!(herds.r7, %{head: 99}, authorize?: false)
+
+        sorted = Ash.Query.sort(Herd, head: :desc)
+        assert Ramal.aggregate!(Ash.Query.limit(sorted, 2), :sum, :head, authorize?: false) == 134
+        assert Ramal.aggregate!(Ash.Query.limit(sorted, 2), :count, nil, authorize?: false) == 2
+
+        assert Ramal.aggregate!(Ash.Query.offset(sorted, 1), :sum, :head, authorize?: false) ==
+                 60
+      end)
+    end
+
+    test "a row that stops matching the filter, or starts to, moves between the two parts", %{
+      branch: branch,
+      herds: herds
+    } do
+      big = Ash.Query.filter(Herd, head >= 30)
+
+      Ramal.run!(branch, fn ->
+        # R7 leaves the filter, R9 enters it, R8 is untouched.
+        Ash.update!(herds.r7, %{head: 10}, authorize?: false)
+        Ash.update!(herds.r9, %{head: 50}, authorize?: false)
+
+        assert Ramal.aggregate!(big, :count, nil, authorize?: false) == 2
+        assert Ramal.aggregate!(big, :sum, :head, authorize?: false) == 85
+        assert Ramal.aggregate!(big, :min, :head, authorize?: false) == 35
+        assert Ramal.aggregate!(big, :max, :head, authorize?: false) == 50
+        assert_in_delta Ramal.aggregate!(big, :avg, :head, authorize?: false), 42.5, 0.0001
+      end)
+    end
+
+    test "an empty table and a branch that destroyed everything", %{branch: branch, herds: herds} do
+      Ramal.run!(branch, fn ->
+        for herd <- Map.values(herds), do: Ash.destroy!(herd, authorize?: false)
+
+        assert Ramal.aggregate!(Herd, :count, nil, authorize?: false) == 0
+        refute Ramal.aggregate!(Herd, :exists, nil, authorize?: false)
+
+        for kind <- [:sum, :min, :max, :avg] do
+          assert Ramal.aggregate!(Herd, kind, :head, authorize?: false) == nil
+        end
+      end)
+    end
+
+    test "policies filter the database's part too", %{branch: branch, herds: herds} do
+      Ramal.run!(branch, fn ->
+        Ash.update!(herds.r7, %{head: 31}, authorize?: false)
+        # the same answer as the read-based one for an actor the policies narrow down
+        {:ok, rows} = Ash.read(Herd, actor: %{role: :member})
+        expected = Aggregate.compute(:sum, :head, rows, Herd)
+        assert Ramal.aggregate!(Herd, :sum, :head, actor: %{role: :member}) == expected
+      end)
+    end
+  end
+
+  describe "Ramal.aggregate/4 with a composite primary key" do
+    setup do
+      start_supervised!(Ramal.Supervisor)
+      on_exit(fn -> Ets.stop(Slot) end)
+
+      for {day, bay, load, weight} <- [
+            {~D[2026-01-01], "a", 10, "1.5"},
+            {~D[2026-01-01], "b", 20, "2.5"},
+            {~D[2026-01-02], "a", 30, nil}
+          ] do
+        Ash.create!(
+          Slot,
+          %{day: day, bay: bay, load: load, weight: weight && Decimal.new(weight)},
+          authorize?: false
+        )
+      end
+
+      {:ok, branch} = Ramal.branch(Ramal.Test.Other)
+      {:ok, branch: branch}
+    end
+
+    test "the overlay's keys are matched as tuples, and every kind agrees with the read", %{
+      branch: branch
+    } do
+      Ramal.run!(branch, fn ->
+        Slot |> Ash.get!(%{day: ~D[2026-01-01], bay: "a"}) |> Ash.update!(%{load: 15})
+        Slot |> Ash.get!(%{day: ~D[2026-01-02], bay: "a"}) |> Ash.destroy!()
+        Ash.create!(Slot, %{day: ~D[2026-01-03], bay: "z", load: 5, weight: Decimal.new("0.5")})
+
+        {:ok, rows} = Ash.read(Slot)
+
+        for kind <- Aggregate.kinds(), field <- [:load, :weight] do
+          expected = Aggregate.compute(kind, field, rows, Slot)
+          actual = Ramal.aggregate!(Slot, kind, field)
+
+          assert same?(actual, expected),
+                 "#{kind} of #{field}: #{inspect(actual)} != #{inspect(expected)}"
+        end
+
+        assert Ramal.aggregate!(Slot, :count) == 3
+        assert Ramal.aggregate!(Slot, :sum, :load) == 40
+        assert Ramal.aggregate!(Slot, :sum, :weight) == Decimal.new("4.5")
+      end)
+    end
+  end
+
+  defp same?(%Decimal{} = a, %Decimal{} = b), do: Decimal.equal?(a, b)
+  defp same?(a, b) when is_float(a) and is_float(b), do: abs(a - b) < 1.0e-9
+  defp same?(a, b), do: a == b
 end
