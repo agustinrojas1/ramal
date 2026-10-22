@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="256" height="256" role="img" aria-label="Ramal mark: a branch line leaving a main line and rejoining it">
+  <!-- Ramal: main line (base data) in slate, the branch (a fork, as a process) in copper. -->
+  <path d="M6 44 H58" fill="none" stroke="#243044" stroke-width="6" stroke-linecap="round"/>
+  <path d="M18 44 C24 44 24 20 30 20 H38 C44 20 44 44 50 44" fill="none" stroke="#D98324" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="18" cy="44" r="5.5" fill="#243044"/>
+  <circle cx="50" cy="44" r="5.5" fill="#243044"/>
+  <circle cx="34" cy="20" r="5.5" fill="#D98324"/>
+</svg>
