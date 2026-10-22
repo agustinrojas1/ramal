@@ -28,7 +28,7 @@ primary keys, metadata and log options.
 - **Table:** `ramal_branches` with `id uuid`, `domain`, `name`, `status`, `state jsonb`, `inserted_at`, `updated_at`,
   an index on `(domain, status)`. `mix ramal.gen.migration` writes it into the host repo; the module and the task exist
   only when Ecto SQL is present. Ids must be UUIDs (what `Ramal.Branch.new/2` makes).
-- **`Ramal.Storage.list/3` returns `{:ok, branches} | {:error, error}`**: a database can fail where an ETS table cannot,
+- **`c:Ramal.Storage.list/3` returns `{:ok, branches} | {:error, error}`**: a database can fail where an ETS table cannot,
   and a row that no longer decodes must not be silently dropped.
 - A state version number (`"version": 1`) is stored; a newer one is refused rather than guessed at.
 

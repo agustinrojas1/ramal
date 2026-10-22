@@ -3,8 +3,10 @@
 Status: draft for milestone 0.1. Written 2026-10-22. This document is the current state of the design; the history of
 decisions lives in `docs/adr/`. Where this document and the code disagree, open an issue: one of them is wrong.
 
-Marks: **[confirm]** flags an Ash behaviour the implementer must verify against the locked version (Ash 3.36.x,
-AshPostgres 2.15.x) before relying on it, and record the finding in the module doc or an ADR.
+Marks: **[confirm]** flagged an Ash behaviour the implementer had to verify against the locked version before relying
+on it. Every one in this document has been resolved for 0.1, into a module doc or an ADR (the decision log below links
+them); a new mark means a new unverified assumption and should be resolved the same way. Locked versions: Ash 3.37,
+AshPostgres 2.15, Spark 2.7.
 
 ## 1. Goal and non-goals
 
@@ -52,7 +54,7 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
 
 - `Ramal.Supervisor` (a `DynamicSupervisor` plus a `Registry` keyed by branch id). The host adds it to its tree:
   `{Ramal.Supervisor, storage: Ramal.Storage.Postgres, repo: MyApp.Repo}`.
-- `Ramal.Branch.Server` is a `GenServer` per open branch. State is the `%Ramal.Branch{}`. It owns the overlay and the
+- Ramal.Branch.Server is a `GenServer` per open branch. State is the `%Ramal.Branch{}`. It owns the overlay and the
   log; every write inside the branch is a `GenServer.call` to it, every read asks it for the overlay slice of one
   resource. Reads of the overlay are frequent and small; if they become a bottleneck, the server publishes the
   overlay to an ETS table it owns. Not before the benchmark says so.
@@ -65,7 +67,7 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
   `[:ramal, :branch, :too_large]` and marks the branch, and the next use returns `{:error, :branch_too_large}` until
   the branch is discarded (ADR 0003).
 - "Current branch" is process-local. `Ramal.run(branch, fun)` stores the branch id in the process dictionary
-  (`Ramal.Current`) for the duration of `fun`, restoring the previous state afterwards even when `fun` raises. The
+  (Ramal.Current) for the duration of `fun`, restoring the previous state afterwards even when `fun` raises. The
   first hook that runs also copies the id into the query's or changeset's Ash `shared` context, because Ash runs some
   loads in tasks that do not inherit the process dictionary. Tasks the host spawns inside `fun` do not inherit the
   branch; `Ramal.run/2` inside the task propagates it explicitly. Resolved in ADR 0002.
@@ -77,7 +79,7 @@ preparation to every read action and one global change to every create, update a
 `ramal do ... end` section with `branchable? true` (default) so a resource can opt out (a `ramal_branches` table must
 never be branchable, for example). `Ramal.branch/2` refuses a domain with no branchable resource (`:no_branchable_resources`). That check runs when the
 branch is created, not as a compile-time domain verifier: a verifier would need the domain to opt into an extension
-of its own, which 0.1 does not ask of the host. The transformer is `Ramal.Resource.Transformer` (`@moduledoc false`);
+of its own, which 0.1 does not ask of the host. The transformer is Ramal.Resource.Transformer (`@moduledoc false`);
 Spark needs a module for it.
 
 Both hooks are no-ops when no branch is current. A test per hook proves that: the same action, with and without the
@@ -99,14 +101,14 @@ This is the section that decides correctness. In a read action's preparation, wh
    - add every `:created` and `:updated` overlay record that is not already present and that **matches the query's
      filter**, evaluated in Elixir with `Ash.Filter.Runtime.filter_matches/4` (domain, records, filter, opts), once for the whole
      slice. An updated row that no longer matches the filter is dropped;
-   - re-apply the sort in Elixir with `Ash.Actions.Sort.runtime_sort/3` (it lives in `Ash.Actions.Sort`, not
+   - re-apply the sort in Elixir with Ash.Actions.Sort.runtime_sort/3 (it lives in Ash.Actions.Sort, not
      `Ash.Sort`, and sorts a list, not pairs), then the remembered `offset` and `limit`. `Ramal.Overlay.patch/4`
      does the merge as a pure function and supplies the filter predicate's rows; the preparation calls it without
      `:sort`, `:offset` and `:limit` and applies those itself;
    - trim overlay records to the query's `select`, since an overlay record is a whole struct and a base row carries
      only the selected attributes (the primary key is always kept);
-   - record a fingerprint (section 7) for every base row that survived or was replaced. Fingerprints arrive with
-     issue 6 of milestone 0.1; until then the preparation records none.
+   - record a fingerprint (section 7) for every base row the data layer returned, before patching (ADR 0006); a read
+     that selects some attributes records none.
 3. **Loads and relationships:** Ash loads relationships through further read actions on the related resource, so they
    go through the same preparation. Confirmed in Ash 3.37 and covered by tests: the default and `lazy?: true` paths
    of `Ash.load`, loads inside a read, and `Ash.get/3` (the not-found check runs after the `after_action` hooks, so a
@@ -277,12 +279,15 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 ## 11. Open questions
 
 1. Several domains per branch, or one branch per domain? 0.1: one domain. Revisit when a real host needs more.
-2. Should `run/2` be reentrant (a branch inside a branch)? 0.1: no, `{:error, :nested_branch}`.
+2. Should `run/2` be reentrant (a branch inside a branch)? 0.1: no, `{:error, %Ramal.Error{reason: :nested_branch}}`; `merge/2` refuses the same way.
 3. Where do many-to-many join resources sit in the overlay? They are resources, so they get overlay entries like any
    other; test it.
 4. ~~Does the read preparation need to handle `Ash.Query.select`?~~ Answered: Ash always selects the primary key, and
    the preparation trims overlay records to the select (section 4.1).
-5. Should fingerprints cover rows read through relationship loads? Yes if cheap; measure.
+5. Should fingerprints cover rows read through relationship loads? 0.1: yes, because they are reads like any other
+   (ADR 0006). The cost of hashing every row a read returns has not been measured; `bench/` will, in 0.4.
+6. Multitenancy: merge's staleness read runs without a tenant (ADR 0007). A multitenant host needs a design pass.
+7. Should `Ramal.Storage.Postgres` take a host callback for actors? 0.1: no, actors are stored as the term (ADR 0008).
 
 ## 12. Decision log (summary; details in `docs/adr/`)
 

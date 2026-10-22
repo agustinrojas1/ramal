@@ -38,3 +38,6 @@ jobs:
           restore-keys: ${{ runner.os }}-mix-
       - run: mix deps.get
       - run: mix ci
+      - run: mix docs --warnings-as-errors
+        env:
+          MIX_ENV: dev

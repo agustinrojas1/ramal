@@ -3,7 +3,7 @@ defmodule Ramal.Branch.Server do
   # One process per open branch. It owns the branch struct (overlay and log) and serialises writes to it.
   #
   # Lifecycle: started on creation or on demand from storage; after `idle_timeout` without a call it persists
-  # through the storage and stops; any public function given its id starts it again (see `Ramal.Branch.Server.call/2`).
+  # through the storage and stops; any public function given its id starts it again (see call/2 below).
   #
   # Verified against the locked OTP/Elixir:
   #   * `Process.flag(:max_heap_size, %{size: n, kill: true, error_logger: false})` kills the process with exit reason

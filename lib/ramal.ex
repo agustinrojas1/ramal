@@ -6,6 +6,8 @@ defmodule Ramal do
   data patched with the branch's changes, and writes land in the overlay instead of the data layer. A branch can
   be forked, diffed, merged back through the application's own actions, or discarded.
 
+  ## Example
+
   Add `Ramal.Supervisor` to the application's supervision tree first, then:
 
       {:ok, branch} = Ramal.branch(MyApp.Farm, name: "move herd R7 to paddock L18")

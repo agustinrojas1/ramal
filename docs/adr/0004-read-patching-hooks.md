@@ -15,7 +15,7 @@ against Ash 3.37 (`deps/ash`).
   rows before relationship loads, runtime calculations and the not-found check of `Ash.get/3`, so all of them see
   the patched rows.
 - **Filter and sort:** `Ash.Filter.Runtime.filter_matches/4` evaluates the query's filter on the overlay records in
-  one call. `Ash.Actions.Sort.runtime_sort/3` sorts a list and has no comparator form, so the preparation calls
+  one call. Ash.Actions.Sort.runtime_sort/3 sorts a list and has no comparator form, so the preparation calls
   `Overlay.patch/4` without `:sort`, `:offset` and `:limit`, then sorts, drops and takes itself. The design's plan to
   pass a comparator to `patch/4` stays valid for callers that have one; the preparation is not one.
 - **No stripping without overlay entries:** when the overlay has nothing for the resource, the query keeps its limit
@@ -34,5 +34,5 @@ against Ash 3.37 (`deps/ash`).
   Documented, not fixed, in 0.1.
 - `authorize_results` checks do not run on overlay records; policy filters do, through the query's filter.
 - Aggregates and database-computed calculations ignore the overlay and emit `[:ramal, :read, :unpatched_aggregate]`.
-- The hooks call the branch server once per read (`Ramal.Branch.Server.slice/2`), and only the slice of that
+- The hooks call the branch server once per read (Ramal.Branch.Server.slice/2), and only the slice of that
   resource crosses the process boundary.

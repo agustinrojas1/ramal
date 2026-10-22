@@ -19,7 +19,7 @@ defmodule Ramal.Capture do
       and carry on with relationship management and the after-action hooks.
     * An update runs `fully_atomic_changeset` first and, when it succeeds, updates the row in the database without
       calling any hook. `atomic/3` therefore reports `{:not_atomic, reason}` while a branch is current, and
-      `Ramal.Resource.Transformer` sets `require_atomic? false` so Ash falls back to the path above.
+      the resource transformer sets `require_atomic? false` so Ash falls back to the path above.
     * Bulk actions call the data layer directly and never look at the result, so they are refused. Upserts too:
       the branch cannot know whether the row exists in the base.
 

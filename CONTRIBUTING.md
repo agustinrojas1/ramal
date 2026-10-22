@@ -13,7 +13,7 @@ mix ci                           # format, compile --warnings-as-errors, credo, 
 
 ## Ground rules
 
-Everything in [CLAUDE.md](CLAUDE.md) applies to humans too: small branches, one topic per PR, `mix ci` green, a changelog line for every user-facing change, docs in the same PR as the code.
+Everything in [CLAUDE.md](https://github.com/agustinrojas1/ramal/blob/main/CLAUDE.md) applies to humans too: small branches, one topic per PR, `mix ci` green, a changelog line for every user-facing change, docs in the same PR as the code.
 
 ## Reporting a bug
 
