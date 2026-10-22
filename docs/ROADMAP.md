@@ -40,7 +40,8 @@ README runs as written; every **[confirm]** mark in `docs/DESIGN.md` is resolved
   focuses on, a Monte Carlo tree search that keeps forking promising partial states, mutates, queries and prunes. It
   runs against Ramal and two plain-Postgres baselines, including the cases where Ramal loses. Implemented; see
   `bench/README.md`. Ours is a fixed-shape tree search, not MCTS, and not a reproduction of their harness
-  (BranchBench); it quotes none of their figures. Nothing in the README cites a number this project cannot reproduce.
+  (BranchBench); their reported figures are cited as theirs in `bench/README.md` and never placed beside ours. Nothing in
+  the README cites a number this project cannot reproduce.
 
 ## 1.0
 
