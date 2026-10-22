@@ -23,6 +23,16 @@ Open an issue with the resource definition, the action, the call inside the bran
 
 Open an issue first. If we agree, the PR adds an ADR under `docs/adr/` and updates `docs/DESIGN.md`.
 
+## Releasing
+
+A maintainer with a Hex account does this; CI has no Hex key.
+
+1. A PR bumps `@version` in `mix.exs` and turns `Unreleased` in `CHANGELOG.md` into the version with its date.
+2. After it merges, tag the merge commit `vX.Y.Z` (the docs link to source at that tag).
+3. `mix hex.build` and read the file list and dependencies it prints, then `mix hex.publish`. The package ships `lib`,
+   `mix.exs`, the README, the license, the changelog and the logo; nothing under `priv/` or `test/`.
+4. Replace "Not on Hex yet" in the README install section.
+
 ## Code of conduct
 
 Be kind, be specific, assume good faith. Maintainers will remove anyone who is not.
