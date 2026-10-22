@@ -86,5 +86,13 @@ defmodule Ramal.Test.Other.Note do
   attributes do
     uuid_primary_key(:id)
     attribute(:text, :string, public?: true)
+    # The storage codec tests need attribute types with a stored form of their own.
+    attribute(:status, :atom, constraints: [one_of: [:draft, :published]], public?: true)
+    attribute(:tags, {:array, :string}, public?: true)
+    attribute(:payload, :map, public?: true)
+    attribute(:score, :decimal, public?: true)
+    attribute(:scheduled_on, :date, public?: true)
+    attribute(:blob, :binary, public?: true)
+    attribute(:anything, :term, public?: true)
   end
 end
