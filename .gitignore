@@ -16,3 +16,5 @@ ramal-*.tar
 # The benchmark is its own Mix project
 /bench/_build/
 /bench/deps/
+/bench/results/*
+!/bench/results/published/

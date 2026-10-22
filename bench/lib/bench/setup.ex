@@ -1,0 +1,65 @@
+defmodule Bench.Setup do
+  @moduledoc false
+  # Creates the database and the two tables the benchmark uses, and seeds `bench_items`.
+  #
+  # `bench_items` is the base. `bench_deltas` is the relational baseline's per-state overlay (see Bench.Baseline.Delta).
+
+  alias Ecto.Adapters.SQL
+
+  @spec run(pos_integer, pos_integer) :: %{ids: [String.t()], buckets: pos_integer}
+  def run(rows, buckets) do
+    config = Bench.Repo.config()
+    _ = Bench.Repo.__adapter__().storage_up(config)
+
+    {:ok, _} = Bench.Repo.start_link()
+
+    for sql <- [
+          "DROP TABLE IF EXISTS bench_deltas",
+          "DROP TABLE IF EXISTS bench_items",
+          """
+          CREATE TABLE bench_items (
+            id uuid PRIMARY KEY,
+            name text NOT NULL,
+            score integer NOT NULL,
+            bucket integer NOT NULL
+          )
+          """,
+          "CREATE INDEX bench_items_bucket ON bench_items (bucket)",
+          """
+          CREATE TABLE bench_deltas (
+            state integer NOT NULL,
+            id uuid NOT NULL,
+            name text NOT NULL,
+            score integer NOT NULL,
+            bucket integer NOT NULL,
+            deleted boolean NOT NULL DEFAULT false,
+            PRIMARY KEY (state, id)
+          )
+          """,
+          "CREATE INDEX bench_deltas_bucket ON bench_deltas (state, bucket)"
+        ] do
+      SQL.query!(Bench.Repo, sql, [])
+    end
+
+    SQL.query!(
+      Bench.Repo,
+      """
+      INSERT INTO bench_items (id, name, score, bucket)
+      SELECT gen_random_uuid(), 'item-' || i, (i * 7919) % 1000, i % $1
+      FROM generate_series(1, $2) AS i
+      """,
+      [buckets, rows]
+    )
+
+    SQL.query!(Bench.Repo, "ANALYZE bench_items", [])
+
+    %{rows: rows} = SQL.query!(Bench.Repo, "SELECT id FROM bench_items ORDER BY name", [])
+    %{ids: Enum.map(rows, fn [id] -> Ecto.UUID.load!(id) end), buckets: buckets}
+  end
+
+  @spec postgres_version() :: String.t()
+  def postgres_version do
+    %{rows: [[version]]} = SQL.query!(Bench.Repo, "SELECT version()", [])
+    version
+  end
+end

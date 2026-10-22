@@ -316,7 +316,9 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 4. ~~Does the read preparation need to handle `Ash.Query.select`?~~ Answered: Ash always selects the primary key, and
    the preparation trims overlay records to the select (section 4.1).
 5. Should fingerprints cover rows read through relationship loads? 0.1: yes, because they are reads like any other
-   (ADR 0006). The cost of hashing every row a read returns has not been measured; `bench/` will, in 0.4.
+   (ADR 0006). Measured by `bench/` (20,000 rows, one 4-core machine): hashing costs about 1.4 microseconds per row, and
+   a read of 2,000 rows inside an empty branch takes about 60% longer than the same Ash read outside one, the hash and
+   the call that stores the fingerprints together. Kept for now; the numbers and their limits are in `bench/README.md`.
 6. ~~Multitenancy~~ Decided for 0.1: refused inside a branch with `:multitenancy_unsupported` (ADR 0009). Supporting it puts
    the tenant in the overlay key and the base ref; revisit when a host needs it.
 7. ~~Should `Ramal.Storage.Postgres` take a host callback for actors?~~ No: actors are stored as the term, with the

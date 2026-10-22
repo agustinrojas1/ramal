@@ -41,3 +41,39 @@ jobs:
       - run: mix docs --warnings-as-errors
         env:
           MIX_ENV: dev
+
+  # Compiles the benchmark and runs its smallest profile, so that it cannot rot. No timing is asserted or recorded.
+  bench-smoke:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ramal
+          POSTGRES_PASSWORD: ramal
+          POSTGRES_DB: ramal_bench
+        ports: ["5435:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: bench
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28.5"
+          elixir-version: "1.19.6"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            bench/deps
+            bench/_build
+          key: ${{ runner.os }}-bench-${{ hashFiles('bench/mix.lock') }}
+          restore-keys: ${{ runner.os }}-bench-
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix bench --quick --no-json
