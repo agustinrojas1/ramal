@@ -15,7 +15,9 @@ lib/ramal/branch/server.ex   GenServer: one process per open branch
 lib/ramal/overlay.ex         the overlay map: apply, patch, diff (pure)
 lib/ramal/resource.ex        Spark extension: adds the read preparation and the write change
 lib/ramal/preparation.ex     read side: strip limit/offset, patch results
-lib/ramal/change.ex          write side: capture creates/updates/destroys into the overlay
+lib/ramal/change.ex          the Change struct that diff returns
+lib/ramal/capture.ex         write side: capture creates/updates/destroys into the overlay
+lib/ramal/error.ex           the Error exception
 lib/ramal/storage.ex         behaviour + Ramal.Storage.ETS, Ramal.Storage.Postgres
 lib/ramal/merge.ex           staleness check and replay
 lib/ramal/telemetry.ex       event names and helpers
