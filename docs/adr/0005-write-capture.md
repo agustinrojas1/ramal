@@ -38,7 +38,7 @@ Design section 4.2 planned to capture writes in `around_action`, to fall back fr
 
 ## Consequences
 
-- An update that changes no attribute writes nothing to the overlay. It is logged since [ADR 0013](0013-many-to-many-join-resources.md),
+- An update that changes no attribute writes nothing to the overlay. It is logged since [ADR 0014](0014-many-to-many-join-resources.md),
   which explains why.
 - A create with an explicit primary key that exists in the base is not detected, and updating a row the branch already
   deleted resurrects it; a database would raise.

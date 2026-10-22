@@ -119,8 +119,9 @@ This is the section that decides correctness. In a read action's preparation, wh
 4. **Aggregates and calculations:** data-layer aggregates (`count`, `sum`, `exists`) and calculations with
    expressions are computed on the base and do not see the overlay. 0.1 documents this and emits a
    `[:ramal, :read, :unpatched_aggregate]` telemetry event when a query inside a branch selects one, so a host can
-   detect it in tests. `Ramal.aggregate/4` (ADR 0011) gives the exact answer for the common kinds by reading the patched
-   rows and computing in Elixir; aggregates and calculations declared on resources stay unpatched.
+   detect it in tests. `Ramal.aggregate/4` (ADR 0011, ADR 0013) gives the exact answer for the common kinds: the database
+   aggregates the rows the overlay does not touch and the branch reads only the ones it does; aggregates and
+   calculations declared on resources stay unpatched.
 5. **Pagination:** Ash adds a page's limit and offset after the `before_action` hooks, so a paginated read is paged
    by the database and patched afterwards. Deleted rows shorten a page, rows created in the branch can be missing
    from or misplaced across pages, and `count` is the database's. 0.1 documents this. Patching the whole list and
@@ -129,7 +130,7 @@ This is the section that decides correctness. In a read action's preparation, wh
    results (`authorize_results`) run before the `after_action` hooks and so do not see overlay records.
 7. **Many-to-many:** the join resource is a resource like any other and gets its own overlay entries, keyed by its
    primary key (a tuple when the key is the pair of foreign keys). Covered by tests with a join resource that has such a
-   key ([ADR 0013](adr/0013-many-to-many-join-resources.md)). A read of the join resource and a load of its
+   key ([ADR 0014](adr/0014-many-to-many-join-resources.md)). A read of the join resource and a load of its
    `has_many` join relationship see the branch's links, and a many_to_many load sees destination rows the branch
    created, updated or destroyed. Two limits follow from how Ash and AshPostgres work, and 0.2 documents them:
    - AshPostgres loads a many_to_many with one SQL query that joins the join table in the database
@@ -161,7 +162,7 @@ This is the section that decides correctness. In a read action's preparation, wh
   `key`, `tenant` and `nested?`. A write made by a hook of another captured action (or by a managed relationship) is
   `nested?: true`, and merge skips it because replaying the outer action runs the hook again. An update that changes
   no attribute is logged too, with the row left as it was and out of `diff/1`, because its hooks and managed
-  relationships can write other rows and only the outer action can replay them (ADR 0013).
+  relationships can write other rows and only the outer action can replay them (ADR 0014).
 - A failing action takes back its own writes and those of the actions its hooks ran.
 - **Notifications** are dropped by default. `Ramal.run/2` runs the function inside `Ash.transaction([], ...,
   return_notifications?: true)` and sends only the notifications of resources with `notify_in_branch? true`.
@@ -330,7 +331,7 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 1. Several domains per branch, or one branch per domain? 0.1: one domain. Revisit when a real host needs more.
 2. Should `run/2` be reentrant (a branch inside a branch)? 0.1: no, `{:error, %Ramal.Error{reason: :nested_branch}}`; `merge/2` refuses the same way.
 3. ~~Where do many-to-many join resources sit in the overlay?~~ Answered: they are resources, so they get overlay
-   entries like any other, keyed by the join resource's primary key (section 4.1 point 7, ADR 0013). A many_to_many
+   entries like any other, keyed by the join resource's primary key (section 4.1 point 7, ADR 0014). A many_to_many
    load and `manage_relationship` do not see links the branch changed; that is the open part, for a later version.
 4. ~~Does the read preparation need to handle `Ash.Query.select`?~~ Answered: Ash always selects the primary key, and
    the preparation trims overlay records to the select (section 4.1).
@@ -365,4 +366,5 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 16 | A stored actor that is an Ash record loses its `sensitive?` attributes; other actors are stored as they are | The branch table should not hold password hashes or tokens, and Ash already has the flag. A serializer callback has one use. [ADR 0010](adr/0010-stored-actors.md) |
 | 17 | `Ramal.aggregate/4` reads the patched rows and computes the aggregate in Elixir; `Ramal.Aggregate` holds the pure part | The data layer's aggregates cannot see the overlay, and Ash offers no hook to make them. Exact for the branch, as expensive as reading the matching rows. [ADR 0011](adr/0011-branch-aggregates.md) |
 | 18 | A proposal is a branch status (`:proposed`, `:rejected`) and a `proposal` field of the stored state; approving is merging | A second table and storage API for one record per branch would duplicate what the branch row already persists, and the decision must land in the same step as the merge. [ADR 0012](adr/0012-proposals.md) |
-| 19 | A many_to_many join resource gets overlay entries like any resource; an update that changes no attribute is logged; a many_to_many load and `manage_relationship` do not see links the branch changed (documented limit) | Hooks and managed relationships write nested rows that only the outer action can replay; AshPostgres loads the relationship in SQL over the base join table. [ADR 0013](adr/0013-many-to-many-join-resources.md) |
+| 19 | `Ramal.aggregate/4` aggregates in the database the rows outside the overlay, reads the overlaid ones through the patched path and joins the two; limit, offset and distinct keep the read-every-row path; the database's part is not fingerprinted | Reading every row made scoring a state cost a table scan (measured in `bench/`). The delta is exact and its cost follows the overlay. [ADR 0013](adr/0013-aggregate-delta.md) |
+| 20 | A many_to_many join resource gets overlay entries like any resource; an update that changes no attribute is logged; a many_to_many load and `manage_relationship` do not see links the branch changed (documented limit) | Hooks and managed relationships write nested rows that only the outer action can replay; AshPostgres loads the relationship in SQL over the base join table. [ADR 0014](adr/0014-many-to-many-join-resources.md) |

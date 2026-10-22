@@ -1,4 +1,4 @@
-# 0013. Many-to-many join resources
+# 0014. Many-to-many join resources
 
 ## Context
 

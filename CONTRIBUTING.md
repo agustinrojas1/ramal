@@ -35,4 +35,4 @@ A maintainer with a Hex account does this; CI has no Hex key.
 
 ## Code of conduct
 
-Be kind, be specific, assume good faith. Maintainers will remove anyone who is not.
+Participation is governed by the [Code of Conduct](https://github.com/agustinrojas1/ramal/blob/main/CODE_OF_CONDUCT.md): be kind, be specific, assume good faith. Maintainers will remove anyone who is not. Security reports go through [SECURITY.md](https://github.com/agustinrojas1/ramal/blob/main/SECURITY.md), never a public issue.

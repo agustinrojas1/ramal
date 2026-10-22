@@ -182,7 +182,7 @@ defmodule Ramal.ManyToManyTest do
 
     # Known limit, DESIGN section 4.1 point 7. `append_and_remove` unrelates the missing destinations with
     # `Ash.bulk_destroy/4` on the join resource (`bulk_delete_unused_unrelate/8` in
-    # deps/ash/lib/ash/actions/managed_relationships.ex), and a branch refuses bulk actions (ADR 0001).
+    # deps/ash/lib/ash/actions/managed_relationships.ex), and a branch refuses bulk actions (ADR 0005).
     test "append_and_remove is refused when it has a link to remove, and writes nothing", %{
       branch: branch,
       herds: herds,
