@@ -184,7 +184,7 @@ This is the section that decides correctness. In a read action's preparation, wh
 
 `Ramal.Error` has `reason` (an atom from a documented list), `message`, and `details` (a map). Reasons in 0.1:
 `:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:upsert_unsupported`, `:branch_too_large`,
-`:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`.
+`:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`, `:merge_failed`.
 
 ## 6. Persistence
 
@@ -208,17 +208,23 @@ rehydrated on merge by a host callback; without a callback, merge requires an ex
 Every base row a branch reads or writes gets a fingerprint: `:erlang.phash2` of its attribute map at first touch,
 keyed by `{resource, key}`. On `merge/2`:
 
-1. Refuse unless `status == :open`.
-2. Re-read every fingerprinted row from the base (one query per resource, `filter: key in ^keys`). A row whose hash
-   differs, or that no longer exists, is stale.
+1. Refuse inside `Ramal.run/2` (`:nested_branch`) and claim the branch: it must be `:open` and not already merging.
+   While claimed, the branch process refuses every other call, so nothing is written between check and replay.
+2. Inside one `Ash.transact/3`, re-read every fingerprinted row from the base (one query per resource, key filter,
+   `FOR UPDATE` where the data layer supports it). A row whose hash differs is `:changed`; one that no longer exists
+   is `:deleted`.
 3. Apply `on_stale`: `:error` (default) returns `{:error, %Ramal.Error{reason: :stale, details: %{rows: [...]}}}`;
    `:ignore` continues; a function receives the stale rows and returns `:continue` or `:abort`.
-4. Inside one data-layer transaction, replay the log in order through the real actions with the real data layer
-   (no branch current), with the given `actor` and `authorize?`. Any failure aborts the transaction and returns
-   `{:error, ...}` with the failing log entry's index. Validations run again, so a branch that was valid against a
-   base that has since moved can legitimately fail here; that is the feature.
+4. In the same transaction, replay the log oldest first through the real actions with the real data layer (no branch
+   current), skipping entries logged by hooks of other captured actions (`nested?: true`). The actor is the `actor`
+   option if given, else the one recorded with each entry. A replayed create keeps the primary key it had in the
+   branch. Any failure rolls the transaction back and returns `:merge_failed` with the log entry's `index`. Validations
+   run again, so a branch that was valid against a base that has since moved can legitimately fail here; that is the
+   feature.
 5. Mark the branch `:merged`, persist, stop the process. Return a `Ramal.Merge.Result` with the records the replay
-   produced, keyed like the overlay.
+   produced, keyed like the overlay. On failure the claim is released and the branch stays open.
+
+Limits and the reasons for these choices are in [ADR 0007](adr/0007-merge.md).
 
 `mode: :replay` is the only merge mode in 0.1. A future `:apply` mode would write the overlay's final state directly,
 skipping action logic; it is faster and less safe, and needs its own ADR.
@@ -241,7 +247,7 @@ skipping action logic; it is faster and less safe, and needs its own ADR.
 Events, all with `%{branch_id, domain}` metadata:
 
 `[:ramal, :branch, :create]`, `[:ramal, :branch, :fork]`, `[:ramal, :branch, :unload]`, `[:ramal, :branch, :load]`,
-`[:ramal, :branch, :discard]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span),
+`[:ramal, :branch, :discard]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
 `[:ramal, :read, :patch]` with measurements `%{base_rows, overlay_rows, result_rows, duration}`,
 `[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource, action, nested?}`.
 
@@ -291,3 +297,4 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 10 | Reads are patched in `before_action`/`after_action` hooks; nothing is stripped when the overlay has no entry for the resource; the preparation sorts and pages the list itself | The hooks are where Ash allows changing the data-layer query and seeing its rows; `runtime_sort` takes a list, not a comparator. [ADR 0004](adr/0004-read-patching-hooks.md) |
 | 11 | Writes are captured by a last `before_action` that sets the result; atomic updates fall back through `atomic/3` and `require_atomic? false`; every bulk action and upsert action is refused; notifications are dropped unless the resource opts in; a failed action undoes its writes; `Ramal.Error` is a Splode error | `around_action` cannot skip the data layer by itself, the atomic path never reaches a hook, and Ash flattens other exceptions to strings. [ADR 0005](adr/0005-write-capture.md) |
 | 12 | `base` holds `%{fingerprint, snapshot}` per touched row; every read fingerprints the base rows it returns, except when it selects some attributes; a fork copies everything and records `forked_from` | Staleness needs the state at first read, diff needs the state at first write, and a partial row has no comparable hash. [ADR 0006](adr/0006-fingerprints-and-fork.md) |
+| 13 | Merge claims the branch first, checks staleness inside the replay transaction with row locks where possible, and forces created rows to keep their branch primary keys; entries logged by hooks are not replayed | Writes between check and replay would be lost, a check outside the transaction races, and later log entries name rows by key. [ADR 0007](adr/0007-merge.md) |

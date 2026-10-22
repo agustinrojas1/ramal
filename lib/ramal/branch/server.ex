@@ -165,6 +165,22 @@ defmodule Ramal.Branch.Server do
   def write(id, fun) when is_function(fun, 1), do: call(id, {:write, fun})
 
   @doc """
+  Claims the branch for a merge and returns it. While claimed the branch refuses reads of its overlay, writes, discards
+  and a second claim, so two merges cannot replay the same log. The claim ends with `finish_merge/2`, or when the
+  caller dies.
+  """
+  @spec begin_merge(String.t()) :: {:ok, Branch.t()} | {:error, Error.t()}
+  def begin_merge(id), do: call(id, :begin_merge)
+
+  @doc """
+  Ends the claim of `begin_merge/1`. `:merged` marks the branch merged, persists it and stops the process;
+  `:aborted` only releases the claim.
+  """
+  @spec finish_merge(String.t(), :merged | :aborted) :: :ok | {:error, Error.t()}
+  def finish_merge(id, outcome) when outcome in [:merged, :aborted],
+    do: call(id, {:finish_merge, outcome})
+
+  @doc """
   Discards the branch: its process persists the discarded state and stops.
 
   A branch whose process was killed for being too large has no process to ask, so it is discarded from its last
@@ -202,39 +218,68 @@ defmodule Ramal.Branch.Server do
     watch(branch)
     Telemetry.branch(:load, branch)
 
-    {:ok, %{branch: branch, config: config, stop: nil}, config.idle_timeout}
+    {:ok, %{branch: branch, config: config, stop: nil, merging: nil}, config.idle_timeout}
   end
 
   @impl true
   def handle_call(:get, _from, state), do: reply(state, {:ok, state.branch})
 
   def handle_call({:slice, resource}, _from, state) do
-    if Branch.open?(state.branch) do
+    if usable?(state) do
       reply(state, {:ok, Overlay.slice(state.branch.overlay, resource)})
     else
-      reply(state, {:error, not_open(state.branch)})
+      reply(state, {:error, unavailable(state)})
     end
   end
 
   def handle_call({:update, fun}, _from, state) do
-    if Branch.open?(state.branch) do
+    if usable?(state) do
       branch = fun.(state.branch)
       reply(%{state | branch: branch}, {:ok, branch})
     else
-      reply(state, {:error, not_open(state.branch)})
+      reply(state, {:error, unavailable(state)})
     end
   end
 
   def handle_call({:write, fun}, _from, state) do
-    if Branch.open?(state.branch) do
+    if usable?(state) do
       {reply, branch} = fun.(state.branch)
       reply(%{state | branch: branch}, {:ok, reply, %{id: branch.id, domain: branch.domain}})
     else
-      reply(state, {:error, not_open(state.branch)})
+      reply(state, {:error, unavailable(state)})
     end
   end
 
-  def handle_call(:discard, _from, %{branch: %{status: status}} = state)
+  def handle_call(:begin_merge, {pid, _tag}, state) do
+    if usable?(state) do
+      ref = Process.monitor(pid)
+      reply(%{state | merging: ref}, {:ok, state.branch})
+    else
+      reply(state, {:error, unavailable(state)})
+    end
+  end
+
+  def handle_call({:finish_merge, outcome}, _from, %{merging: ref} = state) when ref != nil do
+    Process.demonitor(ref, [:flush])
+    state = %{state | merging: nil}
+
+    case outcome do
+      :aborted ->
+        reply(state, :ok)
+
+      :merged ->
+        branch = %{state.branch | status: :merged}
+
+        case persist(branch, state.config) do
+          :ok -> {:stop, :normal, :ok, %{state | branch: branch, stop: :merged}}
+          {:error, _} = error -> reply(state, error)
+        end
+    end
+  end
+
+  def handle_call({:finish_merge, _outcome}, _from, state), do: reply(state, :ok)
+
+  def handle_call(:discard, _from, %{merging: nil, branch: %{status: status}} = state)
       when status in [:open, :discarded] do
     branch = Branch.discard(state.branch)
 
@@ -248,14 +293,21 @@ defmodule Ramal.Branch.Server do
     end
   end
 
-  def handle_call(:discard, _from, state), do: reply(state, {:error, not_open(state.branch)})
+  def handle_call(:discard, _from, state), do: reply(state, {:error, unavailable(state)})
 
   @impl true
   def handle_info(:timeout, state), do: {:stop, :normal, %{state | stop: :idle}}
-  def handle_info(_message, state), do: {:noreply, state, state.config.idle_timeout}
+
+  # The merging process died without finishing: release the claim so the branch can be merged again.
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{merging: ref} = state) do
+    state = %{state | merging: nil}
+    {:noreply, state, timeout(state)}
+  end
+
+  def handle_info(_message, state), do: {:noreply, state, timeout(state)}
 
   @impl true
-  def terminate(_reason, %{stop: :discarded}), do: :ok
+  def terminate(_reason, %{stop: stop}) when stop in [:discarded, :merged], do: :ok
 
   def terminate(_reason, %{branch: branch, config: config, stop: stop}) do
     # Persist before announcing the unload, so an observer who sees the event can already rehydrate the branch.
@@ -263,7 +315,22 @@ defmodule Ramal.Branch.Server do
     Telemetry.branch(:unload, branch, %{reason: stop || :shutdown})
   end
 
-  defp reply(state, reply), do: {:reply, reply, state, state.config.idle_timeout}
+  defp reply(state, reply), do: {:reply, reply, state, timeout(state)}
+
+  # A branch being merged must not unload: the merge would lose its claim.
+  defp timeout(%{merging: nil, config: config}), do: config.idle_timeout
+  defp timeout(_state), do: :infinity
+
+  defp usable?(state), do: Branch.open?(state.branch) and state.merging == nil
+
+  defp unavailable(%{merging: nil, branch: branch}), do: not_open(branch)
+
+  defp unavailable(%{branch: branch}) do
+    Error.new(:not_open, "branch #{inspect(branch.id)} is being merged", %{
+      id: branch.id,
+      status: :merging
+    })
+  end
 
   defp not_open(branch) do
     Error.new(:not_open, "branch #{inspect(branch.id)} is #{branch.status}, not open", %{
