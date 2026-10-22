@@ -150,6 +150,8 @@ defmodule Ramal.Overlay do
       equal to `b`, which keeps the sort stable. Without it, base order is kept and added rows follow in key order
     * `:offset` - rows to skip after sorting, default `0`
     * `:limit` - the maximum number of rows, default no limit
+    * `:replace` - a function `(base_row, overlay_record -> record)` that builds the row that takes a base row's place,
+      for state the base row carries and the overlay record cannot, default the overlay record itself
 
   ## Example
 
@@ -161,11 +163,12 @@ defmodule Ramal.Overlay do
   @spec patch([record], slice, (record -> as_boolean(term)), keyword) :: [record]
   def patch(base_rows, slice, predicate, opts) when is_function(predicate, 1) do
     key_fun = Keyword.fetch!(opts, :key)
+    replace = Keyword.get(opts, :replace, fn _row, record -> record end)
 
     {kept, seen} =
       Enum.flat_map_reduce(base_rows, MapSet.new(), fn row, seen ->
         key = key_fun.(row)
-        {patch_base_row(row, Map.get(slice, key), predicate), MapSet.put(seen, key)}
+        {patch_base_row(row, Map.get(slice, key), predicate, replace), MapSet.put(seen, key)}
       end)
 
     added =
@@ -183,11 +186,11 @@ defmodule Ramal.Overlay do
     |> take(opts[:limit])
   end
 
-  defp patch_base_row(row, nil, _predicate), do: [row]
-  defp patch_base_row(_row, :deleted, _predicate), do: []
+  defp patch_base_row(row, nil, _predicate, _replace), do: [row]
+  defp patch_base_row(_row, :deleted, _predicate, _replace), do: []
 
-  defp patch_base_row(_row, {_kind, record}, predicate) do
-    if predicate.(record), do: [record], else: []
+  defp patch_base_row(row, {_kind, record}, predicate, replace) do
+    if predicate.(record), do: [replace.(row, record)], else: []
   end
 
   defp sort(rows, nil), do: rows

@@ -130,9 +130,6 @@ defmodule Ramal.Capture do
 
   defp write(changeset, id, nested?) do
     case written(changeset) do
-      {:skip, record} ->
-        Ash.Changeset.set_result(changeset, {:ok, record})
-
       {:ok, kind, record, base_row} ->
         resource = changeset.resource
         key = Resource.key(resource, record)
@@ -170,14 +167,19 @@ defmodule Ramal.Capture do
     end
   end
 
+  # An update that changes no attribute is still logged: its hooks and managed relationships can write other rows, and
+  # those writes are logged as nested, so only replaying this action brings them back. The overlay keeps the row as it
+  # was (Ash does not write it either, so `updated_at` stays) and `Ramal.diff/1` leaves it out.
   defp written(%{action_type: :update} = changeset) do
-    if Ash.Changeset.changing_attributes?(changeset) do
-      {:ok, record} = Ash.Changeset.apply_attributes(changeset)
-      {:ok, :updated, record, base_row(changeset.data)}
-    else
-      # Ash does not call the data layer for an update that changes nothing, and neither do we.
-      {:skip, changeset.data}
-    end
+    record =
+      if Ash.Changeset.changing_attributes?(changeset) do
+        {:ok, record} = Ash.Changeset.apply_attributes(changeset)
+        record
+      else
+        changeset.data
+      end
+
+    {:ok, :updated, record, base_row(changeset.data)}
   end
 
   defp written(%{action_type: :destroy} = changeset) do

@@ -7,5 +7,7 @@ defmodule Ramal.Test.Farm do
     resource(Ramal.Test.Farm.Paddock)
     resource(Ramal.Test.Farm.Herd)
     resource(Ramal.Test.Farm.Move)
+    resource(Ramal.Test.Farm.Vet)
+    resource(Ramal.Test.Farm.HerdVet)
   end
 end
