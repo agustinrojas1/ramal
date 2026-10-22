@@ -39,7 +39,7 @@ The full profile uses 20,000 rows and 100 buckets, 3 warm-up runs and 30 measure
 
 ## Results
 
-Run on 2026-10-22, full profile, after fast aggregates ([#28](https://github.com/agustinrojas1/ramal/issues/28), [ADR 0013](../docs/adr/0013-aggregate-delta.md)). Raw samples: [`results/published/full-20261022-after-fast-aggregates.json`](results/published/full-20261022-after-fast-aggregates.json). Every table below comes from that one run, on one machine, at one commit.
+Run on 2026-10-22, full profile, after fast aggregates (issue [#28](https://github.com/agustinrojas1/ramal/issues/28), [ADR 0013](../docs/adr/0013-aggregate-delta.md)). Raw samples: [`results/published/full-20261022-after-fast-aggregates.json`](results/published/full-20261022-after-fast-aggregates.json). Every table below comes from that one run, on one machine, at one commit.
 
 Machine: Intel Xeon @ 2.10 GHz, 4 logical cores, 16 GB, a cloud sandbox, PostgreSQL 16.15 on the same host, Erlang/OTP 28, Elixir 1.19.6, Ash 3.37.0, AshPostgres 2.15.1, Ramal 0.1.0 (the code at commit `2f31044`, the one that merged #37). Medians in milliseconds, p95 in parentheses.
 
@@ -85,7 +85,7 @@ The overlay size does not show in a small read or in a write up to 1,000 entries
 
 ### Before and after fast aggregates
 
-The tree search is the case #28 was opened for. Scoring a state used `Ramal.aggregate!/4`, which read and fingerprinted all 20,000 rows to sum them; it now has the database sum the rows the overlay does not touch and reads only the overlaid ones.
+The tree search is the case issue #28 was opened for, and it is closed. Scoring a state used `Ramal.aggregate!/4`, which read and fingerprinted all 20,000 rows to sum them; it now has the database sum the rows the overlay does not touch and reads only the overlaid ones.
 
 | tree search, median ms | ramal | copy | delta | ramal / delta |
 |---|---|---|---|---|
