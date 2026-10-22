@@ -25,9 +25,13 @@ defmodule Ramal.Resource do
 
   What the transformer installs, confirmed against the locked Ash 3.37 source:
 
-    * a global preparation, appended with `Ash.Resource.Builder.add_preparation/3`, which Ash applies to every read
+    * a global preparation, appended with `Ash.Resource.Builder.add_preparation/2`, which Ash applies to every read
       action of the resource;
-    * the write-side change arrives with write capture, issue 5 of milestone 0.1.
+    * a global change, `Ramal.Capture`, appended with `Ash.Resource.Builder.add_change/3` for create, update and
+      destroy actions;
+    * `require_atomic? false` on update and destroy actions, so that Ash can fall back from its atomic path (which
+      goes straight to the data layer) to the one `Ramal.Capture` hooks into when a branch is current. See
+      `docs/adr/0005-write-capture.md`.
 
   ## Example
 
@@ -44,6 +48,13 @@ defmodule Ramal.Resource do
         default: true,
         doc:
           "Whether reads of this resource are patched with a branch's changes. Set to `false` to opt out."
+      ],
+      notify_in_branch?: [
+        type: :boolean,
+        default: false,
+        doc:
+          "Whether notifications for writes to this resource are sent when `Ramal.run/2` returns. Off by default: " <>
+            "a notifier that sends an email for \"herd moved\" must not fire for a what-if."
       ]
     ]
   }
@@ -65,6 +76,19 @@ defmodule Ramal.Resource do
   @spec branchable?(module) :: boolean
   def branchable?(resource) when is_atom(resource) do
     extended?(resource) and Extension.get_opt(resource, [:ramal], :branchable?, true)
+  end
+
+  @doc """
+  Whether notifications for writes to `resource` made inside a branch are sent when `Ramal.run/2` returns.
+
+  ## Example
+
+      iex> Ramal.Resource.notify_in_branch?(Ramal.Test.Farm.Herd)
+      false
+  """
+  @spec notify_in_branch?(module) :: boolean
+  def notify_in_branch?(resource) when is_atom(resource) do
+    extended?(resource) and Extension.get_opt(resource, [:ramal], :notify_in_branch?, false)
   end
 
   @doc """

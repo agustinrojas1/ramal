@@ -124,27 +124,32 @@ This is the section that decides correctness. In a read action's preparation, wh
 
 ### 4.2 How writes are captured
 
-In a create, update or destroy action's change, when a branch is current:
+`Ramal.Capture` is a global change for create, update and destroy actions. When a branch is current
+([ADR 0005](adr/0005-write-capture.md)):
 
-- Use the hook that wraps the data-layer step and lets the change supply the result itself without calling the
-  data layer. In Ash 3 this is `Ash.Changeset.around_action/2` **[confirm that the hook may return the result without
-  invoking the callback, and the exact return shape]**. If the locked version does not allow skipping the callback,
-  the fallback is a manual-action shim installed by the transformer; record the choice in an ADR before writing code.
-- All of Ash's own work still happens: argument casting, validations, policies, `before_action` hooks, defaults,
-  timestamps. Ramal only replaces "write this to Postgres" with "put this in the overlay", so a branch is a faithful
-  rehearsal of the real action.
-- The resulting record is built from the changeset (`Ash.Changeset.apply_attributes/2` **[confirm]**). Values the
-  database would generate (identity integer keys, database defaults, `now()` set by the data layer) do not exist in
-  a branch. 0.1 requires branch-created records to have application-generated primary keys (UUIDs) and returns
-  `{:error, %Ramal.Error{reason: :database_generated_key}}` otherwise.
-- Destroys mark the key `:deleted`. Updates of a `:created` row stay `:created` with the new record.
-- Notifications are returned as the action normally would, so PubSub notifiers in the host fire for branch writes.
-  **Decision needed in 0.1:** default to suppressing notifications inside a branch, with an opt-in, because a notifier
-  that sends an email on "herd moved" must not fire for a what-if. Document in the ADR.
-- **Atomic updates and bulk actions:** the change implements the atomic callback and reports itself as not atomic
-  when a branch is current, so Ash falls back to the non-atomic path **[confirm the callback name and the
-  not-atomic return value]**. `Ash.bulk_*` with `return_records?: false` inside a branch returns
-  `{:error, %Ramal.Error{reason: :bulk_unsupported}}` in 0.1.
+- `around_action` adds a last `before_action` that builds the record and calls `Ash.Changeset.set_result/2`, so the
+  data layer is skipped. `around_action` itself cannot return a result early, because the before-action hooks run
+  inside its callback.
+- All of Ash's own work still happens: argument casting, validations, policies, other `before_action` and
+  `after_action` hooks, defaults, timestamps. Ramal only replaces "write this to Postgres" with "put this in the
+  overlay", so a branch is a faithful rehearsal of the real action.
+- The record is `Ash.Changeset.apply_attributes/2`, which also applies defaults. Values the database would generate
+  (identity integer keys, database defaults) do not exist in a branch. 0.1 requires branch-created records to have
+  application-generated primary keys (UUIDs) and fails the action with `:database_generated_key` otherwise.
+- Destroys mark the key `:deleted`. Updates of a `:created` row stay `:created` with the new record. The first write to
+  an existing row keeps the row as the action found it in `base`, which `diff/1` compares against.
+- Every write is appended to the log as `{action_type, resource, action_name, params, actor, opts, at}`; `opts` has
+  `key`, `tenant` and `nested?`. A write made by a hook of another captured action is `nested?: true`, and merge skips
+  it because replaying the outer action runs the hook again.
+- A failing action takes back its own writes and those of the actions its hooks ran.
+- **Notifications** are dropped by default. `Ramal.run/2` runs the function inside `Ash.transaction([], ...,
+  return_notifications?: true)` and sends only the notifications of resources with `notify_in_branch? true`.
+- **Atomic updates:** `atomic/3` returns `{:not_atomic, reason}` while a branch is current, and the transformer sets
+  `require_atomic? false` on the resource's update and destroy actions so that Ash falls back to the path above.
+- **Bulk actions and upserts** are refused: `:bulk_unsupported` for every `Ash.bulk_*`, `:upsert_unsupported` for an
+  action with `upsert? true`. The call-time option `upsert?: true` cannot be seen by a hook and acts as a create.
+- Errors added by the hook are `Ramal.Error` structs (a Splode error), found in an Ash error with
+  `Ramal.Error.find/1`.
 - Transactions: an action that opens a data-layer transaction inside a branch still opens one (cheap, empty). Nothing
   is written, so nothing needs rolling back. 0.2 may skip it.
 
@@ -175,7 +180,7 @@ In a create, update or destroy action's change, when a branch is current:
 ```
 
 `Ramal.Error` has `reason` (an atom from a documented list), `message`, and `details` (a map). Reasons in 0.1:
-`:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:branch_too_large`,
+`:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:upsert_unsupported`, `:branch_too_large`,
 `:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`.
 
 ## 6. Persistence
@@ -233,7 +238,7 @@ Events, all with `%{branch_id, domain}` metadata:
 `[:ramal, :branch, :create]`, `[:ramal, :branch, :fork]`, `[:ramal, :branch, :unload]`, `[:ramal, :branch, :load]`,
 `[:ramal, :branch, :discard]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span),
 `[:ramal, :read, :patch]` with measurements `%{base_rows, overlay_rows, result_rows, duration}`,
-`[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource}`.
+`[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource, action, nested?}`.
 
 `[:ramal, :branch, :load]` is emitted every time a branch process starts, including right after creation, so
 `create` is followed by `load`. `unload` carries `reason: :idle | :shutdown`. `discard` is emitted once per discard
@@ -279,3 +284,4 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 8 | The current branch id lives in the process dictionary and in Ash's shared context | Ash has no ambient context, and it runs some loads in tasks that lose the process dictionary. [ADR 0002](adr/0002-current-branch-carrier.md) |
 | 9 | Idle timeout and heap limit belong to the supervisor; discard keeps the record; storage takes config last | A per-branch value is lost on unload, and a kept record gives `:not_open` a meaning. [ADR 0003](adr/0003-branch-process-lifecycle.md) |
 | 10 | Reads are patched in `before_action`/`after_action` hooks; nothing is stripped when the overlay has no entry for the resource; the preparation sorts and pages the list itself | The hooks are where Ash allows changing the data-layer query and seeing its rows; `runtime_sort` takes a list, not a comparator. [ADR 0004](adr/0004-read-patching-hooks.md) |
+| 11 | Writes are captured by a last `before_action` that sets the result; atomic updates fall back through `atomic/3` and `require_atomic? false`; every bulk action and upsert action is refused; notifications are dropped unless the resource opts in; a failed action undoes its writes; `Ramal.Error` is a Splode error | `around_action` cannot skip the data layer by itself, the atomic path never reaches a hook, and Ash flattens other exceptions to strings. [ADR 0005](adr/0005-write-capture.md) |

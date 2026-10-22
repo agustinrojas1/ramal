@@ -2,6 +2,9 @@ defmodule Ramal.Error do
   @moduledoc """
   The error every Ramal function returns as `{:error, %Ramal.Error{}}`.
 
+  When a Ramal error is raised inside an Ash action (for example a bulk action inside a branch), Ash returns it in
+  the `errors` of an `Ash.Error.Invalid`; `find/2` pulls it out.
+
   `reason` is an atom from the closed list below, so a host can match on it. `message` says what happened in words
   a developer can act on. `details` carries the data behind the message, for example the stale rows.
 
@@ -11,7 +14,8 @@ defmodule Ramal.Error do
   | `:not_open` | the branch is merged or discarded |
   | `:stale` | the base moved under rows the branch read (`details.rows`) |
   | `:database_generated_key` | a branch cannot create a row whose primary key the database generates |
-  | `:bulk_unsupported` | a bulk action inside a branch that does not return records |
+  | `:bulk_unsupported` | a bulk create, update or destroy inside a branch |
+  | `:upsert_unsupported` | an upsert inside a branch |
   | `:branch_too_large` | the branch process exceeded `max_heap_size` and was stopped |
   | `:no_branchable_resources` | the domain has no resource that opted in with `Ramal.Resource` |
   | `:nested_branch` | `Ramal.run/2` was called inside another `Ramal.run/2` |
@@ -33,6 +37,7 @@ defmodule Ramal.Error do
           | :stale
           | :database_generated_key
           | :bulk_unsupported
+          | :upsert_unsupported
           | :branch_too_large
           | :no_branchable_resources
           | :nested_branch
@@ -41,7 +46,12 @@ defmodule Ramal.Error do
 
   @type t :: %__MODULE__{reason: reason, message: String.t(), details: map}
 
-  defexception [:reason, :message, details: %{}]
+  # A Splode error, so that Ash keeps the struct when a Ramal error is added to a changeset, instead of formatting it
+  # into a string. Inside an Ash action it arrives in the `errors` of an `Ash.Error.Invalid`.
+  use Splode.Error, fields: [:reason, :message, details: %{}], class: :invalid
+
+  @impl Exception
+  def message(%__MODULE__{message: message}), do: message
 
   @doc """
   Builds an error.
@@ -55,4 +65,23 @@ defmodule Ramal.Error do
   def new(reason, message, details \\ %{}) when is_atom(reason) and is_binary(message) do
     %__MODULE__{reason: reason, message: message, details: details}
   end
+
+  @doc """
+  The first `Ramal.Error` in an error Ash returned, or `nil`.
+
+  Ash wraps the errors of an action in an error class (`Ash.Error.Invalid` and friends) whose `errors` list holds
+  them. This looks through that list, so a host can match on the reason without knowing how Ash nested it.
+
+  ## Example
+
+      iex> error = Ramal.Error.new(:bulk_unsupported, "no bulk inside a branch")
+      iex> Ramal.Error.find(Ash.Error.to_error_class(error)).reason
+      :bulk_unsupported
+      iex> Ramal.Error.find(Ash.Error.to_error_class("something else"))
+      nil
+  """
+  @spec find(term) :: t | nil
+  def find(%__MODULE__{} = error), do: error
+  def find(%{errors: errors}) when is_list(errors), do: Enum.find_value(errors, &find/1)
+  def find(_other), do: nil
 end

@@ -39,6 +39,9 @@ defmodule Ramal.MixProject do
     [
       {:ash, "~> 3.36"},
       {:spark, "~> 2.7"},
+      # Already in the tree through Ash. Declared because Ramal.Error implements Splode.Error: Ash turns any other
+      # exception raised inside an action into a string, which would lose the `reason` a host matches on.
+      {:splode, "~> 0.3"},
       {:telemetry, "~> 1.3"},
       {:jason, "~> 1.4"},
       # Optional for users: only the Postgres storage backend and the test suite need it.

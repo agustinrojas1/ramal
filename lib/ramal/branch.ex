@@ -26,6 +26,19 @@ defmodule Ramal.Branch do
   alias Ramal.Overlay
 
   @type status :: :open | :merged | :discarded
+  @type kind :: :created | :updated | :deleted
+  @type ref :: Overlay.ref()
+
+  @typedoc """
+  A captured write: `{action_type, resource, action_name, input, actor, opts, at}`. `input` is the params the action
+  was called with, `opts` carries `:key` (the primary key written), `:tenant` and `:nested?` (the write was made by
+  a hook of another captured action, so replaying that action reproduces it).
+  """
+  @type log_entry ::
+          {Ash.Resource.Actions.action_type(), module, atom, map, term, keyword, DateTime.t()}
+
+  @typedoc "What `put_write/6` replaced, so `undo/2` can put it back."
+  @type undo :: %{ref: ref, overlay: Overlay.entry() | :none, base: map | :none, entry: log_entry}
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -103,4 +116,76 @@ defmodule Ramal.Branch do
   def discard(%__MODULE__{} = branch) do
     %{branch | status: :discarded, overlay: %{}, log: [], base: %{}}
   end
+
+  @doc """
+  The branch after one captured write.
+
+  `kind` says what the write did to the row `ref`, `record` is the row as the action left it, and `snapshot` is the
+  row as the action found it. The snapshot is kept in `base` the first time the branch touches an existing row, so
+  `Ramal.Overlay.diff/3` never needs the database. `entry` is prepended to the log.
+
+  Returns the new branch and an `undo` that `undo/2` uses to take the write back when the action that made it fails.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> entry = {:update, MyApp.Herd, :update, %{name: "b"}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
+      iex> {branch, _undo} = Ramal.Branch.put_write(branch, :updated, {MyApp.Herd, 1}, %{id: 1, name: "b"}, %{id: 1, name: "a"}, entry)
+      iex> {branch.overlay, branch.base, length(branch.log)}
+      {%{{MyApp.Herd, 1} => {:updated, %{id: 1, name: "b"}}}, %{{MyApp.Herd, 1} => %{id: 1, name: "a"}}, 1}
+  """
+  @spec put_write(t, kind, ref, map, map | nil, log_entry) :: {t, undo}
+  def put_write(%__MODULE__{} = branch, kind, ref, record, snapshot, entry) do
+    undo = %{
+      ref: ref,
+      overlay: Map.get(branch.overlay, ref, :none),
+      base: Map.get(branch.base, ref, :none),
+      entry: entry
+    }
+
+    overlay =
+      case kind do
+        :created -> Overlay.put_created(branch.overlay, ref, record)
+        :updated -> Overlay.put_updated(branch.overlay, ref, record)
+        :deleted -> Overlay.put_deleted(branch.overlay, ref)
+      end
+
+    # An overlay entry means the branch already holds the row's snapshot, or created the row itself.
+    base =
+      if kind != :created and snapshot != nil and not Map.has_key?(branch.overlay, ref) do
+        Map.put_new(branch.base, ref, snapshot)
+      else
+        branch.base
+      end
+
+    {%{branch | overlay: overlay, base: base, log: [entry | branch.log]}, undo}
+  end
+
+  @doc """
+  The branch with the writes described by `undos` taken back, newest write first.
+
+  Only the refs and log entries the undos name are touched, so a write another process made in the meantime stays.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> entry = {:destroy, MyApp.Herd, :destroy, %{}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
+      iex> {written, undo} = Ramal.Branch.put_write(branch, :deleted, {MyApp.Herd, 1}, %{id: 1}, %{id: 1}, entry)
+      iex> Ramal.Branch.undo(written, [undo]) == branch
+      true
+  """
+  @spec undo(t, [undo]) :: t
+  def undo(%__MODULE__{} = branch, undos) do
+    Enum.reduce(undos, branch, fn undo, acc ->
+      %{
+        acc
+        | overlay: restore(acc.overlay, undo.ref, undo.overlay),
+          base: restore(acc.base, undo.ref, undo.base),
+          log: List.delete(acc.log, undo.entry)
+      }
+    end)
+  end
+
+  defp restore(map, ref, :none), do: Map.delete(map, ref)
+  defp restore(map, ref, value), do: Map.put(map, ref, value)
 end
