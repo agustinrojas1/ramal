@@ -119,7 +119,8 @@ This is the section that decides correctness. In a read action's preparation, wh
 4. **Aggregates and calculations:** data-layer aggregates (`count`, `sum`, `exists`) and calculations with
    expressions are computed on the base and do not see the overlay. 0.1 documents this and emits a
    `[:ramal, :read, :unpatched_aggregate]` telemetry event when a query inside a branch selects one, so a host can
-   detect it in tests. 0.2 revisits with runtime evaluation where Ash allows it.
+   detect it in tests. `Ramal.aggregate/4` (ADR 0011) gives the exact answer for the common kinds by reading the patched
+   rows and computing in Elixir; aggregates and calculations declared on resources stay unpatched.
 5. **Pagination:** Ash adds a page's limit and offset after the `before_action` hooks, so a paginated read is paged
    by the database and patched afterwards. Deleted rows shorten a page, rows created in the branch can be missing
    from or misplaced across pages, and `count` is the database's. 0.1 documents this. Patching the whole list and
@@ -177,6 +178,9 @@ This is the section that decides correctness. In a read action's preparation, wh
 @spec merge(branch | id, keyword) :: {:ok, Ramal.Merge.Result.t()} | {:error, Ramal.Error.t()}
 # opts: actor, authorize? (default true), on_stale (:error | :ignore | (stale_rows -> :continue | :abort)), mode (:replay)
 
+@spec aggregate(query | resource, kind, field | nil, keyword) :: {:ok, term} | {:error, Ash.Error.t()}
+# kind: :count | :exists | :sum | :min | :max | :avg, computed in Elixir over the rows a read returns in the branch
+
 @spec discard(branch | id) :: :ok | {:error, Ramal.Error.t()}
 
 @spec get(id) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
@@ -186,7 +190,8 @@ This is the section that decides correctness. In a read action's preparation, wh
 
 `Ramal.Error` has `reason` (an atom from a documented list), `message`, and `details` (a map). Reasons in 0.1:
 `:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:upsert_unsupported`, `:branch_too_large`,
-`:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`, `:merge_failed`.
+`:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`, `:merge_failed`,
+`:multitenancy_unsupported`.
 
 ## 6. Persistence
 
@@ -311,3 +316,4 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 14 | Branches are stored through `Ramal.Storage.Codec`: attributes through the Ash embedded dump and cast, everything else as tagged terms, atoms never created, actors stored as the term; `list/3` can fail | A round trip must be `==`, the Ash `cast_stored` is the data layer's form, not JSON's, and a database can fail. [ADR 0008](adr/0008-postgres-storage.md) |
 | 15 | A multitenant resource used with a tenant inside a branch is refused (`:multitenancy_unsupported`) | The overlay is keyed by `{resource, key}` and merge's staleness read has no tenant; half support would mix tenants silently. [ADR 0009](adr/0009-multitenancy-refused.md) |
 | 16 | A stored actor that is an Ash record loses its `sensitive?` attributes; other actors are stored as they are | The branch table should not hold password hashes or tokens, and Ash already has the flag. A serializer callback has one use. [ADR 0010](adr/0010-stored-actors.md) |
+| 17 | `Ramal.aggregate/4` reads the patched rows and computes the aggregate in Elixir; `Ramal.Aggregate` holds the pure part | The data layer's aggregates cannot see the overlay, and Ash offers no hook to make them. Exact for the branch, as expensive as reading the matching rows. [ADR 0011](adr/0011-branch-aggregates.md) |

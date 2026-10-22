@@ -24,7 +24,7 @@ defmodule Ramal.Preparation do
   Known limits in 0.1, documented rather than hidden:
 
     * aggregates and calculations the data layer computes do not see the overlay; reading one emits
-      `[:ramal, :read, :unpatched_aggregate]`;
+      `[:ramal, :read, :unpatched_aggregate]`. `Ramal.aggregate/4` is the exact alternative for the common kinds;
     * overlay records are added without running the action's `authorize_results` checks, though the query's filter,
       including any policy filter, is applied to them;
     * paginated reads (`page:`) are paged by the database and patched afterwards, so pages can be short or miss rows
