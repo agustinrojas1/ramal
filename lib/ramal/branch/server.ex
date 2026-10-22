@@ -143,6 +143,15 @@ defmodule Ramal.Branch.Server do
   def update(id, fun) when is_function(fun, 1), do: call(id, {:update, fun})
 
   @doc """
+  Like `update/2` for a function that also has something to tell the caller: `fun` returns `{reply, branch}` and the
+  caller gets `{:ok, reply, branch}`. Write capture uses it to learn how to undo the write it just made.
+  """
+  @spec write(String.t(), (Branch.t() -> {reply, Branch.t()})) ::
+          {:ok, reply, Branch.t()} | {:error, Error.t()}
+        when reply: term
+  def write(id, fun) when is_function(fun, 1), do: call(id, {:write, fun})
+
+  @doc """
   Discards the branch: its process persists the discarded state and stops.
 
   A branch whose process was killed for being too large has no process to ask, so it is discarded from its last
@@ -198,6 +207,15 @@ defmodule Ramal.Branch.Server do
     if Branch.open?(state.branch) do
       branch = fun.(state.branch)
       reply(%{state | branch: branch}, {:ok, branch})
+    else
+      reply(state, {:error, not_open(state.branch)})
+    end
+  end
+
+  def handle_call({:write, fun}, _from, state) do
+    if Branch.open?(state.branch) do
+      {reply, branch} = fun.(state.branch)
+      reply(%{state | branch: branch}, {:ok, reply, branch})
     else
       reply(state, {:error, not_open(state.branch)})
     end

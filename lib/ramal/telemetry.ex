@@ -14,6 +14,7 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :branch, :too_large]` | a branch process was killed for exceeding `max_heap_size` |
   | `[:ramal, :read, :patch]` | a read inside a branch was patched with the overlay (measurements: `base_rows`, `overlay_rows`, `result_rows`, `duration`) |
   | `[:ramal, :read, :unpatched_aggregate]` | a read inside a branch selected an aggregate, which the database computes without the overlay |
+  | `[:ramal, :write, :capture]` | a create, update or destroy inside a branch was put in the overlay instead of the data layer (metadata: `action_type`, `resource`, `action`, `nested?`) |
 
   ## Example
 
@@ -62,6 +63,23 @@ defmodule Ramal.Telemetry do
   def branch(step, %{id: id, domain: domain}, extra \\ %{}) do
     :telemetry.execute(
       [:ramal, :branch, step],
+      %{system_time: System.system_time()},
+      Map.merge(%{branch_id: id, domain: domain}, extra)
+    )
+  end
+
+  @doc """
+  Emits `[:ramal, :write, :capture]` for a write captured by `branch`, merging `extra` into the metadata.
+
+  ## Example
+
+      iex> Ramal.Telemetry.write(:capture, %{id: "b1", domain: MyApp.Farm}, %{action_type: :update})
+      :ok
+  """
+  @spec write(atom, %{id: String.t(), domain: module}, map) :: :ok
+  def write(step, %{id: id, domain: domain}, extra \\ %{}) do
+    :telemetry.execute(
+      [:ramal, :write, step],
       %{system_time: System.system_time()},
       Map.merge(%{branch_id: id, domain: domain}, extra)
     )

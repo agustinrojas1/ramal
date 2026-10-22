@@ -64,6 +64,9 @@ defmodule Ramal do
 
   Returns `:not_found` for an unknown id and `:not_open` for a merged or discarded branch.
 
+  Creates, updates and destroys inside `fun` land in the branch instead of the data layer (`Ramal.Capture`), and the
+  notifications they produce are dropped unless the resource sets `notify_in_branch? true`.
+
   ## Example
 
       {:ok, branch} = Ramal.branch(MyApp.Farm)
@@ -83,7 +86,7 @@ defmodule Ramal do
     else
       with {:ok, branch} <- Server.get(id),
            :ok <- ensure_open(branch) do
-        {:ok, Current.with_branch(id, fun)}
+        {:ok, collect_notifications(id, fun)}
       end
     end
   end
@@ -171,6 +174,21 @@ defmodule Ramal do
   """
   @spec discard(branch_or_id) :: :ok | {:error, Error.t()}
   def discard(branch_or_id), do: branch_or_id |> id_of() |> Server.discard()
+
+  # Writes inside a branch queue their notifications exactly as writes inside `Ash.transaction/3` do: nothing is sent
+  # until the outermost transaction ends. `Ash.transaction/3` with no resources opens no database transaction and,
+  # with `return_notifications?: true`, hands the queue back instead of sending it. Only resources that opted in with
+  # `notify_in_branch? true` get theirs sent.
+  defp collect_notifications(id, fun) do
+    {:ok, result, notifications} =
+      Ash.transaction([], fn -> Current.with_branch(id, fun) end, return_notifications?: true)
+
+    notifications
+    |> Enum.filter(&Resource.notify_in_branch?(&1.resource))
+    |> Ash.Notifier.notify()
+
+    result
+  end
 
   defp ensure_branchable(domain) do
     if Resource.branchable_resources(domain) == [] do

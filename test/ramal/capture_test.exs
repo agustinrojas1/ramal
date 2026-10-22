@@ -1,0 +1,447 @@
+defmodule Ramal.CaptureTest do
+  # Ramal.Supervisor is one per node and named, so these tests cannot run concurrently.
+  use Ramal.DataCase, async: false
+
+  require Ash.Query
+
+  alias Ash.Resource.Info
+  alias Ramal.Test.Capture.{Announced, Flaky, Silent, Ticket}
+
+  @admin %{role: :admin}
+  @member %{role: :member}
+
+  setup do
+    start_supervised!(Ramal.Supervisor)
+    seeds = Seeds.seed!()
+    {:ok, branch} = Ramal.branch(Farm)
+    {:ok, Map.merge(seeds, %{branch: branch})}
+  end
+
+  defp inside(branch, fun), do: Ramal.run!(branch, fun)
+  defp state(branch), do: elem(Ramal.get(branch.id), 1)
+  defp db_names, do: Herd |> Ash.read!(authorize?: false) |> Enum.map(& &1.name) |> Enum.sort()
+  defp names(herds), do: herds |> Enum.map(& &1.name) |> Enum.sort()
+
+  defp reason_of(error), do: error |> Ramal.Error.find() |> Map.fetch!(:reason)
+
+  describe "outside a branch" do
+    test "writes reach the database exactly as before", %{herds: herds} do
+      created = Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false)
+      Ash.update!(herds.r7, %{head: 31}, authorize?: false)
+      Ash.destroy!(herds.r9, authorize?: false)
+
+      assert db_names() == ["R10", "R7", "R8"]
+      assert Ash.get!(Herd, herds.r7.id, authorize?: false).head == 31
+      assert Ash.get!(Herd, created.id, authorize?: false).name == "R10"
+    end
+
+    test "the update and destroy actions of a resource that uses the extension can fall back from the atomic path" do
+      for {type, name} <- [{:update, :update}, {:destroy, :destroy}] do
+        action = Info.action(Herd, name, type)
+        assert action.require_atomic? == false
+      end
+    end
+
+    test "an atomic bulk update still runs in the database", %{herds: herds} do
+      result =
+        Ash.bulk_update(Herd, :update, %{head: 1},
+          authorize?: false,
+          strategy: :atomic,
+          return_errors?: true
+        )
+
+      assert %Ash.BulkResult{status: :success} = result
+      assert Ash.get!(Herd, herds.r7.id, authorize?: false).head == 1
+    end
+
+    test "the write capture adds no state to the process" do
+      Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false)
+      assert Process.get(:ramal_capture_frame) == nil
+    end
+  end
+
+  describe "create" do
+    test "a create inside a branch returns the record and leaves the database alone", %{
+      branch: branch
+    } do
+      herd =
+        inside(branch, fn -> Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false) end)
+
+      assert %Herd{name: "R10", head: 5, id: id} = herd
+      assert id
+      assert herd.inserted_at
+      assert herd.__meta__.state == :loaded
+      assert db_names() == ["R7", "R8", "R9"]
+    end
+
+    test "a read inside a branch sees rows created in that branch", %{branch: branch} do
+      inside(branch, fn ->
+        Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false)
+        assert names(Ash.read!(Herd, authorize?: false)) == ["R10", "R7", "R8", "R9"]
+      end)
+    end
+
+    test "the overlay holds the record and the log holds the call", %{branch: branch} do
+      herd =
+        inside(branch, fn -> Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false) end)
+
+      branch = state(branch)
+      assert %{{Herd, herd.id} => {:created, herd}} |> Map.keys() == Map.keys(branch.overlay)
+      assert {:created, %Herd{name: "R10"}} = branch.overlay[{Herd, herd.id}]
+      assert branch.base == %{}
+
+      assert [{:create, Herd, :create, params, nil, opts, %DateTime{}}] = branch.log
+      assert params == %{name: "R10", head: 5}
+      assert opts == [key: herd.id, tenant: nil, nested?: false]
+    end
+
+    test "the actor is kept in the log", %{branch: branch} do
+      inside(branch, fn -> Ash.create!(Herd, %{name: "R10", head: 5}, actor: @admin) end)
+
+      assert [{:create, Herd, :create, _params, @admin, _opts, _at}] = state(branch).log
+    end
+
+    test "validations still run: an invalid create is refused and leaves the branch empty", %{
+      branch: branch
+    } do
+      assert {:error, %Ash.Error.Invalid{}} =
+               inside(branch, fn -> Ash.create(Herd, %{name: "R10"}, authorize?: false) end)
+
+      branch = state(branch)
+      assert branch.overlay == %{}
+      assert branch.log == []
+    end
+
+    test "a primary key the database generates is refused with a message that says what to do",
+         %{} do
+      {:ok, branch} = Ramal.branch(Ramal.Test.Capture)
+
+      assert {:error, error} = inside(branch, fn -> Ash.create(Ticket, %{title: "t"}) end)
+      assert reason_of(error) == :database_generated_key
+      assert Exception.message(Ramal.Error.find(error)) =~ "uuid_primary_key"
+      assert state(branch).overlay == %{}
+    end
+  end
+
+  describe "update" do
+    test "an update inside a branch returns the new record and leaves the database alone", %{
+      branch: branch,
+      herds: herds
+    } do
+      updated = inside(branch, fn -> Ash.update!(herds.r7, %{head: 31}, authorize?: false) end)
+
+      assert updated.head == 31
+      assert updated.id == herds.r7.id
+      assert Ash.get!(Herd, herds.r7.id, authorize?: false).head == 30
+    end
+
+    test "a read inside a branch sees the updated row", %{branch: branch, herds: herds} do
+      inside(branch, fn ->
+        Ash.update!(herds.r7, %{head: 31}, authorize?: false)
+        assert Ash.get!(Herd, herds.r7.id, authorize?: false).head == 31
+
+        assert [%{head: 31}] =
+                 Herd |> Ash.Query.filter(head == 31) |> Ash.read!(authorize?: false)
+      end)
+    end
+
+    test "the base row as first seen is kept once, even after more updates", %{
+      branch: branch,
+      herds: herds
+    } do
+      inside(branch, fn ->
+        r7 = Ash.update!(herds.r7, %{head: 31}, authorize?: false)
+        Ash.update!(r7, %{head: 32}, authorize?: false)
+      end)
+
+      branch = state(branch)
+      key = {Herd, herds.r7.id}
+      assert {:updated, %Herd{head: 32}} = branch.overlay[key]
+      assert %Herd{head: 30} = branch.base[key]
+
+      assert [
+               {:update, Herd, :update, %{head: 32}, nil, _, _},
+               {:update, Herd, :update, %{head: 31}, nil, _, _}
+             ] = branch.log
+    end
+
+    test "update timestamps move like they would in the database", %{branch: branch, herds: herds} do
+      updated = inside(branch, fn -> Ash.update!(herds.r7, %{head: 31}, authorize?: false) end)
+      assert DateTime.compare(updated.updated_at, herds.r7.updated_at) in [:gt, :eq]
+    end
+
+    test "an update that changes nothing writes nothing", %{branch: branch, herds: herds} do
+      inside(branch, fn -> Ash.update!(herds.r7, %{head: 30}, authorize?: false) end)
+
+      branch = state(branch)
+      assert branch.overlay == %{}
+      assert branch.log == []
+    end
+
+    test "updating a row the branch created keeps it created", %{branch: branch} do
+      inside(branch, fn ->
+        herd = Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false)
+        Ash.update!(herd, %{head: 6}, authorize?: false)
+      end)
+
+      branch = state(branch)
+      assert [{{Herd, _}, {:created, %Herd{head: 6}}}] = Map.to_list(branch.overlay)
+      assert branch.base == %{}
+    end
+  end
+
+  describe "destroy" do
+    test "a destroy inside a branch hides the row and leaves the database alone", %{
+      branch: branch,
+      herds: herds
+    } do
+      inside(branch, fn ->
+        assert :ok = Ash.destroy!(herds.r9, authorize?: false)
+        assert names(Ash.read!(Herd, authorize?: false)) == ["R7", "R8"]
+        assert {:error, _} = Ash.get(Herd, herds.r9.id, authorize?: false)
+      end)
+
+      assert db_names() == ["R7", "R8", "R9"]
+      branch = state(branch)
+      assert branch.overlay == %{{Herd, herds.r9.id} => :deleted}
+      assert %Herd{name: "R9"} = branch.base[{Herd, herds.r9.id}]
+    end
+
+    test "destroying a row the branch created leaves no trace in the overlay", %{branch: branch} do
+      inside(branch, fn ->
+        herd = Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false)
+        Ash.destroy!(herd, authorize?: false)
+      end)
+
+      branch = state(branch)
+      assert branch.overlay == %{}
+
+      assert [{:destroy, Herd, :destroy, _, _, _, _}, {:create, Herd, :create, _, _, _, _}] =
+               branch.log
+    end
+  end
+
+  describe "the actions of the test domain" do
+    test "Herd.move validates capacity against moves made earlier in the same branch", %{
+      branch: branch,
+      herds: herds,
+      paddocks: paddocks
+    } do
+      inside(branch, fn ->
+        moved =
+          Ash.update!(herds.r7, %{to_paddock_id: paddocks.l18.id}, action: :move, actor: @admin)
+
+        assert moved.paddock_id == paddocks.l18.id
+
+        assert {:error, %Ash.Error.Invalid{} = error} =
+                 Ash.update(herds.r8, %{to_paddock_id: paddocks.l18.id},
+                   action: :move,
+                   actor: @admin
+                 )
+
+        assert Exception.message(error) =~ "already has 55"
+      end)
+
+      assert Ash.get!(Herd, herds.r7.id, authorize?: false).paddock_id == paddocks.l07.id
+      assert Move |> Ash.read!(authorize?: false) == []
+    end
+
+    test "the move's own after_action hook creates its Move in the branch and marks it nested", %{
+      branch: branch,
+      herds: herds,
+      paddocks: paddocks
+    } do
+      inside(branch, fn ->
+        Ash.update!(herds.r7, %{to_paddock_id: paddocks.l18.id}, action: :move, actor: @admin)
+
+        assert [%Move{herd_id: herd_id, to_paddock_id: to}] = Ash.read!(Move, authorize?: false)
+        assert herd_id == herds.r7.id
+        assert to == paddocks.l18.id
+      end)
+
+      assert [
+               {:create, Move, :create, _, _, move_opts, _},
+               {:update, Herd, :move, _, @admin, herd_opts, _}
+             ] =
+               state(branch).log
+
+      assert move_opts[:nested?] == true
+      assert herd_opts[:nested?] == false
+      assert Move |> Ash.read!(authorize?: false) == []
+    end
+
+    test "an unauthorized actor is refused exactly as outside a branch", %{
+      branch: branch,
+      herds: herds,
+      paddocks: paddocks
+    } do
+      params = %{to_paddock_id: paddocks.l18.id}
+      outside = Ash.update(herds.r7, params, action: :move, actor: @member)
+
+      inside =
+        inside(branch, fn -> Ash.update(herds.r7, params, action: :move, actor: @member) end)
+
+      assert {:error, %Ash.Error.Forbidden{}} = outside
+      assert {:error, %Ash.Error.Forbidden{}} = inside
+      assert state(branch).log == []
+    end
+  end
+
+  describe "bulk actions and upserts" do
+    test "a bulk create is refused and writes nothing", %{branch: branch} do
+      result =
+        inside(branch, fn ->
+          Ash.bulk_create([%{name: "R10", head: 1}, %{name: "R11", head: 2}], Herd, :create,
+            authorize?: false,
+            return_errors?: true,
+            return_records?: true
+          )
+        end)
+
+      assert %Ash.BulkResult{errors: [error | _]} = result
+      assert reason_of(error) == :bulk_unsupported
+      assert Exception.message(Ramal.Error.find(error)) =~ "once per record"
+      assert db_names() == ["R7", "R8", "R9"]
+      assert state(branch).overlay == %{}
+    end
+
+    test "a bulk destroy is refused and writes nothing", %{branch: branch} do
+      result =
+        inside(branch, fn ->
+          Ash.bulk_destroy(Herd, :destroy, %{},
+            authorize?: false,
+            return_errors?: true,
+            strategy: [:stream]
+          )
+        end)
+
+      assert %Ash.BulkResult{status: :error} = result
+      assert db_names() == ["R7", "R8", "R9"]
+      assert state(branch).overlay == %{}
+    end
+
+    test "a bulk update is refused and writes nothing", %{branch: branch} do
+      result =
+        inside(branch, fn ->
+          Ash.bulk_update(Herd, :update, %{head: 1}, authorize?: false, return_errors?: true)
+        end)
+
+      assert %Ash.BulkResult{status: :error} = result
+
+      assert Herd |> Ash.read!(authorize?: false) |> Enum.map(& &1.head) |> Enum.sort() == [
+               25,
+               30,
+               35
+             ]
+
+      assert state(branch).overlay == %{}
+    end
+
+    test "an upsert action is refused" do
+      {:ok, branch} = Ramal.branch(Ramal.Test.Capture)
+
+      assert {:error, error} =
+               inside(branch, fn -> Ash.create(Flaky, %{text: "x"}, action: :upsert) end)
+
+      assert reason_of(error) == :upsert_unsupported
+      assert state(branch).overlay == %{}
+    end
+  end
+
+  describe "a failing action" do
+    setup do
+      {:ok, branch} = Ramal.branch(Ramal.Test.Capture)
+      {:ok, capture_branch: branch}
+    end
+
+    test "leaves the branch as it found it when a later hook returns an error", %{
+      capture_branch: branch
+    } do
+      assert {:error, _} =
+               inside(branch, fn -> Ash.create(Flaky, %{text: "x"}, action: :create_then_fail) end)
+
+      branch = state(branch)
+      assert branch.overlay == %{}
+      assert branch.log == []
+    end
+
+    test "leaves the branch as it found it when a later hook raises", %{capture_branch: branch} do
+      assert_raise Ash.Error.Unknown, fn ->
+        inside(branch, fn -> Ash.create(Flaky, %{text: "x"}, action: :create_then_raise) end)
+      end
+
+      branch = state(branch)
+      assert branch.overlay == %{}
+      assert branch.log == []
+      assert Process.get(:ramal_capture_frame) == nil
+    end
+
+    test "keeps the writes made before it", %{capture_branch: branch} do
+      inside(branch, fn ->
+        kept = Ash.create!(Flaky, %{text: "kept"})
+        assert {:error, _} = Ash.create(Flaky, %{text: "x"}, action: :create_then_fail)
+        kept
+      end)
+
+      assert [{_, {:created, %Flaky{text: "kept"}}}] = state(branch).overlay |> Map.to_list()
+      assert [{:create, Flaky, :create, _, _, _, _}] = state(branch).log
+    end
+  end
+
+  describe "notifications" do
+    setup do
+      Process.register(self(), :ramal_test_notifications)
+      {:ok, branch} = Ramal.branch(Ramal.Test.Capture)
+      {:ok, capture_branch: branch}
+    end
+
+    test "are not sent for writes inside a branch", %{capture_branch: branch} do
+      inside(branch, fn -> Ash.create!(Silent, %{text: "hello"}) end)
+      refute_receive {:notified, _, _}, 50
+    end
+
+    test "are sent when the resource opts in, after run/2 returns", %{capture_branch: branch} do
+      inside(branch, fn ->
+        Ash.create!(Announced, %{text: "hello"})
+        refute_received {:notified, _, _}
+      end)
+
+      assert_receive {:notified, Announced, :create}
+    end
+
+    test "are sent as usual outside a branch" do
+      Ash.create!(Silent, %{text: "hello"})
+      assert_receive {:notified, Silent, :create}
+    end
+  end
+
+  describe "telemetry" do
+    test "every captured write emits [:ramal, :write, :capture]", %{branch: branch, herds: herds} do
+      test = self()
+      handler = "capture-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler,
+        [:ramal, :write, :capture],
+        fn _event, _measurements, metadata, _config -> send(test, {:captured, metadata}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      inside(branch, fn -> Ash.update!(herds.r7, %{head: 31}, authorize?: false) end)
+
+      branch_id = branch.id
+
+      assert_receive {:captured,
+                      %{
+                        branch_id: ^branch_id,
+                        domain: Farm,
+                        action_type: :update,
+                        resource: Herd,
+                        action: :update,
+                        nested?: false
+                      }}
+    end
+  end
+end
