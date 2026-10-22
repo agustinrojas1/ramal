@@ -73,6 +73,45 @@ defmodule Ramal.Storage.CodecTest do
     assert round_trip(branch) == {:ok, branch}
   end
 
+  test "an actor record is stored without its sensitive attributes" do
+    actor =
+      struct(Ramal.Test.Other.Account,
+        id: Ash.UUID.generate(),
+        email: "ana@example.com",
+        password_hash: "$2b$12$secret-hash",
+        api_token: "tok_secret"
+      )
+
+    branch = %{
+      Branch.new(Farm)
+      | log: [{:create, Herd, :create, %{}, actor, [key: "k", tenant: nil], DateTime.utc_now()}]
+    }
+
+    {:ok, state} = Codec.encode_state(branch)
+    json = Jason.encode!(state)
+    refute json =~ "secret"
+    refute json =~ "tok_"
+
+    {:ok, loaded} = round_trip(branch)
+    [{_, _, _, _, stored, _, _}] = loaded.log
+    assert stored.email == "ana@example.com"
+    assert stored.id == actor.id
+    assert stored.password_hash == nil
+    assert stored.api_token == nil
+  end
+
+  test "an actor that is not a resource record is stored as it is" do
+    actor = %{id: 1, role: :admin, token: "kept"}
+
+    branch = %{
+      Branch.new(Farm)
+      | log: [{:create, Herd, :create, %{}, actor, [key: "k", tenant: nil], DateTime.utc_now()}]
+    }
+
+    {:ok, loaded} = round_trip(branch)
+    assert [{_, _, _, _, ^actor, _, _}] = loaded.log
+  end
+
   test "attributes round-trip through their Ash types, including nil and unloaded ones" do
     herd = Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false)
     [selected | _] = Ash.read!(Ash.Query.select(Herd, [:id, :name]), authorize?: false)

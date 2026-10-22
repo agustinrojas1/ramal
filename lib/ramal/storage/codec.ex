@@ -25,8 +25,11 @@ defmodule Ramal.Storage.Codec do
       `:storage` and names the atom; string keys never have this problem.
 
   Pids, references, ports and functions cannot be stored: encoding returns `{:error, %Ramal.Error{reason: :storage}}`
-  naming the path of the offending value. The actor is stored as the term it is, so an actor struct with secrets in
-  its fields is persisted whole; pass `actor:` to `Ramal.merge/2` to replace it.
+  naming the path of the offending value. The actor is stored as the term it is, with one exception: when it is an Ash
+  resource record, the attributes marked `sensitive?` (password hashes, tokens) are stored as `nil`, so a stored branch
+  never holds them (`docs/adr/0010-stored-actors.md`). The actor read back from storage therefore has those fields
+  empty; pass `actor:` to `Ramal.merge/2` to replace the whole actor. Fields that are not attributes, such as a loaded
+  relationship, are stored as they are.
 
   ## Example
 
@@ -151,7 +154,7 @@ defmodule Ramal.Storage.Codec do
       "resource" => Atom.to_string(resource),
       "action" => Atom.to_string(action),
       "params" => term(params, ["params" | path]),
-      "actor" => term(actor, ["actor" | path]),
+      "actor" => actor |> redact() |> term(["actor" | path]),
       "opts" =>
         Enum.map(opts, fn {name, value} ->
           [Atom.to_string(name), term(value, [Atom.to_string(name), "opts" | path])]
@@ -204,6 +207,21 @@ defmodule Ramal.Storage.Codec do
 
     term(extra, ["extra", inspect(resource), "record"])
   end
+
+  # Only Ash resource records have attributes that can be sensitive; any other actor (a map, a tuple) is the host's own
+  # shape and is stored as it is.
+  defp redact(%module{} = actor) do
+    if Info.resource?(module) do
+      module
+      |> Info.attributes()
+      |> Enum.filter(& &1.sensitive?)
+      |> Enum.reduce(actor, &Map.put(&2, &1.name, nil))
+    else
+      actor
+    end
+  end
+
+  defp redact(actor), do: actor
 
   # `path` is where the value sits, innermost first, so that an error can name it.
   defp term(value, _path) when is_nil(value) or is_boolean(value) or is_number(value), do: value
