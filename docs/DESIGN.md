@@ -119,8 +119,9 @@ This is the section that decides correctness. In a read action's preparation, wh
 4. **Aggregates and calculations:** data-layer aggregates (`count`, `sum`, `exists`) and calculations with
    expressions are computed on the base and do not see the overlay. 0.1 documents this and emits a
    `[:ramal, :read, :unpatched_aggregate]` telemetry event when a query inside a branch selects one, so a host can
-   detect it in tests. `Ramal.aggregate/4` (ADR 0011) gives the exact answer for the common kinds by reading the patched
-   rows and computing in Elixir; aggregates and calculations declared on resources stay unpatched.
+   detect it in tests. `Ramal.aggregate/4` (ADR 0011, ADR 0013) gives the exact answer for the common kinds: the database
+   aggregates the rows the overlay does not touch and the branch reads only the ones it does; aggregates and
+   calculations declared on resources stay unpatched.
 5. **Pagination:** Ash adds a page's limit and offset after the `before_action` hooks, so a paginated read is paged
    by the database and patched afterwards. Deleted rows shorten a page, rows created in the branch can be missing
    from or misplaced across pages, and `count` is the database's. 0.1 documents this. Patching the whole list and
@@ -346,3 +347,4 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 16 | A stored actor that is an Ash record loses its `sensitive?` attributes; other actors are stored as they are | The branch table should not hold password hashes or tokens, and Ash already has the flag. A serializer callback has one use. [ADR 0010](adr/0010-stored-actors.md) |
 | 17 | `Ramal.aggregate/4` reads the patched rows and computes the aggregate in Elixir; `Ramal.Aggregate` holds the pure part | The data layer's aggregates cannot see the overlay, and Ash offers no hook to make them. Exact for the branch, as expensive as reading the matching rows. [ADR 0011](adr/0011-branch-aggregates.md) |
 | 18 | A proposal is a branch status (`:proposed`, `:rejected`) and a `proposal` field of the stored state; approving is merging | A second table and storage API for one record per branch would duplicate what the branch row already persists, and the decision must land in the same step as the merge. [ADR 0012](adr/0012-proposals.md) |
+| 19 | `Ramal.aggregate/4` aggregates in the database the rows outside the overlay, reads the overlaid ones through the patched path and joins the two; limit, offset and distinct keep the read-every-row path; the database's part is not fingerprinted | Reading every row made scoring a state cost a table scan (measured in `bench/`). The delta is exact and its cost follows the overlay. [ADR 0013](adr/0013-aggregate-delta.md) |

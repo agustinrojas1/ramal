@@ -69,6 +69,7 @@ defmodule Ramal.Test.Other do
 
   resources do
     resource(Ramal.Test.Other.Note)
+    resource(Ramal.Test.Other.Slot)
     resource(Ramal.Test.Other.Account)
   end
 end
@@ -81,7 +82,7 @@ defmodule Ramal.Test.Other.Note do
     extensions: [Ramal.Resource]
 
   actions do
-    defaults([:read])
+    defaults([:read, :destroy, create: :*, update: :*])
   end
 
   attributes do
@@ -95,6 +96,26 @@ defmodule Ramal.Test.Other.Note do
     attribute(:scheduled_on, :date, public?: true)
     attribute(:blob, :binary, public?: true)
     attribute(:anything, :term, public?: true)
+  end
+end
+
+defmodule Ramal.Test.Other.Slot do
+  @moduledoc false
+  # A resource with a composite primary key, for the aggregate delta and the overlay keys.
+  use Ash.Resource,
+    domain: Ramal.Test.Other,
+    data_layer: Ash.DataLayer.Ets,
+    extensions: [Ramal.Resource]
+
+  actions do
+    defaults([:read, :destroy, create: :*, update: :*])
+  end
+
+  attributes do
+    attribute(:day, :date, primary_key?: true, allow_nil?: false, public?: true)
+    attribute(:bay, :string, primary_key?: true, allow_nil?: false, public?: true)
+    attribute(:load, :integer, public?: true)
+    attribute(:weight, :decimal, public?: true)
   end
 end
 
