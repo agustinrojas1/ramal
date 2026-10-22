@@ -100,6 +100,50 @@ defmodule Ramal.Storage.CodecTest do
     assert stored.api_token == nil
   end
 
+  test "a proposal and its decision come back equal, without sensitive actor attributes" do
+    account =
+      struct(Ramal.Test.Other.Account,
+        id: Ash.UUID.generate(),
+        email: "ana@example.com",
+        password_hash: "$2b$12$secret-hash"
+      )
+
+    at = DateTime.utc_now()
+    stale = [%{resource: Herd, key: Ash.UUID.generate(), reason: :changed}]
+
+    proposed = Branch.propose(Branch.new(Farm), account, "recount", at)
+
+    assert round_trip(proposed) == {:ok, proposed} or
+             match?({:ok, %{status: :proposed}}, round_trip(proposed))
+
+    decided =
+      Branch.decide(proposed, :approved, at,
+        by: %{id: 3},
+        reason: "ok",
+        replayed: 2,
+        stale: stale
+      )
+
+    {:ok, state} = Codec.encode_state(decided)
+    refute Jason.encode!(state) =~ "secret"
+
+    {:ok, loaded} = round_trip(decided)
+    assert loaded.proposal.proposer.email == "ana@example.com"
+    assert loaded.proposal.proposer.password_hash == nil
+    assert loaded.proposal.decision == decided.proposal.decision
+
+    rejected = Branch.decide(proposed, :rejected, at, by: %{id: 3})
+    assert {:ok, %{status: :rejected} = loaded} = round_trip(rejected)
+    assert loaded.proposal.decision.status == :rejected
+  end
+
+  test "a branch stored before proposals existed loads with no proposal" do
+    branch = Branch.new(Farm)
+    {:ok, state} = Codec.encode_state(branch)
+    old = Map.delete(state, "proposal")
+    assert {:ok, %{proposal: nil}} = Codec.decode_state(columns(branch), old)
+  end
+
   test "an actor that is not a resource record is stored as it is" do
     actor = %{id: 1, role: :admin, token: "kept"}
 

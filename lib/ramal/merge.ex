@@ -53,13 +53,25 @@ defmodule Ramal.Merge do
       {:error, %Ramal.Error{reason: :stale, details: %{rows: rows}}} = Ramal.merge(branch)
   """
   @spec run(String.t(), keyword) :: {:ok, Result.t()} | {:error, Error.t()}
-  def run(id, opts \\ []) when is_binary(id) do
+  def run(id, opts \\ []) when is_binary(id), do: run(id, opts, :open, nil)
+
+  @doc false
+  # `Ramal.approve/2` merges a branch that is `:proposed`, and records its decision on the branch in the same step that
+  # marks it merged: `decide` turns the merge result into the function that annotates the branch.
+  @spec run(
+          String.t(),
+          keyword,
+          :open | :proposed,
+          (Result.t() -> (Ramal.Branch.t() -> Ramal.Branch.t())) | nil
+        ) ::
+          {:ok, Result.t()} | {:error, Error.t()}
+  def run(id, opts, from, decide) when is_binary(id) do
     opts = validate!(opts)
 
     with :ok <- ensure_outside_branch(id),
          {:ok, branch} <- Server.get(id) do
       :telemetry.span([:ramal, :merge], %{branch_id: id, domain: branch.domain}, fn ->
-        result = claim_and_merge(id, opts)
+        result = claim_and_merge(id, opts, from, decide)
         {result, stop_metadata(id, branch, result)}
       end)
     end
@@ -101,11 +113,12 @@ defmodule Ramal.Merge do
     end
   end
 
-  defp claim_and_merge(id, opts) do
-    with {:ok, branch} <- Server.begin_merge(id),
+  defp claim_and_merge(id, opts, from, decide) do
+    with {:ok, branch} <- Server.begin_merge(id, from),
          {:ok, result} <- merge_or_release(id, branch, opts),
-         :ok <- Server.finish_merge(id, :merged) do
-      {:ok, result}
+         annotate = if(decide, do: decide.(result), else: & &1),
+         :ok <- Server.finish_merge(id, :merged, annotate) do
+      {:ok, %{result | branch: annotate.(result.branch)}}
     end
   end
 

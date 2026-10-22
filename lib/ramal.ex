@@ -148,7 +148,7 @@ defmodule Ramal do
 
   ## Options
 
-    * `:status` - only branches with that status (`:open`, `:merged`, `:discarded`)
+    * `:status` - only branches with that status (`:open`, `:proposed`, `:merged`, `:rejected`, `:discarded`)
 
   ## Example
 
@@ -303,7 +303,111 @@ defmodule Ramal do
   def merge(branch_or_id, opts \\ []), do: branch_or_id |> id_of() |> Ramal.Merge.run(opts)
 
   @doc """
-  Discards an open branch: its process stops and its overlay and log are dropped.
+  Proposes an open branch for a decision: the branch is frozen (status `:proposed`, no more reads, writes or forks) and
+  persisted, with who proposed it and why. Someone with the right to decide then calls `approve/2`, which merges it, or
+  `reject/2`. The proposer can still `discard/1` it to withdraw it.
+
+  Ramal does not decide who may approve: the host checks that before calling `approve/2` or `reject/2`, in its own
+  policies. The people involved are whatever terms the host passes (a user struct, an id); a record loses its
+  `sensitive?` attributes when stored (ADR 0010).
+
+  ## Options
+
+    * `:proposed_by` - who proposes it, default `nil`
+    * `:reason` - why, a string, default `nil`
+
+  Returns `{:error, %Ramal.Error{reason: :not_open}}` for a branch that is not open, including one already proposed.
+  List the pending ones with `list(domain, status: :proposed)`; the diff to review is `diff/1`.
+
+  ## Example
+
+      {:ok, branch} = Ramal.branch(MyApp.Farm)
+      Ramal.run!(branch, fn -> Ash.update!(herd, %{head: 31}, authorize?: false) end)
+      {:ok, proposed} = Ramal.propose(branch, proposed_by: user, reason: "R7 has 31 head after the count")
+      proposed.status
+      #=> :proposed
+  """
+  @spec propose(branch_or_id, keyword) :: {:ok, Branch.t()} | {:error, Error.t()}
+  def propose(branch_or_id, opts \\ []) do
+    proposer = opts[:proposed_by]
+    reason = opts[:reason]
+    at = DateTime.utc_now()
+
+    Server.propose(id_of(branch_or_id), &Branch.propose(&1, proposer, reason, at))
+  end
+
+  @doc """
+  Approves a proposed branch: merges it exactly as `merge/2` would (staleness check, replay through the real actions,
+  one transaction) and records the decision on the branch: who, why, when, how many entries were replayed and which
+  stale rows were let through.
+
+  Takes the options of `merge/2`, so `:actor` is the actor the replayed actions run as, and two more:
+
+    * `:decided_by` - who approves it, default `nil`
+    * `:reason` - why, a string, default `nil`
+
+  A stale base or a failing replay returns the same errors as `merge/2` and leaves the branch `:proposed`, so the
+  decider can retry with `on_stale: :ignore` or `reject/2` it. Returns `:not_open` for a branch that is not proposed.
+
+  ## Example
+
+      {:ok, %Ramal.Merge.Result{branch: branch}} =
+        Ramal.approve(proposed, decided_by: manager, actor: manager, reason: "checked on site")
+
+      branch.proposal.decision.status
+      #=> :approved
+  """
+  @spec approve(branch_or_id, keyword) :: {:ok, Ramal.Merge.Result.t()} | {:error, Error.t()}
+  def approve(branch_or_id, opts \\ []) do
+    {decision, merge_opts} = Keyword.split(opts, [:decided_by, :reason])
+    at = DateTime.utc_now()
+
+    decide = fn result ->
+      &Branch.decide(&1, :approved, at,
+        by: decision[:decided_by],
+        reason: decision[:reason],
+        replayed: result.replayed,
+        stale: result.stale
+      )
+    end
+
+    with {:ok, result} <- Ramal.Merge.run(id_of(branch_or_id), merge_opts, :proposed, decide) do
+      Telemetry.branch(:approve, result.branch)
+      {:ok, result}
+    end
+  end
+
+  @doc """
+  Rejects a proposed branch: the decision is recorded and persisted, the branch becomes `:rejected` and its process
+  stops. The overlay and log are kept so the rejected diff can still be read with `get/1` and `diff/1`; `discard/1`
+  does not apply to a rejected branch.
+
+  ## Options
+
+    * `:decided_by` - who rejects it, default `nil`
+    * `:reason` - why, a string, default `nil`
+
+  Returns `:not_open` for a branch that is not proposed.
+
+  ## Example
+
+      {:ok, rejected} = Ramal.reject(proposed, decided_by: manager, reason: "count it again")
+      rejected.status
+      #=> :rejected
+  """
+  @spec reject(branch_or_id, keyword) :: {:ok, Branch.t()} | {:error, Error.t()}
+  def reject(branch_or_id, opts \\ []) do
+    at = DateTime.utc_now()
+
+    Server.reject(
+      id_of(branch_or_id),
+      &Branch.decide(&1, :rejected, at, by: opts[:decided_by], reason: opts[:reason])
+    )
+  end
+
+  @doc """
+  Discards an open or proposed branch (a proposer withdrawing a proposal): its process stops and its overlay and log are
+  dropped.
 
   The record stays in storage with status `:discarded`, so `list/2` can show it and later calls return
   `:not_open`. Discarding an already discarded branch is a no-op. A merged branch cannot be discarded.

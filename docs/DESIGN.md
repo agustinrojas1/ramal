@@ -25,8 +25,8 @@ discard them. A branch must cost roughly what a process and a map cost, so thous
 ## 2. Concepts
 
 **Branch.** `%Ramal.Branch{}`: `id` (UUID string), `name`, `domain` (the Ash domain whose resources it covers; several
-domains is a 0.2 question), `status` (`:open | :merged | :discarded`), `base` (fingerprints and snapshots, section 7), `overlay`,
-`log`, `inserted_at`, `metadata` (a map the host uses freely).
+domains is a 0.2 question), `status` (`:open | :proposed | :merged | :rejected | :discarded`), `base` (fingerprints and snapshots, section 7), `overlay`,
+`log`, `inserted_at`, `metadata` (a map the host uses freely), `proposal` (`nil` until proposed, section 7.1).
 
 **Overlay.** A map from `{resource_module, primary_key}` to one of `{:created, record}`, `{:updated, record}` or
 `:deleted`. The record is the full Ash struct as the action left it. The primary key is the value of the resource's
@@ -178,6 +178,15 @@ This is the section that decides correctness. In a read action's preparation, wh
 @spec merge(branch | id, keyword) :: {:ok, Ramal.Merge.Result.t()} | {:error, Ramal.Error.t()}
 # opts: actor, authorize? (default true), on_stale (:error | :ignore | (stale_rows -> :continue | :abort)), mode (:replay)
 
+@spec propose(branch | id, keyword) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
+# opts: proposed_by, reason
+
+@spec approve(branch | id, keyword) :: {:ok, Ramal.Merge.Result.t()} | {:error, Ramal.Error.t()}
+# opts: decided_by, reason, and the options of merge/2
+
+@spec reject(branch | id, keyword) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
+# opts: decided_by, reason
+
 @spec aggregate(query | resource, kind, field | nil, keyword) :: {:ok, term} | {:error, Ash.Error.t()}
 # kind: :count | :exists | :sum | :min | :max | :avg, computed in Elixir over the rows a read returns in the branch
 
@@ -236,6 +245,23 @@ keyed by `{resource, key}`. On `merge/2`:
 
 Limits and the reasons for these choices are in [ADR 0007](adr/0007-merge.md).
 
+### 7.1 Proposals (0.2)
+
+A branch can be frozen as a proposal that someone decides on, with the decision recorded on the branch itself.
+
+- `propose(branch, proposed_by:, reason:)` moves an `:open` branch to `:proposed` and stores `proposal: %{proposer, reason,
+  proposed_at, decision: nil}`. The branch is persisted before the call returns. A proposed branch refuses `run/2`, `fork/2`,
+  `merge/2` and a second proposal (`:not_open`); `diff/1`, `get/1` and `list(domain, status: :proposed)` work, which is
+  what a reviewer needs. The proposer can still `discard/1` it.
+- `approve(branch, decided_by:, reason:, ...merge options)` is `merge/2` on a `:proposed` branch, plus the decision:
+  `%{status: :approved, by, reason, at, replayed, stale}`, written in the same step that marks the branch `:merged`. A stale
+  base or a failing replay returns the errors of `merge/2` and leaves the branch `:proposed`.
+- `reject(branch, decided_by:, reason:)` records `%{status: :rejected, ...}`, sets the status to `:rejected`, persists, and stops
+  the process. Overlay and log are kept, so the rejected diff stays readable.
+- Ramal does not decide who may approve. The host authorizes before calling; `:decided_by` is recorded, not checked.
+- No new table: the proposal is a field of the stored branch state, and the status column gains two values. The diff at
+  decision time is `diff/1` of the stored branch, which is frozen from the proposal on ([ADR 0012](adr/0012-proposals.md)).
+
 `mode: :replay` is the only merge mode in 0.1. A future `:apply` mode would write the overlay's final state directly,
 skipping action logic; it is faster and less safe, and needs its own ADR.
 
@@ -257,7 +283,7 @@ skipping action logic; it is faster and less safe, and needs its own ADR.
 Events, all with `%{branch_id, domain}` metadata:
 
 `[:ramal, :branch, :create]`, `[:ramal, :branch, :fork]`, `[:ramal, :branch, :unload]`, `[:ramal, :branch, :load]`,
-`[:ramal, :branch, :discard]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
+`[:ramal, :branch, :discard]`, `[:ramal, :branch, :propose]`, `[:ramal, :branch, :approve]`, `[:ramal, :branch, :reject]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
 `[:ramal, :read, :patch]` with measurements `%{base_rows, overlay_rows, result_rows, duration}`,
 `[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource, action, nested?}`.
 
@@ -317,3 +343,4 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 15 | A multitenant resource used with a tenant inside a branch is refused (`:multitenancy_unsupported`) | The overlay is keyed by `{resource, key}` and merge's staleness read has no tenant; half support would mix tenants silently. [ADR 0009](adr/0009-multitenancy-refused.md) |
 | 16 | A stored actor that is an Ash record loses its `sensitive?` attributes; other actors are stored as they are | The branch table should not hold password hashes or tokens, and Ash already has the flag. A serializer callback has one use. [ADR 0010](adr/0010-stored-actors.md) |
 | 17 | `Ramal.aggregate/4` reads the patched rows and computes the aggregate in Elixir; `Ramal.Aggregate` holds the pure part | The data layer's aggregates cannot see the overlay, and Ash offers no hook to make them. Exact for the branch, as expensive as reading the matching rows. [ADR 0011](adr/0011-branch-aggregates.md) |
+| 18 | A proposal is a branch status (`:proposed`, `:rejected`) and a `proposal` field of the stored state; approving is merging | A second table and storage API for one record per branch would duplicate what the branch row already persists, and the decision must land in the same step as the merge. [ADR 0012](adr/0012-proposals.md) |

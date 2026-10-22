@@ -29,6 +29,19 @@ end)
 `merge/2` refuses when a row the branch saw has changed in the database since (`on_stale: :error`, the default), and
 fails as a whole, leaving the database untouched, when any replayed action is no longer valid.
 
+When an agent proposes and a person decides, freeze the branch as a proposal instead of merging it. Ramal records who
+proposed and who decided, and leaves the question of who may decide to your own policies:
+
+```elixir
+{:ok, branch} = Ramal.branch(MyApp.Farm)
+Ramal.run!(branch, fn -> Ash.update!(herd, %{paddock_id: paddock.id}, authorize?: false) end)
+{:ok, _proposed} = Ramal.propose(branch, proposed_by: agent, reason: "R7 is crowding L07")
+
+{:ok, pending} = Ramal.list(MyApp.Farm, status: :proposed)   # what a reviewer sees
+{:ok, changes} = Ramal.diff(branch)                          # what the reviewer reads
+{:ok, result} = Ramal.approve(branch, decided_by: manager, actor: manager)   # merges; or Ramal.reject(branch, ...)
+```
+
 ## Why
 
 Agents, planners and people who evaluate what-if scenarios need many cheap alternate states of the same data. Database branching (Neon, Dolt) gives you a handful of slow branches; transactions give you one per connection and nothing that survives a request. A [2026 benchmark from Columbia's DAPLab](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html) concluded that a system supporting "thousands of cheap alternate states without sacrificing normal query performance" does not exist yet.

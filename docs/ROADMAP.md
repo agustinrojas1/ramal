@@ -20,11 +20,11 @@ README runs as written; every **[confirm]** mark in `docs/DESIGN.md` is resolved
 
 ## 0.2 Proposals and hardening
 
-- Ramal.propose/2: a branch becomes a proposal record (`ramal_proposals`) that someone with the right to decide
-  approves (which merges) or rejects (which discards), with the diff and the staleness check stored at decision time.
-- Notifications policy inside branches (suppress by default, opt in per resource).
-- Runtime evaluation of simple aggregates over a branch where Ash exposes enough to do it; otherwise an explicit
-  Ramal.aggregate/3 helper that computes on the patched list.
+- `Ramal.propose/2`, `approve/2`, `reject/2`: a branch is frozen as a proposal that someone with the right to decide
+  approves (which merges) or rejects, with the decision, the stale rows and the replay count stored on the branch. Done:
+  a status and a field, not a `ramal_proposals` table (ADR 0012).
+- Notifications policy inside branches (suppress by default, opt in per resource). Done in 0.1 (`notify_in_branch?`, ADR 0005).
+- An explicit `Ramal.aggregate/4` that computes on the patched list. Done (ADR 0011); Ash exposes no hook to patch its own aggregates.
 - Several domains per branch if a real host needs it.
 - Publish 0.2 to Hex.
 
