@@ -48,15 +48,23 @@ defmodule Ramal.BranchTest do
 
   describe "put_write/6 and undo/2" do
     defp entry(n), do: {:update, A, :update, %{n: n}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
+    defp row(n, fingerprint \\ nil), do: %{fingerprint: fingerprint, snapshot: %{n: n}}
 
     test "the first write to an existing row keeps its snapshot and later writes keep that one" do
       branch = Branch.new(MyApp.Farm)
-      {branch, _} = Branch.put_write(branch, :updated, {A, 1}, %{n: 2}, %{n: 1}, entry(2))
-      {branch, _} = Branch.put_write(branch, :updated, {A, 1}, %{n: 3}, %{n: 2}, entry(3))
+      {branch, _} = Branch.put_write(branch, :updated, {A, 1}, %{n: 2}, row(1), entry(2))
+      {branch, _} = Branch.put_write(branch, :updated, {A, 1}, %{n: 3}, row(2), entry(3))
 
-      assert branch.base == %{{A, 1} => %{n: 1}}
+      assert branch.base == %{{A, 1} => row(1)}
       assert branch.overlay == %{{A, 1} => {:updated, %{n: 3}}}
       assert branch.log == [entry(3), entry(2)]
+    end
+
+    test "a fingerprint taken by an earlier read survives the first write" do
+      branch = Branch.put_fingerprints(Branch.new(MyApp.Farm), %{{A, 1} => 7})
+      {branch, _} = Branch.put_write(branch, :updated, {A, 1}, %{n: 2}, row(1, 9), entry(2))
+
+      assert branch.base == %{{A, 1} => row(1, 7)}
     end
 
     test "a created row needs no snapshot" do
@@ -70,7 +78,7 @@ defmodule Ramal.BranchTest do
     test "deleting a created row removes its overlay entry but the log keeps both writes" do
       branch = Branch.new(MyApp.Farm)
       {branch, _} = Branch.put_write(branch, :created, {A, 1}, %{n: 1}, nil, entry(1))
-      {branch, _} = Branch.put_write(branch, :deleted, {A, 1}, %{n: 1}, %{n: 1}, entry(2))
+      {branch, _} = Branch.put_write(branch, :deleted, {A, 1}, %{n: 1}, row(1), entry(2))
 
       assert branch.overlay == %{}
       assert branch.base == %{}
@@ -78,22 +86,96 @@ defmodule Ramal.BranchTest do
     end
 
     test "undo takes back the newest writes and leaves the others" do
-      branch = Branch.new(MyApp.Farm)
-      {kept, _} = Branch.put_write(branch, :updated, {A, 1}, %{n: 2}, %{n: 1}, entry(2))
-      {b2, undo2} = Branch.put_write(kept, :updated, {A, 1}, %{n: 3}, %{n: 2}, entry(3))
-      {b3, undo3} = Branch.put_write(b2, :deleted, {A, 2}, %{n: 9}, %{n: 9}, entry(4))
+      branch = Branch.put_fingerprints(Branch.new(MyApp.Farm), %{{A, 1} => 7})
+      {kept, _} = Branch.put_write(branch, :updated, {A, 1}, %{n: 2}, row(1), entry(2))
+      {b2, undo2} = Branch.put_write(kept, :updated, {A, 1}, %{n: 3}, row(2), entry(3))
+      {b3, undo3} = Branch.put_write(b2, :deleted, {A, 2}, %{n: 9}, row(9), entry(4))
 
       assert Branch.undo(b3, [undo3, undo2]) == kept
     end
 
+    test "undo of a first write puts back the fingerprint a read had taken" do
+      branch = Branch.put_fingerprints(Branch.new(MyApp.Farm), %{{A, 1} => 7})
+      {written, undo} = Branch.put_write(branch, :updated, {A, 1}, %{n: 2}, row(1), entry(2))
+
+      assert Branch.undo(written, [undo]) == branch
+    end
+
     test "undo leaves a write another process made in between" do
       branch = Branch.new(MyApp.Farm)
-      {written, undo} = Branch.put_write(branch, :updated, {A, 1}, %{n: 2}, %{n: 1}, entry(2))
-      {other, _} = Branch.put_write(written, :updated, {A, 2}, %{n: 5}, %{n: 4}, entry(5))
+      {written, undo} = Branch.put_write(branch, :updated, {A, 1}, %{n: 2}, row(1), entry(2))
+      {other, _} = Branch.put_write(written, :updated, {A, 2}, %{n: 5}, row(4), entry(5))
 
       undone = Branch.undo(other, [undo])
       assert undone.overlay == %{{A, 2} => {:updated, %{n: 5}}}
       assert undone.log == [entry(5)]
+    end
+  end
+
+  describe "put_fingerprints/2" do
+    test "keeps the first fingerprint of a row" do
+      branch = Branch.put_fingerprints(Branch.new(MyApp.Farm), %{{A, 1} => 1, {A, 2} => 2})
+      branch = Branch.put_fingerprints(branch, %{{A, 1} => 9, {A, 3} => 3})
+
+      assert Map.new(branch.base, fn {ref, row} -> {ref, row.fingerprint} end) ==
+               %{{A, 1} => 1, {A, 2} => 2, {A, 3} => 3}
+    end
+  end
+
+  describe "fork/2" do
+    test "copies overlay, log and base and gets a new identity" do
+      parent = Branch.new(MyApp.Farm, name: "p", metadata: %{ticket: 1})
+      {parent, _} = Branch.put_write(parent, :updated, {A, 1}, %{n: 2}, row(1, 5), entry(2))
+      fork = Branch.fork(parent)
+
+      assert fork.id != parent.id
+      assert {fork.overlay, fork.log, fork.base} == {parent.overlay, parent.log, parent.base}
+      assert fork.name == "p"
+      assert fork.metadata == %{ticket: 1, forked_from: parent.id}
+      assert fork.status == :open
+    end
+
+    test "name and metadata can be given" do
+      fork = Branch.fork(Branch.new(MyApp.Farm, name: "p"), name: "q", metadata: %{a: 1})
+
+      assert fork.name == "q"
+      assert Map.delete(fork.metadata, :forked_from) == %{a: 1}
+    end
+  end
+
+  describe "diff/2" do
+    test "lists changes in the order the log first touched each row" do
+      branch = Branch.new(MyApp.Farm)
+
+      {branch, _} =
+        Branch.put_write(branch, :updated, {A, 2}, %{n: 2}, row(1), entry(2) |> with_key(2))
+
+      {branch, _} =
+        Branch.put_write(branch, :updated, {A, 1}, %{n: 5}, row(1), entry(5) |> with_key(1))
+
+      {branch, _} =
+        Branch.put_write(branch, :updated, {A, 2}, %{n: 3}, row(2), entry(3) |> with_key(2))
+
+      assert {:ok, changes} = Branch.diff(branch)
+      assert Enum.map(changes, & &1.key) == [2, 1]
+    end
+
+    test "a row changed and changed back is left out" do
+      branch = Branch.new(MyApp.Farm)
+      {branch, _} = Branch.put_write(branch, :updated, {A, 1}, %{n: 2}, row(1), entry(2))
+      {branch, _} = Branch.put_write(branch, :updated, {A, 1}, %{n: 1}, row(2), entry(3))
+
+      assert {:ok, []} = Branch.diff(branch)
+    end
+
+    test "an updated row without a snapshot is a missing_snapshot error" do
+      branch = %{Branch.new(MyApp.Farm) | overlay: %{{A, 1} => {:updated, %{n: 2}}}}
+
+      assert {:error, %Ramal.Error{reason: :missing_snapshot}} = Branch.diff(branch)
+    end
+
+    defp with_key({type, resource, action, input, actor, opts, at}, key) do
+      {type, resource, action, input, actor, Keyword.put(opts, :key, key), at}
     end
   end
 end

@@ -143,11 +143,24 @@ defmodule Ramal.Branch.Server do
   def update(id, fun) when is_function(fun, 1), do: call(id, {:update, fun})
 
   @doc """
+  Records the fingerprints of base rows a read returned (`Ramal.Branch.put_fingerprints/2`). Rejected unless the
+  branch is open.
+  """
+  @spec fingerprints(String.t(), map) :: :ok | {:error, Error.t()}
+  def fingerprints(id, fingerprints) do
+    with {:ok, :ok, _} <-
+           write(id, fn branch -> {:ok, Branch.put_fingerprints(branch, fingerprints)} end) do
+      :ok
+    end
+  end
+
+  @doc """
   Like `update/2` for a function that also has something to tell the caller: `fun` returns `{reply, branch}` and the
-  caller gets `{:ok, reply, branch}`. Write capture uses it to learn how to undo the write it just made.
+  caller gets `{:ok, reply, %{id: id, domain: domain}}`, not the whole branch, so a write does not copy the overlay
+  back to the caller. Write capture uses it to learn how to undo the write it just made.
   """
   @spec write(String.t(), (Branch.t() -> {reply, Branch.t()})) ::
-          {:ok, reply, Branch.t()} | {:error, Error.t()}
+          {:ok, reply, %{id: String.t(), domain: module}} | {:error, Error.t()}
         when reply: term
   def write(id, fun) when is_function(fun, 1), do: call(id, {:write, fun})
 
@@ -215,7 +228,7 @@ defmodule Ramal.Branch.Server do
   def handle_call({:write, fun}, _from, state) do
     if Branch.open?(state.branch) do
       {reply, branch} = fun.(state.branch)
-      reply(%{state | branch: branch}, {:ok, reply, branch})
+      reply(%{state | branch: branch}, {:ok, reply, %{id: branch.id, domain: branch.domain}})
     else
       reply(state, {:error, not_open(state.branch)})
     end

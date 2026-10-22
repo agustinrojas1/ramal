@@ -157,7 +157,8 @@ defmodule Ramal.CaptureTest do
       branch = state(branch)
       key = {Herd, herds.r7.id}
       assert {:updated, %Herd{head: 32}} = branch.overlay[key]
-      assert %Herd{head: 30} = branch.base[key]
+      assert %{snapshot: %Herd{head: 30}, fingerprint: fingerprint} = branch.base[key]
+      assert fingerprint == Ramal.Resource.fingerprint(herds.r7)
 
       assert [
                {:update, Herd, :update, %{head: 32}, nil, _, _},
@@ -204,7 +205,7 @@ defmodule Ramal.CaptureTest do
       assert db_names() == ["R7", "R8", "R9"]
       branch = state(branch)
       assert branch.overlay == %{{Herd, herds.r9.id} => :deleted}
-      assert %Herd{name: "R9"} = branch.base[{Herd, herds.r9.id}]
+      assert %{snapshot: %Herd{name: "R9"}} = branch.base[{Herd, herds.r9.id}]
     end
 
     test "destroying a row the branch created leaves no trace in the overlay", %{branch: branch} do
