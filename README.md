@@ -44,7 +44,7 @@ Ramal.run!(branch, fn -> Ash.update!(herd, %{paddock_id: paddock.id}, authorize?
 
 ## Why
 
-Agents, planners and people who evaluate what-if scenarios need many cheap alternate states of the same data. Database branching (Neon, Dolt) gives you a handful of slow branches; transactions give you one per connection and nothing that survives a request. A [2026 benchmark from Columbia's DAPLab](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html) concluded that a system supporting "thousands of cheap alternate states without sacrificing normal query performance" does not exist yet.
+Agents, planners and people who evaluate what-if scenarios need many cheap alternate states of the same data. Transactions give you one per connection and nothing that survives a request. Branching databases trade one need for the other: in a [2026 study from Columbia's DAPLab](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html), Neon ran into its cap on active branches, and Dolt created branches cheaply but read and joined slowly inside them. The authors conclude that agents "need databases that can support thousands of cheap alternate realities without giving up normal query performance", and add: "That system does not exist yet."
 
 On the BEAM a branch is a process with a map. That is the whole library.
 
