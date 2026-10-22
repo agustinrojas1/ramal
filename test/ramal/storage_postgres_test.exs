@@ -35,6 +35,22 @@ defmodule Ramal.Storage.PostgresTest do
       assert Postgres.fetch(branch.id, @config) == {:ok, branch}
     end
 
+    test "names, metadata and ids are bound parameters, never part of the SQL" do
+      hostile = "x'); DROP TABLE ramal_branches; --"
+      branch = %{branch() | name: hostile, metadata: %{note: hostile}}
+
+      assert Postgres.put(branch, @config) == :ok
+      assert Postgres.fetch(branch.id, @config) == {:ok, branch}
+
+      for id <- [hostile, "' OR '1'='1", branch.id <> "; DELETE FROM ramal_branches", ""] do
+        assert {:error, %Error{reason: :not_found}} = Postgres.fetch(id, @config)
+        assert {:error, %Error{reason: :storage}} = Postgres.delete(id, @config)
+      end
+
+      assert {:ok, [^branch]} = Postgres.list(Farm, [status: :open], @config)
+      assert {:ok, []} = Postgres.list(Farm, [status: :merged], @config)
+    end
+
     test "putting again replaces the row" do
       branch = branch()
       :ok = Postgres.put(branch, @config)
