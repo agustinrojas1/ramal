@@ -1,0 +1,54 @@
+defmodule Ramal.Telemetry do
+  @moduledoc """
+  The telemetry events Ramal emits, in one place.
+
+  Every branch event carries `%{branch_id: id, domain: module}` in its metadata, plus whatever the event adds.
+  The library never logs above `:debug`; observability goes through these events.
+
+  | event | when |
+  |---|---|
+  | `[:ramal, :branch, :create]` | a branch was created |
+  | `[:ramal, :branch, :load]` | a branch process started from storage, or right after creation |
+  | `[:ramal, :branch, :unload]` | a branch process stopped after persisting (`reason`: `:idle` or `:shutdown`) |
+  | `[:ramal, :branch, :discard]` | a branch was discarded |
+  | `[:ramal, :branch, :too_large]` | a branch process was killed for exceeding `max_heap_size` |
+
+  ## Example
+
+      iex> :telemetry.attach("doc-example", [:ramal, :branch, :create], fn _, _, meta, pid -> send(pid, meta) end, self())
+      iex> Ramal.Telemetry.branch(:create, %{id: "b1", domain: MyApp.Farm})
+      iex> receive do: (%{branch_id: id} -> id)
+      "b1"
+      iex> :telemetry.detach("doc-example")
+  """
+
+  @doc """
+  The branch lifecycle event names, for attaching handlers.
+
+  ## Example
+
+      iex> [:ramal, :branch, :create] in Ramal.Telemetry.branch_events()
+      true
+  """
+  @spec branch_events() :: [[atom]]
+  def branch_events do
+    for step <- [:create, :load, :unload, :discard, :too_large], do: [:ramal, :branch, step]
+  end
+
+  @doc """
+  Emits a branch lifecycle event for `branch` (anything with `:id` and `:domain`), merging `extra` into the metadata.
+
+  ## Example
+
+      iex> Ramal.Telemetry.branch(:discard, %{id: "b1", domain: MyApp.Farm}, %{reason: :requested})
+      :ok
+  """
+  @spec branch(atom, %{id: String.t(), domain: module}, map) :: :ok
+  def branch(step, %{id: id, domain: domain}, extra \\ %{}) do
+    :telemetry.execute(
+      [:ramal, :branch, step],
+      %{system_time: System.system_time()},
+      Map.merge(%{branch_id: id, domain: domain}, extra)
+    )
+  end
+end
