@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo/ramal-mark.svg" width="120" alt="Ramal">
+  <img src="assets/logo/ramal-mark-dark.svg" width="120" alt="Ramal">
 </p>
 
 <h1 align="center">Ramal</h1>
