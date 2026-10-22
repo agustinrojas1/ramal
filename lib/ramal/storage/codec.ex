@@ -3,8 +3,8 @@ defmodule Ramal.Storage.Codec do
   Turns a branch into a JSON-safe map and back, for storage backends that keep text (`Ramal.Storage.Postgres` keeps it
   in a `jsonb` column).
 
-  `encode_state/1` covers what the table has no column for: overlay, base (fingerprints and snapshots), log and
-  metadata. `decode_state/2` takes that map and the columns and gives the branch back, equal to the one encoded.
+  `encode_state/1` covers what the table has no column for: overlay, base (fingerprints and snapshots), log, metadata
+  and the proposal. `decode_state/2` takes that map and the columns and gives the branch back, equal to the one encoded.
 
   How values are written, confirmed against Ash 3.37 (`lib/ash/type/type.ex`):
 
@@ -43,7 +43,13 @@ defmodule Ramal.Storage.Codec do
   alias Ramal.{Branch, Error}
 
   @version 1
-  @statuses %{"open" => :open, "merged" => :merged, "discarded" => :discarded}
+  @statuses %{
+    "open" => :open,
+    "proposed" => :proposed,
+    "merged" => :merged,
+    "rejected" => :rejected,
+    "discarded" => :discarded
+  }
   @opt_names %{"key" => :key, "tenant" => :tenant, "nested?" => :nested?}
 
   @doc """
@@ -64,7 +70,8 @@ defmodule Ramal.Storage.Codec do
        "base" => Enum.map(branch.base, &base_entry/1),
        "log" => Enum.map(branch.log, &log_entry/1),
        "metadata" => term(branch.metadata, ["metadata"]),
-       "inserted_at" => term(branch.inserted_at, ["inserted_at"])
+       "inserted_at" => term(branch.inserted_at, ["inserted_at"]),
+       "proposal" => proposal(branch.proposal)
      }}
   catch
     {:codec, message, path} ->
@@ -97,7 +104,8 @@ defmodule Ramal.Storage.Codec do
        metadata: unterm(state["metadata"]),
        overlay: Map.new(state["overlay"], &decode_overlay_entry/1),
        base: Map.new(state["base"], &decode_base_entry/1),
-       log: Enum.map(state["log"], &decode_log_entry/1)
+       log: Enum.map(state["log"], &decode_log_entry/1),
+       proposal: decode_proposal(state["proposal"])
      }}
   catch
     {:codec, message} ->
@@ -120,6 +128,36 @@ defmodule Ramal.Storage.Codec do
   end
 
   # -- encode -------------------------------------------------------------------------------------------------------
+
+  # A proposal is written field by field, with string keys, so that reading it back never needs an atom that only this
+  # module mentions. Actors lose their sensitive attributes like the actors in the log (ADR 0010).
+  defp proposal(nil), do: nil
+
+  defp proposal(proposal) do
+    path = ["proposal"]
+
+    %{
+      "proposer" => proposal.proposer |> redact() |> term(["proposer" | path]),
+      "reason" => proposal.reason,
+      "proposed_at" => term(proposal.proposed_at, ["proposed_at" | path]),
+      "decision" => decision(proposal.decision)
+    }
+  end
+
+  defp decision(nil), do: nil
+
+  defp decision(decision) do
+    path = ["decision", "proposal"]
+
+    %{
+      "status" => Atom.to_string(decision.status),
+      "by" => decision.by |> redact() |> term(["by" | path]),
+      "reason" => decision.reason,
+      "at" => term(decision.at, ["at" | path]),
+      "replayed" => decision.replayed,
+      "stale" => term(decision.stale, ["stale" | path])
+    }
+  end
 
   defp overlay_entry({{resource, key}, entry}) do
     {op, record} =
@@ -306,6 +344,34 @@ defmodule Ramal.Storage.Codec do
     snapshot = row["snapshot"] && decode_record(resource, row["snapshot"])
     {{resource, unterm(key)}, %{fingerprint: row["fingerprint"], snapshot: snapshot}}
   end
+
+  defp decode_proposal(nil), do: nil
+
+  defp decode_proposal(stored) do
+    %{
+      proposer: unterm(stored["proposer"]),
+      reason: stored["reason"],
+      proposed_at: unterm(stored["proposed_at"]),
+      decision: decode_decision(stored["decision"])
+    }
+  end
+
+  defp decode_decision(nil), do: nil
+
+  defp decode_decision(stored) do
+    %{
+      status: decision_status!(stored["status"]),
+      by: unterm(stored["by"]),
+      reason: stored["reason"],
+      at: unterm(stored["at"]),
+      replayed: stored["replayed"],
+      stale: unterm(stored["stale"])
+    }
+  end
+
+  defp decision_status!("approved"), do: :approved
+  defp decision_status!("rejected"), do: :rejected
+  defp decision_status!(other), do: throw({:codec, "unknown decision status #{inspect(other)}"})
 
   defp decode_log_entry(entry) do
     resource = module!(entry["resource"])

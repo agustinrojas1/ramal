@@ -37,6 +37,29 @@ defmodule Ramal.ReadmeTest do
     assert {:ok, %{status: :discarded}} = Ramal.get(bound[:copy].id)
   end
 
+  test "the proposal example in the README runs as written", %{herds: herds, paddocks: paddocks} do
+    # The second Elixir block of the README is the proposal example.
+    [_first, [code] | _others] =
+      Regex.scan(~r/```elixir\n(.*?)```/s, File.read!(@readme), capture: :all_but_first)
+
+    code = String.replace(code, "MyApp.Farm", "Ramal.Test.Farm")
+
+    binding = [
+      herd: herds.r7,
+      paddock: paddocks.l18,
+      agent: %{id: "agent-1"},
+      manager: %{role: :admin}
+    ]
+
+    {_result, bound} = Code.eval_string(code, binding)
+
+    assert [%{status: :proposed}] = bound[:pending]
+    assert [%Change{kind: :updated}] = bound[:changes]
+    assert %Ramal.Merge.Result{branch: %{status: :merged} = branch} = bound[:result]
+    assert branch.proposal.decision.by == %{role: :admin}
+    assert Ash.get!(Herd, herds.r7.id, authorize?: false).paddock_id == paddocks.l18.id
+  end
+
   test "the read in the example sees the branch's change", %{herds: herds, paddocks: paddocks} do
     binding = [herd: herds.r7, paddock: paddocks.l18, admin: %{role: :admin}]
     code = example() |> String.split("{:ok, copy}") |> hd()

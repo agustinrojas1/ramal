@@ -169,16 +169,34 @@ defmodule Ramal.Branch.Server do
   and a second claim, so two merges cannot replay the same log. The claim ends with `finish_merge/2`, or when the
   caller dies.
   """
-  @spec begin_merge(String.t()) :: {:ok, Branch.t()} | {:error, Error.t()}
-  def begin_merge(id), do: call(id, :begin_merge)
+  @spec begin_merge(String.t(), :open | :proposed) :: {:ok, Branch.t()} | {:error, Error.t()}
+  def begin_merge(id, from \\ :open) when from in [:open, :proposed],
+    do: call(id, {:begin_merge, from})
 
   @doc """
-  Ends the claim of `begin_merge/1`. `:merged` marks the branch merged, persists it and stops the process;
-  `:aborted` only releases the claim.
+  Ends the claim of `begin_merge/1`. `:merged` applies `annotate` to the branch (an approval records its decision
+  there), marks it merged, persists it and stops the process; `:aborted` only releases the claim.
   """
-  @spec finish_merge(String.t(), :merged | :aborted) :: :ok | {:error, Error.t()}
-  def finish_merge(id, outcome) when outcome in [:merged, :aborted],
-    do: call(id, {:finish_merge, outcome})
+  @spec finish_merge(String.t(), :merged | :aborted, (Branch.t() -> Branch.t())) ::
+          :ok | {:error, Error.t()}
+  def finish_merge(id, outcome, annotate \\ & &1)
+      when outcome in [:merged, :aborted] and is_function(annotate, 1),
+      do: call(id, {:finish_merge, outcome, annotate})
+
+  @doc """
+  Freezes an open branch as a proposal: `fun` turns the branch into the proposed one, which is persisted before the
+  call returns, so a proposal survives a restart. The process stays up; the branch refuses writes and reads because it
+  is no longer open.
+  """
+  @spec propose(String.t(), (Branch.t() -> Branch.t())) :: {:ok, Branch.t()} | {:error, Error.t()}
+  def propose(id, fun) when is_function(fun, 1), do: call(id, {:propose, fun})
+
+  @doc """
+  Rejects a proposed branch: `fun` records the decision, the rejected branch is persisted and the process stops. The
+  overlay and log are kept, so the rejected diff can still be read.
+  """
+  @spec reject(String.t(), (Branch.t() -> Branch.t())) :: {:ok, Branch.t()} | {:error, Error.t()}
+  def reject(id, fun) when is_function(fun, 1), do: call(id, {:reject, fun})
 
   @doc """
   Discards the branch: its process persists the discarded state and stops.
@@ -250,16 +268,17 @@ defmodule Ramal.Branch.Server do
     end
   end
 
-  def handle_call(:begin_merge, {pid, _tag}, state) do
-    if usable?(state) do
+  def handle_call({:begin_merge, from}, {pid, _tag}, state) do
+    if state.merging == nil and state.branch.status == from do
       ref = Process.monitor(pid)
       reply(%{state | merging: ref}, {:ok, state.branch})
     else
-      reply(state, {:error, unavailable(state)})
+      reply(state, {:error, unavailable(state, from)})
     end
   end
 
-  def handle_call({:finish_merge, outcome}, _from, %{merging: ref} = state) when ref != nil do
+  def handle_call({:finish_merge, outcome, annotate}, _from, %{merging: ref} = state)
+      when ref != nil do
     Process.demonitor(ref, [:flush])
     state = %{state | merging: nil}
 
@@ -268,7 +287,7 @@ defmodule Ramal.Branch.Server do
         reply(state, :ok)
 
       :merged ->
-        branch = %{state.branch | status: :merged}
+        branch = %{annotate.(state.branch) | status: :merged}
 
         case persist(branch, state.config) do
           :ok -> {:stop, :normal, :ok, %{state | branch: branch, stop: :merged}}
@@ -277,10 +296,44 @@ defmodule Ramal.Branch.Server do
     end
   end
 
-  def handle_call({:finish_merge, _outcome}, _from, state), do: reply(state, :ok)
+  def handle_call({:finish_merge, _outcome, _annotate}, _from, state), do: reply(state, :ok)
 
+  def handle_call({:propose, fun}, _from, state) do
+    if usable?(state) do
+      branch = fun.(state.branch)
+
+      case persist(branch, state.config) do
+        :ok ->
+          Telemetry.branch(:propose, branch)
+          reply(%{state | branch: branch}, {:ok, branch})
+
+        {:error, _} = error ->
+          reply(state, error)
+      end
+    else
+      reply(state, {:error, unavailable(state)})
+    end
+  end
+
+  def handle_call({:reject, fun}, _from, %{merging: nil, branch: %{status: :proposed}} = state) do
+    branch = fun.(state.branch)
+
+    case persist(branch, state.config) do
+      :ok ->
+        Telemetry.branch(:reject, branch)
+        {:stop, :normal, {:ok, branch}, %{state | branch: branch, stop: :rejected}}
+
+      {:error, _} = error ->
+        reply(state, error)
+    end
+  end
+
+  def handle_call({:reject, _fun}, _from, state),
+    do: reply(state, {:error, unavailable(state, :proposed)})
+
+  # A proposer can withdraw a proposal that has not been decided: it is discarded like an open branch.
   def handle_call(:discard, _from, %{merging: nil, branch: %{status: status}} = state)
-      when status in [:open, :discarded] do
+      when status in [:open, :proposed, :discarded] do
     branch = Branch.discard(state.branch)
 
     case persist(branch, state.config) do
@@ -307,7 +360,7 @@ defmodule Ramal.Branch.Server do
   def handle_info(_message, state), do: {:noreply, state, timeout(state)}
 
   @impl true
-  def terminate(_reason, %{stop: stop}) when stop in [:discarded, :merged], do: :ok
+  def terminate(_reason, %{stop: stop}) when stop in [:discarded, :merged, :rejected], do: :ok
 
   def terminate(_reason, %{branch: branch, config: config, stop: stop}) do
     # Persist before announcing the unload, so an observer who sees the event can already rehydrate the branch.
@@ -323,17 +376,19 @@ defmodule Ramal.Branch.Server do
 
   defp usable?(state), do: Branch.open?(state.branch) and state.merging == nil
 
-  defp unavailable(%{merging: nil, branch: branch}), do: not_open(branch)
+  defp unavailable(state, wanted \\ :open)
 
-  defp unavailable(%{branch: branch}) do
+  defp unavailable(%{merging: nil, branch: branch}, wanted), do: not_open(branch, wanted)
+
+  defp unavailable(%{branch: branch}, _wanted) do
     Error.new(:not_open, "branch #{inspect(branch.id)} is being merged", %{
       id: branch.id,
       status: :merging
     })
   end
 
-  defp not_open(branch) do
-    Error.new(:not_open, "branch #{inspect(branch.id)} is #{branch.status}, not open", %{
+  defp not_open(branch, wanted) do
+    Error.new(:not_open, "branch #{inspect(branch.id)} is #{branch.status}, not #{wanted}", %{
       id: branch.id,
       status: branch.status
     })

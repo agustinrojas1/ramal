@@ -5,7 +5,7 @@ defmodule Ramal.Branch do
   * `id` - a UUID string
   * `name` - free text for people
   * `domain` - the Ash domain whose resources the branch covers
-  * `status` - `:open`, `:merged` or `:discarded`
+  * `status` - `:open`, `:proposed`, `:merged`, `:rejected` or `:discarded`
   * `base` - what the branch knows about the base rows it touched, by `{resource, key}`: `%{fingerprint: hash | nil,
     snapshot: record | nil}`. The fingerprint is taken when a row is first read or written, the snapshot when it is first
     written, so `diff/2` never queries the database
@@ -13,6 +13,7 @@ defmodule Ramal.Branch do
   * `log` - the writes the branch captured, newest first so that recording one is O(1); readers use `Enum.reverse/1`
   * `inserted_at` - when the branch was created
   * `metadata` - a map the host uses freely; Ramal only adds `forked_from` to a fork
+  * `proposal` - `nil` until `Ramal.propose/2`; then `t:proposal/0`
 
   Nothing here touches a process or storage, so it is tested with plain data.
 
@@ -27,7 +28,27 @@ defmodule Ramal.Branch do
 
   alias Ramal.{Change, Overlay}
 
-  @type status :: :open | :merged | :discarded
+  @type status :: :open | :proposed | :merged | :rejected | :discarded
+
+  @typedoc """
+  A branch's proposal: who proposed it and why, and once decided, how. `proposer` and `by` are whatever the host passed
+  (`:proposed_by`, `:decided_by`); `stale` and `replayed` are what the approving merge saw.
+  """
+  @type proposal :: %{
+          proposer: term,
+          reason: String.t() | nil,
+          proposed_at: DateTime.t(),
+          decision:
+            nil
+            | %{
+                status: :approved | :rejected,
+                by: term,
+                reason: String.t() | nil,
+                at: DateTime.t(),
+                replayed: non_neg_integer | nil,
+                stale: [Ramal.Merge.Result.stale_row()]
+              }
+        }
   @type kind :: :created | :updated | :deleted
   @type ref :: Overlay.ref()
 
@@ -59,7 +80,8 @@ defmodule Ramal.Branch do
           overlay: Overlay.t(),
           log: list,
           inserted_at: DateTime.t(),
-          metadata: map
+          metadata: map,
+          proposal: proposal | nil
         }
 
   @enforce_keys [:id, :domain, :inserted_at]
@@ -72,7 +94,8 @@ defmodule Ramal.Branch do
     base: %{},
     overlay: %{},
     log: [],
-    metadata: %{}
+    metadata: %{},
+    proposal: nil
   ]
 
   @doc """
@@ -125,6 +148,54 @@ defmodule Ramal.Branch do
   @spec discard(t) :: t
   def discard(%__MODULE__{} = branch) do
     %{branch | status: :discarded, overlay: %{}, log: [], base: %{}}
+  end
+
+  @doc """
+  The branch after `Ramal.propose/2`: status `:proposed`, frozen until someone decides, with the proposal recorded.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> proposed = Ramal.Branch.propose(branch, %{id: 7}, "move R7 before the rain", ~U[2026-01-01 00:00:00Z])
+      iex> {proposed.status, proposed.proposal.proposer, proposed.proposal.reason, proposed.proposal.decision}
+      {:proposed, %{id: 7}, "move R7 before the rain", nil}
+  """
+  @spec propose(t, term, String.t() | nil, DateTime.t()) :: t
+  def propose(%__MODULE__{} = branch, proposer, reason, %DateTime{} = at) do
+    %{
+      branch
+      | status: :proposed,
+        proposal: %{proposer: proposer, reason: reason, proposed_at: at, decision: nil}
+    }
+  end
+
+  @doc """
+  The branch with the decision on its proposal recorded. `status` is `:approved` or `:rejected`; only a rejection
+  changes the branch's own status (to `:rejected`), because an approval is followed by the merge that marks it `:merged`.
+  `details` may carry `:by`, `:reason`, `:replayed` and `:stale`.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> branch = Ramal.Branch.propose(branch, nil, nil, ~U[2026-01-01 00:00:00Z])
+      iex> rejected = Ramal.Branch.decide(branch, :rejected, ~U[2026-01-02 00:00:00Z], by: %{id: 1}, reason: "not now")
+      iex> {rejected.status, rejected.proposal.decision.status, rejected.proposal.decision.reason}
+      {:rejected, :rejected, "not now"}
+  """
+  @spec decide(t, :approved | :rejected, DateTime.t(), keyword) :: t
+  def decide(%__MODULE__{proposal: proposal} = branch, status, %DateTime{} = at, details \\ [])
+      when status in [:approved, :rejected] and is_map(proposal) do
+    decision = %{
+      status: status,
+      by: details[:by],
+      reason: details[:reason],
+      at: at,
+      replayed: details[:replayed],
+      stale: Keyword.get(details, :stale, [])
+    }
+
+    branch = %{branch | proposal: %{proposal | decision: decision}}
+    if status == :rejected, do: %{branch | status: :rejected}, else: branch
   end
 
   @doc """

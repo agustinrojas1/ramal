@@ -12,6 +12,9 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :branch, :load]` | a branch process started from storage, or right after creation |
   | `[:ramal, :branch, :unload]` | a branch process stopped after persisting (`reason`: `:idle` or `:shutdown`) |
   | `[:ramal, :branch, :discard]` | a branch was discarded |
+  | `[:ramal, :branch, :propose]` | a branch was proposed for a decision |
+  | `[:ramal, :branch, :approve]` | a proposed branch was approved and merged (after the `[:ramal, :merge]` span) |
+  | `[:ramal, :branch, :reject]` | a proposed branch was rejected |
   | `[:ramal, :branch, :too_large]` | a branch process was killed for exceeding `max_heap_size` |
   | `[:ramal, :merge, :start \| :stop \| :exception]` | a span around `Ramal.merge/2`; `stop` adds `result` (`:ok` or `:error`) and `replayed`, or `reason` |
   | `[:ramal, :read, :patch]` | a read inside a branch was patched with the overlay (measurements: `base_rows`, `overlay_rows`, `result_rows`, `duration`) |
@@ -37,7 +40,17 @@ defmodule Ramal.Telemetry do
   """
   @spec branch_events() :: [[atom]]
   def branch_events do
-    for step <- [:create, :fork, :load, :unload, :discard, :too_large],
+    for step <- [
+          :create,
+          :fork,
+          :load,
+          :unload,
+          :discard,
+          :too_large,
+          :propose,
+          :approve,
+          :reject
+        ],
         do: [:ramal, :branch, step]
   end
 

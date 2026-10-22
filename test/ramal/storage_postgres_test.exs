@@ -131,6 +131,24 @@ defmodule Ramal.Storage.PostgresTest do
       assert {:ok, [%{status: :merged}]} = Ramal.list(Farm, status: :merged)
     end
 
+    test "a proposal is stored, unloaded, and approved after rehydration", %{herds: herds} do
+      {:ok, branch} = Ramal.branch(Farm)
+      Ramal.run!(branch, fn -> Ash.update!(herds.r7, %{head: 31}, authorize?: false) end)
+      {:ok, proposed} = Ramal.propose(branch, proposed_by: %{id: 1}, reason: "recount")
+      eventually(fn -> not loaded?(branch.id) end)
+
+      assert {:ok, [listed]} = Ramal.list(Farm, status: :proposed)
+      assert listed == proposed
+
+      assert {:ok, %{branch: approved}} =
+               Ramal.approve(branch, decided_by: %{id: 2}, authorize?: false)
+
+      assert approved.proposal.decision.status == :approved
+      assert Ash.get!(Herd, herds.r7.id, authorize?: false).head == 31
+      assert {:ok, stored} = Ramal.get(branch.id)
+      assert stored.status == :merged and stored.proposal == approved.proposal
+    end
+
     test "a rehydrated branch keeps reading its own writes", %{herds: herds} do
       {:ok, branch} = Ramal.branch(Farm)
       Ramal.run!(branch, fn -> Ash.destroy!(herds.r8, authorize?: false) end)

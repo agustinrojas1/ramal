@@ -11,7 +11,7 @@ defmodule Ramal.Error do
   | reason | meaning |
   |---|---|
   | `:not_found` | no branch with that id, in memory or in storage |
-  | `:not_open` | the branch is merged or discarded |
+  | `:not_open` | the branch is not in the status the call needs: open for `run/2`, `fork/2`, `merge/2` and `propose/2`, proposed for `approve/2` and `reject/2` |
   | `:stale` | the base moved under rows the branch read (`details.rows`) |
   | `:merge_failed` | a replayed action failed; `details` has `index`, `type`, `resource`, `action` and the Ash `error` |
   | `:database_generated_key` | a branch cannot create a row whose primary key the database generates |
