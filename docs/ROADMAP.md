@@ -24,7 +24,11 @@ README runs as written; every **[confirm]** mark in `docs/DESIGN.md` is resolved
   approves (which merges) or rejects, with the decision, the stale rows and the replay count stored on the branch. Done:
   a status and a field, not a `ramal_proposals` table (ADR 0012).
 - Notifications policy inside branches (suppress by default, opt in per resource). Done in 0.1 (`notify_in_branch?`, ADR 0005).
-- An explicit `Ramal.aggregate/4` that computes on the patched list. Done (ADR 0011); Ash exposes no hook to patch its own aggregates.
+- An explicit `Ramal.aggregate/4`. Done (ADR 0011): Ash exposes no hook to patch its own aggregates. It first computed on
+  the patched list; it now aggregates in the database the rows the overlay does not touch and reads only the overlaid
+  ones (ADR 0013), so scoring a state no longer costs a table scan.
+- Many-to-many join resources inside a branch. Done: they get overlay entries like any resource; a many_to_many load and
+  `manage_relationship` do not see links the branch changed, which is a documented limit (ADR 0014).
 - Several domains per branch if a real host needs it.
 - Publish 0.2 to Hex.
 
