@@ -13,12 +13,13 @@ defmodule Ramal.Error do
   | `:not_found` | no branch with that id, in memory or in storage |
   | `:not_open` | the branch is merged or discarded |
   | `:stale` | the base moved under rows the branch read (`details.rows`) |
+  | `:merge_failed` | a replayed action failed; `details` has `index`, `type`, `resource`, `action` and the Ash `error` |
   | `:database_generated_key` | a branch cannot create a row whose primary key the database generates |
   | `:bulk_unsupported` | a bulk create, update or destroy inside a branch |
   | `:upsert_unsupported` | an upsert inside a branch |
   | `:branch_too_large` | the branch process exceeded `max_heap_size` and was stopped |
   | `:no_branchable_resources` | the domain has no resource that opted in with `Ramal.Resource` |
-  | `:nested_branch` | `Ramal.run/2` was called inside another `Ramal.run/2` |
+  | `:nested_branch` | `Ramal.run/2` was called inside another `Ramal.run/2`, or `Ramal.merge/2` inside one |
   | `:missing_snapshot` | an overlay entry that needs the base row as first seen has none recorded |
   | `:storage` | the storage backend failed |
 
@@ -35,6 +36,7 @@ defmodule Ramal.Error do
           :not_found
           | :not_open
           | :stale
+          | :merge_failed
           | :database_generated_key
           | :bulk_unsupported
           | :upsert_unsupported

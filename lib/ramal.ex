@@ -17,7 +17,6 @@ defmodule Ramal do
   Every function that takes a branch also takes its id, and starts the branch process from storage when it is
   not running, so callers never need to know whether a branch is in memory.
 
-  Merge arrives in a later 0.1 issue; see `docs/ROADMAP.md`.
   """
 
   alias Ramal.{Branch, Current, Error, Resource, Supervisor, Telemetry}
@@ -211,6 +210,30 @@ defmodule Ramal do
       Branch.diff(branch, attributes: &Resource.attributes/1)
     end
   end
+
+  @doc """
+  Merges a branch into the database by replaying its log through the application's own actions, in one transaction.
+
+  First every base row the branch read or wrote is compared with what the database holds now; if any changed, the
+  merge is refused unless `on_stale` allows it. Then the log is replayed oldest first with real validations and
+  policies. If anything fails, nothing is written and the branch stays open. On success the branch is `:merged`, its
+  process stops, and the result holds what the replay wrote. See `Ramal.Merge` for the details and the limits.
+
+  ## Options
+
+    * `:actor` - the actor for every replayed action. Default: the actor each write was captured with.
+    * `:authorize?` - default `true`
+    * `:on_stale` - `:error` (default), `:ignore`, or a function from the stale rows to `:continue` or `:abort`
+    * `:mode` - only `:replay`
+
+  ## Example
+
+      {:ok, branch} = Ramal.branch(MyApp.Farm)
+      Ramal.run!(branch, fn -> Ash.update!(herd, %{head: 31}, authorize?: false) end)
+      {:ok, %Ramal.Merge.Result{replayed: 1}} = Ramal.merge(branch, authorize?: false)
+  """
+  @spec merge(branch_or_id, keyword) :: {:ok, Ramal.Merge.Result.t()} | {:error, Error.t()}
+  def merge(branch_or_id, opts \\ []), do: branch_or_id |> id_of() |> Ramal.Merge.run(opts)
 
   @doc """
   Discards an open branch: its process stops and its overlay and log are dropped.
