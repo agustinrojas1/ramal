@@ -17,7 +17,7 @@ defmodule RamalLive.Router do
       end
 
   Why it does not open a `live_session` of its own, as `Phoenix.LiveDashboard` does: that would give the page a root
-  layout and a socket path other than the host's, and an asset pipeline to carry the JavaScript. See ADR 0014.
+  layout and a socket path other than the host's, and an asset pipeline to carry the JavaScript. See ADR 0015.
 
   The inspector can merge, approve, reject and discard any branch of the domain. Put it behind the host's own
   authorization; nothing in `RamalLive` checks who is looking.

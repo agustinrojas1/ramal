@@ -9,7 +9,7 @@ telemetry updates the columns, and only the branch that changed is read again.
 
 There is no JavaScript, no Tailwind and no asset pipeline. The page is a LiveView with inline CSS (slate for the base line,
 copper for branches, light and dark themes), mounted by your router inside your own `live_session`, so it uses your
-LiveView socket and your JavaScript. The decision is in [ADR 0014](../docs/adr/0014-inspector-mounting.md).
+LiveView socket and your JavaScript. The decision is in [ADR 0015](../docs/adr/0015-inspector-mounting.md).
 
 ## Setup
 

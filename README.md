@@ -92,7 +92,7 @@ pipeline. Ramal itself never depends on it.
 ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub
 ```
 
-See the [ramal_live README](https://github.com/agustinrojas1/ramal/blob/main/ramal_live/README.md) for the setup and [ADR 0014](docs/adr/0014-inspector-mounting.md) for why it is built this way.
+See the [ramal_live README](https://github.com/agustinrojas1/ramal/blob/main/ramal_live/README.md) for the setup and [ADR 0015](docs/adr/0015-inspector-mounting.md) for why it is built this way.
 
 ## Name
 

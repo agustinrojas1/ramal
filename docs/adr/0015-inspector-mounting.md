@@ -1,4 +1,4 @@
-# 0014. The inspector is a separate project mounted by a router macro in the host's own live_session
+# 0015. The inspector is a separate project mounted by a router macro in the host's own live_session
 
 Status: accepted, 2026-10-22. Issue: #32.
 

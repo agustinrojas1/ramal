@@ -330,7 +330,7 @@ A separate Mix project, `ramal_live/`, that depends on `ramal` by path. Core nev
 
 - `RamalLive.Router`: the macro `ramal_inspector path, domain: ..., pubsub: ...` (options `:actor`, `:debounce`). It
   expands to one `live` route, so the host puts it inside its own scope, pipeline and `live_session` and the page uses the
-  host's root layout, LiveView socket and JavaScript (ADR 0014).
+  host's root layout, LiveView socket and JavaScript (ADR 0015).
 - `RamalLive.Broadcaster`: a process the host starts. It attaches telemetry handlers (the branch lifecycle events,
   `[:ramal, :write, :capture]`, `[:ramal, :merge, :stop]`) and broadcasts `{:ramal_live, branch_id, event}` on the host's
   PubSub, topic `"ramal_live:" <> domain`. No row data travels in the message.
@@ -381,4 +381,4 @@ recorded as `decided_by` and used to replay a merge.
 | 16 | A stored actor that is an Ash record loses its `sensitive?` attributes; other actors are stored as they are | The branch table should not hold password hashes or tokens, and Ash already has the flag. A serializer callback has one use. [ADR 0010](adr/0010-stored-actors.md) |
 | 17 | `Ramal.aggregate/4` reads the patched rows and computes the aggregate in Elixir; `Ramal.Aggregate` holds the pure part | The data layer's aggregates cannot see the overlay, and Ash offers no hook to make them. Exact for the branch, as expensive as reading the matching rows. [ADR 0011](adr/0011-branch-aggregates.md) |
 | 18 | A proposal is a branch status (`:proposed`, `:rejected`) and a `proposal` field of the stored state; approving is merging | A second table and storage API for one record per branch would duplicate what the branch row already persists, and the decision must land in the same step as the merge. [ADR 0012](adr/0012-proposals.md) |
-| 19 | The inspector is a separate project whose router macro expands to one `live` route in the host's own `live_session`; options travel as route metadata; a supervised broadcaster turns telemetry into PubSub messages naming a branch, and the page re-reads only that branch | A `live_session` of its own would need its own root layout, socket and JavaScript, which is an asset pipeline; telemetry is node-local, so a handler attached on first page view would miss events. [ADR 0014](adr/0014-inspector-mounting.md) |
+| 19 | The inspector is a separate project whose router macro expands to one `live` route in the host's own `live_session`; options travel as route metadata; a supervised broadcaster turns telemetry into PubSub messages naming a branch, and the page re-reads only that branch | A `live_session` of its own would need its own root layout, socket and JavaScript, which is an asset pipeline; telemetry is node-local, so a handler attached on first page view would miss events. [ADR 0015](adr/0015-inspector-mounting.md) |
