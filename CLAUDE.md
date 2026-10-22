@@ -22,6 +22,7 @@ lib/ramal/capture.ex         write side: capture creates/updates/destroys into t
 lib/ramal/error.ex           the Error exception
 lib/ramal/storage.ex         behaviour + Ramal.Storage.ETS, Ramal.Storage.Postgres
 lib/ramal/merge.ex           staleness check and replay
+lib/ramal/merge/result.ex    the Result struct that merge returns
 lib/ramal/telemetry.ex       event names and helpers
 lib/mix/tasks/               ramal.install, ramal.gen.migration
 test/support/farm/           the test domain (Paddock, Herd, Move) and its repo
