@@ -1,7 +1,7 @@
 defmodule Ramal.MixProject do
   use Mix.Project
 
-  @version "0.1.0-dev"
+  @version "0.1.0"
   @source_url "https://github.com/agustinrojas1/ramal"
 
   def project do
@@ -47,6 +47,8 @@ defmodule Ramal.MixProject do
       # Optional for users: only the Postgres storage backend and the test suite need it.
       {:ash_postgres, "~> 2.15", optional: true},
       {:simple_sat, "~> 0.1", only: [:dev, :test]},
+      # Ash needs it at runtime, so it cannot be restricted to :test here (Mix refuses the conflicting :only). Ramal itself
+      # only uses it in the property tests.
       {:stream_data, "~> 1.1"},
       {:ex_doc, "~> 0.38", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
@@ -81,7 +83,7 @@ defmodule Ramal.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib priv mix.exs README.md LICENSE CHANGELOG.md assets/logo)
+      files: ~w(lib mix.exs README.md LICENSE CHANGELOG.md assets/logo)
     ]
   end
 end
