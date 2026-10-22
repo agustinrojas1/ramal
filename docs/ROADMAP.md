@@ -35,9 +35,11 @@ README runs as written; every **[confirm]** mark in `docs/DESIGN.md` is resolved
 
 ## 0.4 Benchmark
 
-- `bench/`: a reproduction of the DAPLab agentic workload (a tree search that keeps forking promising partial states,
-  mutates, queries and prunes) against Ramal over plain Postgres. Published with the original numbers next to ours,
-  including the rows where Ramal loses. Nothing in the README cites a number this project cannot reproduce.
+- `bench/`: an agentic workload modelled on the DAPLab description (a tree search that keeps forking promising partial
+  states, mutates, queries and prunes) run against Ramal and two plain-Postgres baselines, including the cases where
+  Ramal loses. Implemented; see `bench/README.md`. The DAPLab article was not reachable when it was written, so it
+  is not a reproduction of their harness and quotes none of their figures. Nothing in the README cites a number this
+  project cannot reproduce.
 
 ## 1.0
 

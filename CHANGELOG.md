@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- `bench/`: a separate Mix project that measures fork, read, write, merge, fingerprinting and a tree search against two plain-Postgres baselines (a table copied per fork, and a shared delta table). `mix bench` runs it, `mix bench --quick` is a smoke run that CI compiles and executes. Results and their limits are in `bench/README.md`.
 - `Ramal.propose/2`, `Ramal.approve/2` and `Ramal.reject/2`: a branch can be frozen as a proposal (status `:proposed`) that a decider approves, which merges it, or rejects. The proposer, the decider, the reasons, the replay count and the stale rows are recorded on the branch and stored with it; `list(domain, status: :proposed)` finds the pending ones. Telemetry `[:ramal, :branch, :propose | :approve | :reject]`. Branches stored by 0.1.0 load unchanged.
 - `Ramal.aggregate/4` and `Ramal.aggregate!/4`: count, exists, sum, min, max and avg over the rows a read returns inside a branch, so a branch's creates, updates and destroys are included. Outside a branch they call the matching `Ash` function. `Ramal.Aggregate` holds the pure computation.
 
