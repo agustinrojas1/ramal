@@ -110,6 +110,39 @@ defmodule Ramal.Resource do
   end
 
   @doc """
+  Refuses a tenant: `{:error, %Ramal.Error{reason: :multitenancy_unsupported}}` when `resource` uses multitenancy and
+  `tenant` is set, `:ok` otherwise.
+
+  The overlay is keyed by `{resource, primary key}`, so two tenants' rows would share one entry, and the staleness read
+  of `Ramal.merge/2` has no tenant to read with (`docs/adr/0009-multitenancy-refused.md`). A resource that is
+  multitenant but `global? true` can still be used without a tenant.
+
+  ## Example
+
+      iex> Ramal.Resource.ensure_untenanted(Ramal.Test.Farm.Herd, "acme")
+      :ok
+      iex> {:error, error} = Ramal.Resource.ensure_untenanted(Ramal.Test.Tenanted.Task, "acme")
+      iex> error.reason
+      :multitenancy_unsupported
+  """
+  @spec ensure_untenanted(module, term) :: :ok | {:error, Ramal.Error.t()}
+  def ensure_untenanted(_resource, nil), do: :ok
+
+  def ensure_untenanted(resource, tenant) do
+    if Ash.Resource.Info.multitenancy_strategy(resource) do
+      {:error,
+       Ramal.Error.new(
+         :multitenancy_unsupported,
+         "#{inspect(resource)} is multitenant and was used with a tenant inside a branch; a branch does not partition " <>
+           "its overlay by tenant, so use the resource without a tenant or outside Ramal.run/2",
+         %{resource: resource, tenant: tenant}
+       )}
+    else
+      :ok
+    end
+  end
+
+  @doc """
   The overlay key of `record`: the value of its primary key attribute, or a tuple of the values for a composite key.
 
   ## Example

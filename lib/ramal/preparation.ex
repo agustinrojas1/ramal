@@ -50,10 +50,16 @@ defmodule Ramal.Preparation do
         query
 
       id ->
-        query
-        |> Ash.Query.set_context(Current.shared_context(id))
-        |> Ash.Query.before_action(&before_data_layer(&1, id))
-        |> Ash.Query.after_action(&after_data_layer(&1, &2, id))
+        case Resource.ensure_untenanted(query.resource, query.tenant) do
+          :ok ->
+            query
+            |> Ash.Query.set_context(Current.shared_context(id))
+            |> Ash.Query.before_action(&before_data_layer(&1, id))
+            |> Ash.Query.after_action(&after_data_layer(&1, &2, id))
+
+          {:error, error} ->
+            Ash.Query.add_error(query, error)
+        end
     end
   end
 

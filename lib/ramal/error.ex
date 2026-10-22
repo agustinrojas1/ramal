@@ -17,6 +17,7 @@ defmodule Ramal.Error do
   | `:database_generated_key` | a branch cannot create a row whose primary key the database generates |
   | `:bulk_unsupported` | a bulk create, update or destroy inside a branch |
   | `:upsert_unsupported` | an upsert inside a branch |
+  | `:multitenancy_unsupported` | a multitenant resource used with a tenant inside a branch |
   | `:branch_too_large` | the branch process exceeded `max_heap_size` and was stopped |
   | `:no_branchable_resources` | the domain has no resource that opted in with `Ramal.Resource` |
   | `:nested_branch` | `Ramal.run/2` was called inside another `Ramal.run/2`, or `Ramal.merge/2` inside one |
@@ -40,6 +41,7 @@ defmodule Ramal.Error do
           | :database_generated_key
           | :bulk_unsupported
           | :upsert_unsupported
+          | :multitenancy_unsupported
           | :branch_too_large
           | :no_branchable_resources
           | :nested_branch

@@ -75,9 +75,19 @@ defmodule Ramal.Capture do
         Ash.Changeset.add_error(changeset, upsert_error(changeset))
 
       true ->
+        install(changeset, id)
+    end
+  end
+
+  defp install(changeset, id) do
+    case Resource.ensure_untenanted(changeset.resource, changeset.tenant) do
+      :ok ->
         changeset
         |> Ash.Changeset.set_context(Current.shared_context(id))
         |> Ash.Changeset.around_action(&around(&1, &2, id))
+
+      {:error, error} ->
+        Ash.Changeset.add_error(changeset, error)
     end
   end
 
