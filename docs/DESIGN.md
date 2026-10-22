@@ -288,7 +288,8 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
    (ADR 0006). The cost of hashing every row a read returns has not been measured; `bench/` will, in 0.4.
 6. ~~Multitenancy~~ Decided for 0.1: refused inside a branch with `:multitenancy_unsupported` (ADR 0009). Supporting it puts
    the tenant in the overlay key and the base ref; revisit when a host needs it.
-7. Should `Ramal.Storage.Postgres` take a host callback for actors? 0.1: no, actors are stored as the term (ADR 0008).
+7. ~~Should `Ramal.Storage.Postgres` take a host callback for actors?~~ No: actors are stored as the term, with the
+   attributes marked `sensitive?` dropped from resource records (ADR 0008, ADR 0010).
 
 ## 12. Decision log (summary; details in `docs/adr/`)
 
@@ -309,3 +310,4 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 13 | Merge claims the branch first, checks staleness inside the replay transaction with row locks where possible, and forces created rows to keep their branch primary keys; entries logged by hooks are not replayed | Writes between check and replay would be lost, a check outside the transaction races, and later log entries name rows by key. [ADR 0007](adr/0007-merge.md) |
 | 14 | Branches are stored through `Ramal.Storage.Codec`: attributes through the Ash embedded dump and cast, everything else as tagged terms, atoms never created, actors stored as the term; `list/3` can fail | A round trip must be `==`, the Ash `cast_stored` is the data layer's form, not JSON's, and a database can fail. [ADR 0008](adr/0008-postgres-storage.md) |
 | 15 | A multitenant resource used with a tenant inside a branch is refused (`:multitenancy_unsupported`) | The overlay is keyed by `{resource, key}` and merge's staleness read has no tenant; half support would mix tenants silently. [ADR 0009](adr/0009-multitenancy-refused.md) |
+| 16 | A stored actor that is an Ash record loses its `sensitive?` attributes; other actors are stored as they are | The branch table should not hold password hashes or tokens, and Ash already has the flag. A serializer callback has one use. [ADR 0010](adr/0010-stored-actors.md) |

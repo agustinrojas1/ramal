@@ -69,6 +69,7 @@ defmodule Ramal.Test.Other do
 
   resources do
     resource(Ramal.Test.Other.Note)
+    resource(Ramal.Test.Other.Account)
   end
 end
 
@@ -94,5 +95,24 @@ defmodule Ramal.Test.Other.Note do
     attribute(:scheduled_on, :date, public?: true)
     attribute(:blob, :binary, public?: true)
     attribute(:anything, :term, public?: true)
+  end
+end
+
+defmodule Ramal.Test.Other.Account do
+  @moduledoc false
+  # An actor-shaped resource with a secret, for the codec's actor redaction.
+  use Ash.Resource,
+    domain: Ramal.Test.Other,
+    data_layer: Ash.DataLayer.Ets
+
+  actions do
+    defaults([:read])
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:email, :string, public?: true)
+    attribute(:password_hash, :string, sensitive?: true)
+    attribute(:api_token, :string, sensitive?: true, public?: true)
   end
 end

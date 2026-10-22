@@ -24,7 +24,7 @@ primary keys, metadata and log options.
   loaded fails the load with `:storage` and names the atom.
 - **Actors are stored as the term they are**, not through a serializer. The design's host callback is a plugin point
   with one use; `Ramal.merge/2` already takes `actor:` for hosts that do not want an actor persisted. The consequence is
-  that an actor struct is stored whole, secrets included.
+  that an actor struct is stored whole, secrets included (ADR 0010 later drops the `sensitive?` attributes of resource records).
 - **Table:** `ramal_branches` with `id uuid`, `domain`, `name`, `status`, `state jsonb`, `inserted_at`, `updated_at`,
   an index on `(domain, status)`. `mix ramal.gen.migration` writes it into the host repo; the module and the task exist
   only when Ecto SQL is present. Ids must be UUIDs (what `Ramal.Branch.new/2` makes).
