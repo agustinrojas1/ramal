@@ -14,7 +14,7 @@ concurrent writers to the branch, rows created by hooks, actors, and the ids of 
   with `:not_open`. Without this a write could land between the staleness check and the end of the replay and be
   lost when the process stops. On any failure the claim is released and the branch stays open.
 - **Check inside the transaction:** the base rows are re-read inside the same `Ash.transact/3` as the replay, with
-  `lock: :for_update` where the data layer can (confirmed: `AshPostgres.DataLayer.can?/2` accepts `{:lock, :for_update}`
+  `lock: :for_update` where the data layer can (confirmed: AshPostgres.DataLayer.can?/2 accepts `{:lock, :for_update}`
   in 2.15.1). A row that is missing is `:deleted`; one whose fingerprint differs is `:changed`. Rows fingerprinted
   `nil` (read with `select`) are not checked.
 - **Replay:** oldest first, with no branch current, skipping entries logged with `nested?: true` since replaying the

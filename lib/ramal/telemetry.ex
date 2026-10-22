@@ -13,6 +13,7 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :branch, :unload]` | a branch process stopped after persisting (`reason`: `:idle` or `:shutdown`) |
   | `[:ramal, :branch, :discard]` | a branch was discarded |
   | `[:ramal, :branch, :too_large]` | a branch process was killed for exceeding `max_heap_size` |
+  | `[:ramal, :merge, :start \| :stop \| :exception]` | a span around `Ramal.merge/2`; `stop` adds `result` (`:ok` or `:error`) and `replayed`, or `reason` |
   | `[:ramal, :read, :patch]` | a read inside a branch was patched with the overlay (measurements: `base_rows`, `overlay_rows`, `result_rows`, `duration`) |
   | `[:ramal, :read, :unpatched_aggregate]` | a read inside a branch selected an aggregate, which the database computes without the overlay |
   | `[:ramal, :write, :capture]` | a create, update or destroy inside a branch was put in the overlay instead of the data layer (metadata: `action_type`, `resource`, `action`, `nested?`) |

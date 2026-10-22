@@ -70,13 +70,9 @@ defmodule Ramal.MixProject do
       main: "readme",
       logo: "assets/logo/ramal-mark.svg",
       source_ref: "v#{@version}",
-      extras: [
-        "README.md",
-        "docs/DESIGN.md",
-        "docs/ROADMAP.md",
-        "CONTRIBUTING.md",
-        "CHANGELOG.md"
-      ],
+      extras:
+        ["README.md", "docs/DESIGN.md", "docs/ROADMAP.md", "CONTRIBUTING.md", "CHANGELOG.md"] ++
+          Path.wildcard("docs/adr/0*.md"),
       groups_for_extras: [Guides: ~r/docs\/.*/]
     ]
   end

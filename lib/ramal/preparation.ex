@@ -16,7 +16,7 @@ defmodule Ramal.Preparation do
       inherit the process dictionary. The branch id therefore also travels in the query's `shared` context, which
       Ash copies into related queries (`lib/ash/actions/read/relationships.ex`).
     * Filters are evaluated on overlay records with `Ash.Filter.Runtime.filter_matches/4` and sorting uses
-      `Ash.Actions.Sort.runtime_sort/3`.
+      Ash.Actions.Sort.runtime_sort/3.
 
   Every base row the read returns is also fingerprinted (`Ramal.Resource.fingerprint/1`) for the staleness check at
   merge time, unless the query selected only some attributes.

@@ -20,7 +20,7 @@ context is a better carrier than the process dictionary. Read in Ash 3.37.0:
 
 ## Decision
 
-Use both. `Ramal.run/2` stores the branch **id** in the process dictionary (`Ramal.Current`), which reaches every hook
+Use both. `Ramal.run/2` stores the branch **id** in the process dictionary (Ramal.Current), which reaches every hook
 and every nested Ash call in the calling process. The first hook that runs (the read preparation or the write
 change) copies the id into the query's or changeset's `shared` context, which Ash carries into the tasks it spawns.
 A hook resolves the branch from `shared` first and from the process dictionary second. Only the id is carried, never

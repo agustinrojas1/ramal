@@ -7,7 +7,7 @@ Milestones are GitHub milestones with the same names. Each one ships when its ex
 The smallest Ramal that is useful and honest.
 
 - `Ramal.Resource` extension with the read preparation and the write change, transparent when no branch is active.
-- `Ramal.Branch.Server`, `Ramal.Supervisor`, registry, idle unload and rehydration.
+- Ramal.Branch.Server, `Ramal.Supervisor`, registry, idle unload and rehydration.
 - `branch/2`, `run/2`, `current/0`, `fork/2`, `diff/1`, `merge/2` (replay mode, `on_stale`), `discard/1`, `get/1`, `list/2`.
 - `Ramal.Storage` behaviour with ETS and Postgres backends, `mix ramal.gen.migration`.
 - Telemetry events as listed in the design.
@@ -20,11 +20,11 @@ README runs as written; every **[confirm]** mark in `docs/DESIGN.md` is resolved
 
 ## 0.2 Proposals and hardening
 
-- `Ramal.propose/2`: a branch becomes a proposal record (`ramal_proposals`) that someone with the right to decide
+- Ramal.propose/2: a branch becomes a proposal record (`ramal_proposals`) that someone with the right to decide
   approves (which merges) or rejects (which discards), with the diff and the staleness check stored at decision time.
 - Notifications policy inside branches (suppress by default, opt in per resource).
 - Runtime evaluation of simple aggregates over a branch where Ash exposes enough to do it; otherwise an explicit
-  `Ramal.aggregate/3` helper that computes on the patched list.
+  Ramal.aggregate/3 helper that computes on the patched list.
 - Several domains per branch if a real host needs it.
 - Publish 0.2 to Hex.
 
