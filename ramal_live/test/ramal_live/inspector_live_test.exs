@@ -506,6 +506,51 @@ defmodule RamalLive.InspectorLiveTest do
     end
   end
 
+  describe "when the actor function finds nobody" do
+    test "no action is taken and the page says why", %{conn: conn} do
+      herd = herd!("R7", 30)
+      open = branch!("open", fn -> Ash.update!(herd, %{head: 31}) end)
+      proposed = branch!("proposed")
+      {:ok, _} = Ramal.propose(proposed)
+      {:ok, view, _html} = live(conn, "/ramal-nobody")
+
+      for {id, action} <- [{open.id, "merge"}, {open.id, "discard"}, {proposed.id, "approve"}] do
+        render_click(view, "ask", %{"id" => id, "action" => action})
+        # A client can skip the question; the answer is refused just the same.
+        render_click(view, "confirm", %{"id" => id, "action" => action})
+      end
+
+      render_click(view, "ask", %{"id" => proposed.id, "action" => "reject"})
+      render_click(view, "confirm", %{"id" => proposed.id, "action" => "reject"})
+      render_click(view, "fork", %{"id" => open.id})
+      render_async(view)
+
+      assert has_element?(view, ".rl-notice", "nobody is signed in")
+      refute has_element?(view, "button[phx-click=confirm]")
+      assert base_head(herd) == 30
+      assert {:ok, %{status: :open}} = Ramal.get(open.id)
+      assert {:ok, %{status: :proposed}} = Ramal.get(proposed.id)
+      assert {:ok, branches} = Ramal.list(Farm, status: :open)
+      assert length(branches) == 1
+    end
+  end
+
+  describe "sensitive attributes" do
+    test "the diff shows that they changed and never their values", %{conn: conn} do
+      branch =
+        branch!("pin", fn ->
+          Ash.create!(Herd, %{name: "R9", head: 12, vet_pin: "4417-secret"})
+        end)
+
+      {:ok, view, _html} = live(conn, "/ramal")
+
+      assert has_element?(view, "#{column(branch)} tr", "vet_pin")
+      assert has_element?(view, "#{column(branch)} .rl-after", "[redacted]")
+      assert has_element?(view, "#{column(branch)} .rl-after", "R9")
+      refute render(view) =~ "4417-secret"
+    end
+  end
+
   describe "live updates" do
     test "without the broadcaster the page says live updates are off", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/ramal")

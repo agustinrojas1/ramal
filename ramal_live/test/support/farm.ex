@@ -24,5 +24,6 @@ defmodule RamalLive.Test.Farm.Herd do
     uuid_primary_key(:id)
     attribute(:name, :string, allow_nil?: false, public?: true)
     attribute(:head, :integer, public?: true)
+    attribute(:vet_pin, :string, sensitive?: true, public?: true)
   end
 end

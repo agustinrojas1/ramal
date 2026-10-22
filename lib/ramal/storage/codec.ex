@@ -107,6 +107,16 @@ defmodule Ramal.Storage.Codec do
        log: Enum.map(state["log"], &decode_log_entry/1),
        proposal: decode_proposal(state["proposal"])
      }}
+  rescue
+    # The state came out of a database column that anything with write access to it can change. A shape this module
+    # never writes is an error for the caller to handle, not a crash of the branch process that asked. Only the kind of
+    # exception is reported: its message can print the stored values.
+    exception ->
+      {:error,
+       Error.new(
+         :storage,
+         "stored branch #{columns.id} cannot be loaded: its state is malformed (#{inspect(exception.__struct__)})"
+       )}
   catch
     {:codec, message} ->
       {:error, Error.new(:storage, "stored branch #{columns.id} cannot be loaded: #{message}")}
@@ -444,6 +454,11 @@ defmodule Ramal.Storage.Codec do
 
   defp unterm(%{"$s" => name, "f" => fields}) do
     module = module!(name)
+
+    unless function_exported?(module, :__struct__, 0) do
+      throw({:codec, "#{name} is not a struct"})
+    end
+
     template = Map.from_struct(struct(module))
     known = Map.new(template, fn {field, _} -> {Atom.to_string(field), field} end)
 
@@ -477,6 +492,12 @@ defmodule Ramal.Storage.Codec do
   # module also brings in the atoms it mentions (attribute names, roles in its policies), which the atoms stored in
   # action input and actors usually are.
   defp module!(name) do
+    # `:code.where_is_file/1` joins the name onto each code path directory, so a stored `Elixir.../../x` would probe
+    # files outside of them. A module name has no separators.
+    unless name =~ ~r/\AElixir(\.[A-Za-z_][A-Za-z0-9_]*)+\z/ do
+      throw({:codec, "#{inspect(name)} is not a module name"})
+    end
+
     module =
       try do
         String.to_existing_atom(name)

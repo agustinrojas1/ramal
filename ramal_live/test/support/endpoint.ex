@@ -41,6 +41,9 @@ defmodule RamalLive.Test.Inspector do
   # `actor: {RamalLive.Test.Inspector, :actor}`: the host reads its current user from the socket's assigns.
   def actor(socket), do: socket.assigns[:current_user]
 
+  # A session that ended: the function the host wrote finds no user.
+  def nobody(_socket), do: nil
+
   # An on_mount hook of the host's live_session, as `UserAuth` would be.
   def on_mount(:default, _params, _session, socket) do
     {:cont, Phoenix.Component.assign(socket, :current_user, %{name: "Marta", role: :admin})}

@@ -18,6 +18,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - `ramal_live/examples/farm_demo.exs`: a runnable demo of the inspector for a screen recording. One command starts a Phoenix Playground app on a seeded farm in the `ramal_dev` database; "Explore 4 alternatives" opens four branches that each move a herd to a different paddock while the columns fill in live, and merging one makes the others stale. How to run it is in `ramal_live/README.md`.
 
+- A "Security model and defaults" section in `SECURITY.md`, and ADR 0016: what Ramal enforces and what it leaves to the host, how stored state is treated, and how to mount the inspector in production. CI runs `mix hex.audit` for the library, `bench/` and `ramal_live/`.
+
+### Security
+
+- `ramal_live`: attributes marked `sensitive?: true` show as `[redacted]` in a branch's diff. The page printed every value, so a password hash or token written in a branch was visible to everyone who could open the inspector.
+- `ramal_live`: when the `:actor` function returns `nil` the page refuses fork, merge, discard, approve and reject. Before, a session without a user merged as the recorded actors with no decider.
+- `inspect/1` of a `Ramal.Branch` prints only its id, name, domain, status and creation time. The log holds the raw input of every captured write, which Ash does not redact, and a crash report prints the state of a branch process.
+- `Ramal.Storage.Codec.decode_state/2` returns `{:error, %Ramal.Error{reason: :storage}}` for a malformed stored state instead of raising, never echoes stored values in the error, rejects a module name that is not a name (`Elixir.../../x`) before it touches the code path, and rejects a stored struct whose module is not a struct.
+
 ### Fixed
 
 - `Ramal.merge/2` and `Ramal.approve/2` on resources backed by `Ash.DataLayer.Ets` returned a `CaseClauseError` instead of `{:error, %Ramal.Error{}}` when the staleness check or the replay failed. The error is now returned as with Postgres. ETS cannot roll back, so rows replayed before a failing entry stay written; the error message and `details.not_rolled_back` say so (ADR 0007).

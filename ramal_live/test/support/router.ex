@@ -35,6 +35,14 @@ defmodule RamalLive.Test.Router do
         debounce: 0,
         actor: {RamalLive.Test.Inspector, :actor}
       )
+
+      # The host's actor function finds nobody signed in.
+      ramal_inspector("/ramal-nobody",
+        domain: RamalLive.Test.Farm,
+        pubsub: RamalLive.Test.PubSub,
+        debounce: 0,
+        actor: {RamalLive.Test.Inspector, :nobody}
+      )
     end
   end
 end

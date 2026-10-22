@@ -15,6 +15,26 @@ defmodule Ramal.BranchTest do
     assert %DateTime{} = first.inserted_at
   end
 
+  test "inspecting a branch shows its identity and nothing it holds" do
+    entry =
+      {:create, MyApp.Herd, :create, %{password: "hunter2"}, %{token: "s3cret"}, [key: 1],
+       DateTime.utc_now()}
+
+    branch = %{
+      Branch.new(MyApp.Farm, name: "audit", metadata: %{api_key: "k-123"})
+      | log: [entry],
+        overlay: %{{MyApp.Herd, 1} => {:created, %{password: "hunter2"}}}
+    }
+
+    printed = inspect(branch)
+
+    assert printed =~ branch.id
+    assert printed =~ "audit"
+    for secret <- ["hunter2", "s3cret", "k-123"], do: refute(printed =~ secret)
+    # A crash report prints the state of the branch process, which wraps the struct.
+    for secret <- ["hunter2", "s3cret", "k-123"], do: refute(inspect(%{branch: branch}) =~ secret)
+  end
+
   test "name and metadata are kept as given" do
     branch = Branch.new(MyApp.Farm, name: "what if", metadata: %{ticket: 7})
 

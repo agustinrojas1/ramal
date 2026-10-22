@@ -273,5 +273,47 @@ defmodule Ramal.Storage.CodecTest do
 
       assert message =~ "colour"
     end
+
+    test "refuses a module name that is a path instead of probing the code path with it" do
+      branch = Branch.new(Farm)
+      {:ok, state} = Codec.encode_state(branch)
+      state = Map.put(state, "metadata", %{"$s" => "Elixir.../../etc/passwd", "f" => %{}})
+
+      assert {:error, %Error{reason: :storage, message: message}} =
+               Codec.decode_state(columns(branch), state)
+
+      assert message =~ "is not a module name"
+
+      state = Map.put(state, "metadata", %{"$a" => "Elixir.Ramal.Test.Farm.Herd; DROP"})
+      assert {:error, %Error{reason: :storage}} = Codec.decode_state(columns(branch), state)
+    end
+
+    test "refuses a stored struct whose module is not a struct" do
+      branch = Branch.new(Farm)
+      {:ok, state} = Codec.encode_state(branch)
+      state = Map.put(state, "metadata", %{"$s" => "Elixir.System", "f" => %{}})
+
+      assert {:error, %Error{reason: :storage, message: message}} =
+               Codec.decode_state(columns(branch), state)
+
+      assert message =~ "is not a struct"
+    end
+
+    test "state of a shape this module never writes is an error, not a crash, and does not echo the values" do
+      branch = Branch.new(Farm)
+      {:ok, state} = Codec.encode_state(branch)
+
+      for hostile <- [
+            Map.put(state, "metadata", %{"$b" => "not base64 !!"}),
+            Map.put(state, "log", [%{"secret" => "hunter2"}]),
+            Map.put(state, "overlay", "hunter2"),
+            Map.delete(state, "base")
+          ] do
+        assert {:error, %Error{reason: :storage, message: message}} =
+                 Codec.decode_state(columns(branch), hostile)
+
+        refute message =~ "hunter2"
+      end
+    end
   end
 end

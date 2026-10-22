@@ -19,8 +19,10 @@ defmodule RamalLive.Router do
   Why it does not open a `live_session` of its own, as `Phoenix.LiveDashboard` does: that would give the page a root
   layout and a socket path other than the host's, and an asset pipeline to carry the JavaScript. See ADR 0015.
 
-  The inspector can merge, approve, reject and discard any branch of the domain. Put it behind the host's own
-  authorization; nothing in `RamalLive` checks who is looking.
+  The inspector can merge, approve, reject, discard and fork any branch of the domain. Put it behind the host's own
+  authorization; nothing in `RamalLive` checks who is looking. Two mounts in one `live_session` share its authorization,
+  because the page reads its options from the route that the URL the browser joins with matches: give mounts that differ
+  in who may use them a `live_session` each. See `SECURITY.md` for the full list.
 
   ## Options
 
@@ -29,8 +31,8 @@ defmodule RamalLive.Router do
       one given to `RamalLive.Broadcaster`.
     * `:actor` - `{module, function}`, called as `module.function(socket)` when someone merges, approves or rejects, and
       returning the actor (or `nil`). The actor is recorded as `:decided_by` and, for merge and approve, replays the log
-      as that actor (`:actor` of `Ramal.merge/2`). Default: none, so a merge replays each write as the actor it was
-      captured with.
+      as that actor (`:actor` of `Ramal.merge/2`). When it returns `nil` nobody is signed in and the page refuses every
+      action. Default: no function, so a merge replays each write as the actor it was captured with.
     * `:debounce` - milliseconds to wait, after a branch changes, before the page reads it again. A branch that writes
       in a loop causes one read per window instead of one per write. `0` reads at once. Default: `50`.
 

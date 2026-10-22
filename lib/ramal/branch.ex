@@ -17,6 +17,9 @@ defmodule Ramal.Branch do
 
   Nothing here touches a process or storage, so it is tested with plain data.
 
+  `inspect/1` prints `id`, `name`, `domain`, `status` and `inserted_at` only. The log keeps the raw input and the actor of
+  every captured write, which can hold passwords and tokens, and a crash report prints the state of a branch process.
+
   ## Example
 
       iex> branch = Ramal.Branch.new(MyApp.Farm, name: "move herd R7", metadata: %{ticket: 42})
@@ -84,6 +87,11 @@ defmodule Ramal.Branch do
           proposal: proposal | nil
         }
 
+  # `inspect/1` shows the branch's identity and nothing it holds. The log keeps the raw input of every captured action
+  # (a password argument, a token) and `Ash` only redacts sensitive attributes of records, so printing the whole struct
+  # would put those values in a crash report, where a branch process's state is printed, and in any log line that
+  # inspects a branch. Read `overlay`, `log` and `base` from the struct when you need them.
+  @derive {Inspect, only: [:id, :name, :domain, :status, :inserted_at]}
   @enforce_keys [:id, :domain, :inserted_at]
   defstruct [
     :id,
