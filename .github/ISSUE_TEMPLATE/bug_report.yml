@@ -1,0 +1,45 @@
+name: Bug report
+description: Something a branch sees or does that it should not.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A failing test in `test/` is the best report. If you cannot write one, fill in the fields below.
+  - type: textarea
+    id: resource
+    attributes:
+      label: Resource definition
+      description: The resource, its actions and the `Ramal.Resource` extension options.
+      render: elixir
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: The call inside the branch
+      description: The `Ramal.run/2` function, or the sequence of `Ramal` calls, that triggers it.
+      render: elixir
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What the branch should have seen
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What it saw
+      description: Include the full error or the rows returned.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Ramal, Ash, AshPostgres, Elixir and OTP.
+      placeholder: "ramal 0.1.0, ash 3.36.x, ash_postgres 2.15.x, Elixir 1.19, OTP 28"
+    validations:
+      required: true

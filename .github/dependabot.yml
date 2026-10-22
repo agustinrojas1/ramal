@@ -1,0 +1,29 @@
+version: 2
+updates:
+  - package-ecosystem: mix
+    directory: /
+    schedule:
+      interval: weekly
+    # Ash, AshPostgres and Spark are locked to the minor series in CLAUDE.md; a minor bump is a deliberate PR.
+    ignore:
+      - dependency-name: ash
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: ash_postgres
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: spark
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+    groups:
+      dev-tooling:
+        dependency-type: development
+
+  - package-ecosystem: mix
+    directory: /bench
+    schedule:
+      interval: weekly
+
+  # Add an entry for /ramal_live when that package exists; Dependabot rejects a directory that is missing.
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
