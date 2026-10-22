@@ -197,6 +197,77 @@ defmodule Ramal.MergeTest do
     end
   end
 
+  describe "on a data layer that cannot roll back (ETS)" do
+    alias Ash.DataLayer.Ets
+    alias Ramal.Test.Other.Note
+
+    setup do
+      on_exit(fn -> Ets.stop(Note) end)
+      kept = Ash.create!(Note, %{text: "kept"})
+      moved = Ash.create!(Note, %{text: "moved"})
+      {:ok, branch} = Ramal.branch(Ramal.Test.Other)
+      {:ok, branch: branch, kept: kept, moved: moved}
+    end
+
+    defp note_texts, do: Note |> Ash.read!() |> Enum.map(& &1.text) |> Enum.sort()
+
+    test "a stale base is returned as an error and nothing is written", %{
+      branch: branch,
+      moved: moved
+    } do
+      inside(branch, fn -> Ash.update!(moved, %{text: "branch"}) end)
+      Ash.update!(moved, %{text: "outside"})
+
+      assert {:error, %Error{reason: :stale, details: %{rows: [%{reason: :changed}]}}} =
+               Ramal.merge(branch)
+
+      assert note_texts() == ["kept", "outside"]
+      assert {:ok, %{status: :open}} = Ramal.get(branch.id)
+    end
+
+    test "a failed replay is returned as an error, and says what stays written", %{
+      branch: branch,
+      moved: moved
+    } do
+      inside(branch, fn ->
+        Ash.create!(Note, %{text: "new"})
+        Ash.update!(moved, %{text: "branch"})
+      end)
+
+      Ash.destroy!(moved)
+
+      assert {:error, %Error{reason: :merge_failed, message: message, details: details}} =
+               Ramal.merge(branch, on_stale: :ignore)
+
+      assert %{index: 1, type: :update, resource: Note, not_rolled_back: [Note]} = details
+      assert message =~ "stay written"
+      # ETS has no transactions: the create replayed before the failure is still in the table.
+      assert note_texts() == ["kept", "new"]
+      assert {:ok, %{status: :open}} = Ramal.get(branch.id)
+    end
+
+    test "a failure before anything was written has nothing to report", %{
+      branch: branch,
+      moved: moved
+    } do
+      inside(branch, fn -> Ash.update!(moved, %{text: "branch"}) end)
+      Ash.destroy!(moved)
+
+      assert {:error, %Error{reason: :merge_failed, message: message, details: details}} =
+               Ramal.merge(branch, on_stale: :ignore)
+
+      assert details.not_rolled_back == []
+      assert message =~ "nothing was written"
+    end
+
+    test "a clean merge still works", %{branch: branch, moved: moved} do
+      inside(branch, fn -> Ash.update!(moved, %{text: "branch"}) end)
+
+      assert {:ok, %Result{replayed: 1}} = Ramal.merge(branch)
+      assert note_texts() == ["branch", "kept"]
+    end
+  end
+
   describe "refusals" do
     test "inside a branch", %{branch: branch} do
       inside(branch, fn ->

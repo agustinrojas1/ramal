@@ -36,5 +36,12 @@ concurrent writers to the branch, rows created by hooks, actors, and the ids of 
 - The staleness read runs without a tenant, so a resource that requires one fails the merge with an Ash error; multitenancy is refused inside a branch since ADR 0009 and is
   out of scope for 0.1.
 - Rows read with `select` are not checked.
+- A data layer that cannot run transactions (`Ash.DataLayer.Ets`) cannot roll a failed replay back. `Ash.transact/3`
+  runs the function as it is for such a data layer and returns its `{:error, _}` inside `{:ok, _}`; the merge unwraps it,
+  so the caller gets `{:error, %Ramal.Error{}}` as with Postgres. A stale base still writes nothing, since the check runs
+  before the first write. A replayed action that fails after earlier entries were written leaves those writes in place;
+  the error's message says so and `details.not_rolled_back` lists the resources. We chose to report and document this
+  over refusing such resources, because ETS-backed resources are legitimate in tests and prototypes, and over
+  compensating writes, which would run real actions a second time.
 - If the process that called `merge/2` dies mid-replay, the transaction rolls back with it and the monitor releases the
   claim; the branch stays open.

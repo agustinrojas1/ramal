@@ -21,7 +21,10 @@ updates:
     schedule:
       interval: weekly
 
-  # Add an entry for /ramal_live when that package exists; Dependabot rejects a directory that is missing.
+  - package-ecosystem: mix
+    directory: /ramal_live
+    schedule:
+      interval: weekly
 
   - package-ecosystem: github-actions
     directory: /

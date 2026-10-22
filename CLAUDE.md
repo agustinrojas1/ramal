@@ -38,7 +38,7 @@ Do not add a module `docs/DESIGN.md` does not name without first adding it there
 ## Toolchain
 
 - `mise.toml` pins Erlang and Elixir. Run everything through `mise exec -- mix ...` or activate mise in the shell.
-- Postgres for tests: `docker compose up -d db` (host port **5435**, database `ramal_test`, user and password `ramal`).
+- Postgres for tests: `docker compose up -d db` (host port **5435**, database `ramal_test`, user and password `ramal`). Two test runs at once must not share a database: give each its own `MIX_TEST_PARTITION=1`, `2`, ... (database `ramal_test1`, ...).
 - `mix ci` must pass before every commit: format, compile with warnings as errors, credo strict, tests. Fix the cause, never silence a warning.
 - Locked versions matter: Ash 3.36.x, AshPostgres 2.15.x, Spark 2.7.x. Before relying on an Ash hook or option, confirm it exists in the locked version's docs (`mix hex.docs offline ash` or the deps source under `deps/ash`). Write what you confirmed into the module doc. Do not guess APIs from memory.
 
