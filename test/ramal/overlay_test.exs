@@ -101,6 +101,14 @@ defmodule Ramal.OverlayTest do
       assert patch([row(1), row(2)], %{1 => {:updated, updated}}) == [updated, row(2)]
     end
 
+    test "builds the replacing row with :replace, which sees the base row it replaces" do
+      slice = %{1 => {:updated, row(1, %{name: "changed"})}}
+      replace = fn base, record -> Map.put(record, :source, base.source) end
+
+      assert patch([Map.put(row(1), :source, :a)], slice, &all/1, replace: replace) ==
+               [Map.put(row(1, %{name: "changed"}), :source, :a)]
+    end
+
     test "drops an updated row that no longer satisfies the predicate" do
       slice = %{1 => {:updated, row(1, %{head: 0})}}
 

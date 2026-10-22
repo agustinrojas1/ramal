@@ -47,6 +47,35 @@ defmodule Ramal.Test.Farm.Herd do
         end)
       end)
     end
+
+    # The three ways a host manages the many_to_many through the join resource. `:append_and_remove` unrelates the
+    # missing vets with a bulk destroy on the join resource, which a branch refuses (see Ramal.ManyToManyTest).
+    update :add_vets do
+      require_atomic?(false)
+      accept([:head])
+
+      argument(:vet_ids, {:array, :uuid}, allow_nil?: false)
+
+      change(manage_relationship(:vet_ids, :vets, type: :append))
+    end
+
+    update :drop_vets do
+      require_atomic?(false)
+      accept([:head])
+
+      argument(:vet_ids, {:array, :uuid}, allow_nil?: false)
+
+      change(manage_relationship(:vet_ids, :vets, type: :remove))
+    end
+
+    update :set_vets do
+      require_atomic?(false)
+      accept([:head])
+
+      argument(:vet_ids, {:array, :uuid}, allow_nil?: false)
+
+      change(manage_relationship(:vet_ids, :vets, type: :append_and_remove))
+    end
   end
 
   policies do
@@ -70,5 +99,12 @@ defmodule Ramal.Test.Farm.Herd do
   relationships do
     belongs_to(:paddock, Ramal.Test.Farm.Paddock, public?: true, attribute_writable?: true)
     has_many(:moves, Ramal.Test.Farm.Move, public?: true)
+
+    many_to_many :vets, Ramal.Test.Farm.Vet do
+      through(Ramal.Test.Farm.HerdVet)
+      source_attribute_on_join_resource(:herd_id)
+      destination_attribute_on_join_resource(:vet_id)
+      public?(true)
+    end
   end
 end

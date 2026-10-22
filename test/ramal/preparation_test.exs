@@ -5,6 +5,7 @@ defmodule Ramal.PreparationTest do
   require Ash.Query
 
   alias Ramal.{Branch.Server, Overlay}
+  alias Ramal.Test.Farm.{HerdVet, Vet}
   alias Ramal.Test.Plain
 
   doctest Ramal.Resource
@@ -71,7 +72,14 @@ defmodule Ramal.PreparationTest do
     end
 
     test "branchable_resources/1 lists the resources of the domain that opted in" do
-      assert Enum.sort(Ramal.Resource.branchable_resources(Farm)) == [Herd, Move, Paddock]
+      assert Enum.sort(Ramal.Resource.branchable_resources(Farm)) == [
+               Herd,
+               HerdVet,
+               Move,
+               Paddock,
+               Vet
+             ]
+
       assert Ramal.Resource.branchable_resources(Plain) == []
     end
   end
