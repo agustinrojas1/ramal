@@ -130,3 +130,61 @@ defmodule Ramal.Test.Capture.Flaky do
     attribute(:text, :string, public?: true)
   end
 end
+
+defmodule Ramal.Test.Tenanted do
+  @moduledoc false
+  # Resources that use multitenancy, to prove a branch refuses a tenant instead of mixing tenants in one overlay.
+  use Ash.Domain, otp_app: :ramal, validate_config_inclusion?: false
+
+  resources do
+    resource(Ramal.Test.Tenanted.Task)
+    resource(Ramal.Test.Tenanted.Shared)
+  end
+end
+
+defmodule Ramal.Test.Tenanted.Task do
+  @moduledoc false
+  use Ash.Resource,
+    domain: Ramal.Test.Tenanted,
+    data_layer: Ash.DataLayer.Ets,
+    extensions: [Ramal.Resource]
+
+  multitenancy do
+    strategy(:attribute)
+    attribute(:org_id)
+  end
+
+  actions do
+    defaults([:read, :destroy, create: :*, update: :*])
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:org_id, :string, public?: true, allow_nil?: false)
+    attribute(:title, :string, public?: true)
+  end
+end
+
+defmodule Ramal.Test.Tenanted.Shared do
+  @moduledoc false
+  use Ash.Resource,
+    domain: Ramal.Test.Tenanted,
+    data_layer: Ash.DataLayer.Ets,
+    extensions: [Ramal.Resource]
+
+  multitenancy do
+    strategy(:attribute)
+    attribute(:org_id)
+    global?(true)
+  end
+
+  actions do
+    defaults([:read, :destroy, create: :*, update: :*])
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:org_id, :string, public?: true)
+    attribute(:title, :string, public?: true)
+  end
+end

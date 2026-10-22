@@ -25,7 +25,7 @@ defmodule Ramal.Merge do
     * `:on_stale` - `:error` (default), `:ignore`, or a function from the stale rows to `:continue` or `:abort`
     * `:mode` - only `:replay`
 
-  Known limits, documented in `docs/adr/0007-merge.md`: tenants are not part of the staleness check, a top-level action
+  Known limits, documented in `docs/adr/0007-merge.md`: tenants are refused inside a branch (ADR 0009), so the staleness check has none, a top-level action
   that targets a row created by a hook cannot be replayed, and changes made with `Ash.Changeset.change_attribute/3`
   outside the action's own inputs are not in the log.
 
