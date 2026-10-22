@@ -72,8 +72,10 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
 Resources opt in with `extensions: [Ramal.Resource]`. The extension adds, through a transformer, one global
 preparation to every read action and one global change to every create, update and destroy action. It also adds a
 `ramal do ... end` section with `branchable? true` (default) so a resource can opt out (a `ramal_branches` table must
-never be branchable, for example). A domain-level verifier lists which resources of the domain are branchable, so
-`Ramal.branch/2` can refuse a domain with none.
+never be branchable, for example). `Ramal.branch/2` refuses a domain with no branchable resource (`:no_branchable_resources`). That check runs when the
+branch is created, not as a compile-time domain verifier: a verifier would need the domain to opt into an extension
+of its own, which 0.1 does not ask of the host. The transformer is `Ramal.Resource.Transformer` (`@moduledoc false`);
+Spark needs a module for it.
 
 Both hooks are no-ops when no branch is current. A test per hook proves that: the same action, with and without the
 extension, produces byte-identical results when no branch is active.
@@ -82,28 +84,43 @@ extension, produces byte-identical results when no branch is active.
 
 This is the section that decides correctness. In a read action's preparation, when a branch is current:
 
-1. **Before the data layer:** remember the query's `limit`, `offset` and `sort`, and remove `limit` and `offset` from
+1. **Before the data layer:** in a `before_action` hook (it runs after every preparation and before the data-layer
+   query is built, `lib/ash/actions/read/read.ex`), remember the query's `limit` and `offset` and remove them from
    the query that goes to the data layer. The base query keeps its filter, so Postgres still uses its indexes and
    returns only candidate rows. For OLTP-sized working sets this is cheap; for a query that would return a large
-   result the host should not be in a branch.
+   result the host should not be in a branch. When the overlay has no entry for the resource, nothing is stripped and
+   the database pages as usual.
 2. **After the data layer:** take the base results and the overlay slice for this resource, then:
    - drop every base row whose key is `:deleted` in the overlay;
    - replace every base row whose key is `:updated` with the overlay record;
    - add every `:created` and `:updated` overlay record that is not already present and that **matches the query's
-     filter**, evaluated in Elixir with `Ash.Filter.Runtime` **[confirm exact function and arity]**. An updated row
-     that no longer matches the filter is dropped;
-   - re-apply the sort in Elixir (`Ash.Actions.Sort.runtime_sort/3` **[confirm]**; it lives in `Ash.Actions.Sort`, not
-     `Ash.Sort`), then the remembered `limit` and `offset`. `Ramal.Overlay.patch/4` does the merge, sort, offset and
-     limit as a pure function; the preparation only supplies the filter predicate and the comparator;
-   - record a fingerprint (section 7) for every base row that survived or was replaced.
+     filter**, evaluated in Elixir with `Ash.Filter.Runtime.filter_matches/4` (domain, records, filter, opts), once for the whole
+     slice. An updated row that no longer matches the filter is dropped;
+   - re-apply the sort in Elixir with `Ash.Actions.Sort.runtime_sort/3` (it lives in `Ash.Actions.Sort`, not
+     `Ash.Sort`, and sorts a list, not pairs), then the remembered `offset` and `limit`. `Ramal.Overlay.patch/4`
+     does the merge as a pure function and supplies the filter predicate's rows; the preparation calls it without
+     `:sort`, `:offset` and `:limit` and applies those itself;
+   - trim overlay records to the query's `select`, since an overlay record is a whole struct and a base row carries
+     only the selected attributes (the primary key is always kept);
+   - record a fingerprint (section 7) for every base row that survived or was replaced. Fingerprints arrive with
+     issue 6 of milestone 0.1; until then the preparation records none.
 3. **Loads and relationships:** Ash loads relationships through further read actions on the related resource, so they
-   go through the same preparation. **[confirm]** that this holds for both the default and the `lazy?` load paths and
-   for `Ash.get/3`.
+   go through the same preparation. Confirmed in Ash 3.37 and covered by tests: the default and `lazy?: true` paths
+   of `Ash.load`, loads inside a read, and `Ash.get/3` (the not-found check runs after the `after_action` hooks, so a
+   row created in the branch is found). Ash builds the first level of a load in the calling process, where the
+   process dictionary is set, and the levels below it inside the task that runs the first level, where it is not.
+   The preparation therefore copies the branch id into the query's `shared` context, which Ash passes to related
+   queries (ADR 0002); a test outside the SQL sandbox, where Ash really does run loads in tasks, fails without it.
 4. **Aggregates and calculations:** data-layer aggregates (`count`, `sum`, `exists`) and calculations with
    expressions are computed on the base and do not see the overlay. 0.1 documents this and emits a
    `[:ramal, :read, :unpatched_aggregate]` telemetry event when a query inside a branch selects one, so a host can
    detect it in tests. 0.2 revisits with runtime evaluation where Ash allows it.
-5. **Pagination:** keyset and offset pagination run on the patched list. Correct, not fast. Documented.
+5. **Pagination:** Ash adds a page's limit and offset after the `before_action` hooks, so a paginated read is paged
+   by the database and patched afterwards. Deleted rows shorten a page, rows created in the branch can be missing
+   from or misplaced across pages, and `count` is the database's. 0.1 documents this. Patching the whole list and
+   paging it in Elixir is possible but means rebuilding `Ash.Page` values, and is left to a later version.
+6. **Policies:** the query's filter, including one a policy added, is applied to overlay records. Checks that act on
+   results (`authorize_results`) run before the `after_action` hooks and so do not see overlay records.
 
 ### 4.2 How writes are captured
 
@@ -244,8 +261,8 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 2. Should `run/2` be reentrant (a branch inside a branch)? 0.1: no, `{:error, :nested_branch}`.
 3. Where do many-to-many join resources sit in the overlay? They are resources, so they get overlay entries like any
    other; test it.
-4. Does the read preparation need to handle `Ash.Query.select` for load-bearing attributes (the key must always be
-   selected to patch)? Probably yes: ensure the primary key is selected.
+4. ~~Does the read preparation need to handle `Ash.Query.select`?~~ Answered: Ash always selects the primary key, and
+   the preparation trims overlay records to the select (section 4.1).
 5. Should fingerprints cover rows read through relationship loads? Yes if cheap; measure.
 
 ## 12. Decision log (summary; details in `docs/adr/`)
@@ -261,3 +278,4 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 | 7 | `Ramal.Change` is the diff struct, `Ramal.Capture` the write hook; the overlay records net effect | One name for one thing, and `diff` can rely on `:deleted` meaning the base had the row. [ADR 0001](adr/0001-change-struct-and-capture-module.md) |
 | 8 | The current branch id lives in the process dictionary and in Ash's shared context | Ash has no ambient context, and it runs some loads in tasks that lose the process dictionary. [ADR 0002](adr/0002-current-branch-carrier.md) |
 | 9 | Idle timeout and heap limit belong to the supervisor; discard keeps the record; storage takes config last | A per-branch value is lost on unload, and a kept record gives `:not_open` a meaning. [ADR 0003](adr/0003-branch-process-lifecycle.md) |
+| 10 | Reads are patched in `before_action`/`after_action` hooks; nothing is stripped when the overlay has no entry for the resource; the preparation sorts and pages the list itself | The hooks are where Ash allows changing the data-layer query and seeing its rows; `runtime_sort` takes a list, not a comparator. [ADR 0004](adr/0004-read-patching-hooks.md) |
