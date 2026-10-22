@@ -214,6 +214,71 @@ defmodule Ramal do
   end
 
   @doc """
+  Computes an aggregate over the rows a read of `query` returns. Inside `run/2` those rows are the branch's: base rows
+  patched with the overlay, filtered, sorted and limited as the query says. Outside a branch it is `Ash.count/2`,
+  `Ash.sum/3` and the like, so the same call works in both places.
+
+  This exists because the aggregates Ash hands to the data layer (`Ash.count/2`, `aggregates do ... end`) never see the
+  overlay. Here the rows are read through the patched path and the aggregate is computed in Elixir (`Ramal.Aggregate`),
+  which makes it exact for the branch and as expensive as reading every matching row.
+
+  `kind` is `:count`, `:exists`, `:sum`, `:min`, `:max` or `:avg`; `field` is an attribute (not needed for `:count` and
+  `:exists`). `opts` go to the read: `:actor`, `:authorize?`, `:tenant`, `:domain`. Returns `{:ok, value}` or the error
+  Ash returned. Raises `ArgumentError` for an unknown kind or a field that is not an attribute, in a branch or not.
+
+  Confirmed against Ash 3.37 (`lib/ash.ex`): `Ash.count/2` takes no field, and the others take `(query, field, opts)`.
+
+  ## Example
+
+      {:ok, branch} = Ramal.branch(MyApp.Farm)
+
+      Ramal.run!(branch, fn ->
+        Ash.create!(MyApp.Farm.Herd, %{name: "R10", head: 5})
+        {:ok, total} = Ramal.aggregate(MyApp.Farm.Herd, :sum, :head)
+        total
+        #=> the base total plus 5
+      end)
+  """
+  @spec aggregate(Ash.Query.t() | module, Ramal.Aggregate.kind(), atom | nil, keyword) ::
+          {:ok, term} | {:error, Ash.Error.t()}
+  def aggregate(query, kind, field \\ nil, opts \\ [])
+      when is_atom(kind) and (is_atom(field) or is_nil(field)) and is_list(opts) do
+    query = Ash.Query.new(query)
+    Ramal.Aggregate.validate!(kind, field, query.resource)
+
+    if Current.id() do
+      in_branch(query, kind, field, opts)
+    else
+      outside_branch(query, kind, field, opts)
+    end
+  end
+
+  @doc """
+  Like `aggregate/4` but returns the value or raises.
+
+  ## Example
+
+      Ramal.run!(branch, fn -> Ramal.aggregate!(MyApp.Farm.Herd, :count) end)
+  """
+  @spec aggregate!(Ash.Query.t() | module, Ramal.Aggregate.kind(), atom | nil, keyword) :: term
+  def aggregate!(query, kind, field \\ nil, opts \\ []) do
+    case aggregate(query, kind, field, opts) do
+      {:ok, value} -> value
+      {:error, error} -> raise error
+    end
+  end
+
+  defp in_branch(query, kind, field, opts) do
+    with {:ok, records} <- Ash.read(query, opts) do
+      {:ok, Ramal.Aggregate.compute(kind, field, records, query.resource)}
+    end
+  end
+
+  defp outside_branch(query, :count, _field, opts), do: Ash.count(query, opts)
+  defp outside_branch(query, :exists, _field, opts), do: Ash.exists(query, opts)
+  defp outside_branch(query, kind, field, opts), do: apply(Ash, kind, [query, field, opts])
+
+  @doc """
   Merges a branch into the database by replaying its log through the application's own actions, in one transaction.
 
   First every base row the branch read or wrote is compared with what the database holds now; if any changed, the

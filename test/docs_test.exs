@@ -33,6 +33,7 @@ defmodule Ramal.DocsTest do
     assert names == [
              "Mix.Tasks.Ramal.Gen.Migration",
              "Ramal",
+             "Ramal.Aggregate",
              "Ramal.Branch",
              "Ramal.Capture",
              "Ramal.Change",

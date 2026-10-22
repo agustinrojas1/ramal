@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `Ramal.aggregate/4` and `Ramal.aggregate!/4`: count, exists, sum, min, max and avg over the rows a read returns inside a branch, so a branch's creates, updates and destroys are included. Outside a branch they call the matching `Ash` function. `Ramal.Aggregate` holds the pure computation.
+
 ## [0.1.0] - 2026-10-22
 
 ### Added

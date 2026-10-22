@@ -18,6 +18,7 @@ lib/ramal/resource.ex        Spark extension: adds the read preparation and the 
 lib/ramal/resource/transformer.ex  the extension's transformer (Spark needs a module for it)
 lib/ramal/preparation.ex     read side: strip limit/offset, patch results
 lib/ramal/change.ex          the Change struct that diff returns
+lib/ramal/aggregate.ex       aggregates over a list of records (pure), used by Ramal.aggregate/4
 lib/ramal/capture.ex         write side: capture creates/updates/destroys into the overlay
 lib/ramal/error.ex           the Error exception
 lib/ramal/storage.ex         behaviour + Ramal.Storage.ETS, Ramal.Storage.Postgres
