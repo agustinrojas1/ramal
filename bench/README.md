@@ -39,9 +39,11 @@ The full profile uses 20,000 rows and 100 buckets, 3 warm-up runs and 30 measure
 
 ## Results
 
-Run on 2026-10-22, full profile. Raw samples: [`results/published/full-20261022.json`](results/published/full-20261022.json).
+Run on 2026-10-22, full profile, after fast aggregates ([#28](https://github.com/agustinrojas1/ramal/issues/28), [ADR 0013](../docs/adr/0013-aggregate-delta.md)). Raw samples: [`results/published/full-20261022-after-fast-aggregates.json`](results/published/full-20261022-after-fast-aggregates.json). Every table below comes from that one run, on one machine, at one commit.
 
-Machine: Intel Xeon @ 2.10 GHz, 4 logical cores, 16 GB, a cloud sandbox, PostgreSQL 16.15 on the same host, Erlang/OTP 28, Elixir 1.19.6, Ash 3.37.0, AshPostgres 2.15.1, Ramal 0.1.0 (the code at the commit that added this file). Medians in milliseconds, p95 in parentheses.
+Machine: Intel Xeon @ 2.10 GHz, 4 logical cores, 16 GB, a cloud sandbox, PostgreSQL 16.15 on the same host, Erlang/OTP 28, Elixir 1.19.6, Ash 3.37.0, AshPostgres 2.15.1, Ramal 0.1.0 (the code at commit `2f31044`, the one that merged #37). Medians in milliseconds, p95 in parentheses.
+
+The run before fast aggregates, on the same kind of sandbox and the same versions, is kept as [`results/published/full-20261022.json`](results/published/full-20261022.json). Only the tree search changed because of the library; the other cases moved together with the baselines (the plain-Ash floor, the copy and delta variants), which is the sandbox varying between runs, not #37.
 
 These numbers are **indicative**. They come from one shared machine with the database on localhost, so they say nothing about network latency or a loaded server. Rerun `mix bench` on your own hardware before drawing a conclusion.
 
@@ -49,9 +51,9 @@ These numbers are **indicative**. They come from one shared machine with the dat
 
 | case | ramal | copy | delta |
 |---|---|---|---|
-| fork, overlay 0 | 0.03 (0.06) | 25.63 (32.56) | 0.59 (1.26) |
-| fork, overlay 100 | 0.06 (0.14) | 23.36 (33.78) | 1.41 (1.83) |
-| fork, overlay 1,000 | 0.33 (0.51) | 24.77 (30.61) | 4.84 (6.43) |
+| fork, overlay 0 | 0.04 (0.06) | 20.20 (27.67) | 0.27 (0.69) |
+| fork, overlay 100 | 0.06 (0.11) | 19.66 (23.95) | 0.92 (1.26) |
+| fork, overlay 1,000 | 0.34 (0.46) | 19.65 (25.47) | 3.70 (4.15) |
 
 A fork is a copy of a map in memory. The copy baseline pays for every row at every fork, whatever the overlay holds; the delta baseline pays for the parent's overlay, as Ramal does, plus a round trip.
 
@@ -59,37 +61,49 @@ A fork is a copy of a map in memory. The copy baseline pays for every row at eve
 
 | case | ash_no_branch | ramal | copy | delta |
 |---|---|---|---|---|
-| read small, overlay 0 | 1.17 | 1.58 | 0.72 | 1.02 |
-| read small, overlay 1,000 | | 1.68 | 0.75 | 1.26 |
-| write one row, overlay 0 | 2.00 (base write, rolled back) | 1.85 | 0.71 | 1.13 |
-| write one row, overlay 1,000 | | 1.71 | 0.88 | 1.10 |
+| read small, overlay 0 | 0.90 | 1.25 | 0.50 | 0.75 |
+| read small, overlay 1,000 | | 1.42 | 0.53 | 0.82 |
+| write one row, overlay 0 | 1.24 (base write, rolled back) | 0.80 | 0.52 | 0.71 |
+| write one row, overlay 1,000 | | 0.95 | 0.57 | 0.62 |
+| tree search (20 forks, 100 updates, 20 scorings) | | 183.27 | 586.48 | 171.99 |
 
 The overlay size does not show in a small read or in a write up to 1,000 entries. A write inside a branch costs about what the same write costs on the base, since the real action runs.
+
+* **Tree search.** Ramal takes 183 ms for the whole search, 3.2 times faster than the copy baseline and 7% slower than the delta baseline (172 ms). The delta baseline is the relational twin of Ramal's overlay and the practical floor for this workload, so being within a few percent of it is the result to expect, not a win over it.
 
 ### Where Ramal loses
 
 | case | ash_no_branch | ramal | copy | delta |
 |---|---|---|---|---|
-| read wide (2,000 rows), overlay 0 | 6.48 | 11.58 | 1.43 | 1.81 |
-| read wide, overlay 1,000 | | 10.61 | 1.09 | 1.83 |
-| merge 100 updates | | 98.33 | | 4.15 |
-| merge 1,000 updates | | 968.84 | | 6.08 |
-| tree search (20 forks, 100 updates, 20 scorings) | | 5,704.73 | 728.41 | 247.19 |
+| read wide (2,000 rows), overlay 0 | 5.54 | 9.59 | 0.93 | 1.42 |
+| read wide, overlay 1,000 | | 10.13 | 0.91 | 1.48 |
+| merge 100 updates | | 67.25 | | 2.60 |
+| merge 1,000 updates | | 655.10 | | 4.47 |
 
-* **Wide reads.** Reading 2,000 rows through Ash costs 6.5 ms before any branch is involved, against 1.4 to 1.8 ms for raw SQL. Inside a branch Ramal adds about 5 ms: it fingerprints every base row (below) and sends the fingerprints to the branch process. The overlay itself adds little.
-* **Merge.** Replay costs about 1 ms per change, because each change is a real action with validations, policies and changes, and the staleness check re-reads the rows. A set-based `UPDATE` is 24 to 160 times faster. That is the price of merging through the application's own rules, which a database merge cannot do.
-* **Tree search.** Ramal is about 8 times slower than the copy baseline here and 23 times slower than the delta baseline, and the cause is not forking: scoring uses `Ramal.aggregate!/4`, which reads and fingerprints all 20,000 rows to sum them (about 280 ms per scoring, 20 of them per search). A workload that scores a state without scanning the table does not pay this. Making the aggregate read only what the overlay changes is tracked in [#28](https://github.com/agustinrojas1/ramal/issues/28).
+* **Wide reads.** Reading 2,000 rows through Ash costs 5.5 ms before any branch is involved, against 0.9 to 1.5 ms for raw SQL. Inside a branch Ramal adds about 4 to 5 ms: it fingerprints every base row (below) and sends the fingerprints to the branch process. The overlay itself adds little.
+* **Merge.** Replay costs about 0.7 ms per change, because each change is a real action with validations, policies and changes, and the staleness check re-reads the rows. A set-based `UPDATE` is 26 to 147 times faster. That is the price of merging through the application's own rules, which a database merge cannot do.
+
+### Before and after fast aggregates
+
+The tree search is the case #28 was opened for. Scoring a state used `Ramal.aggregate!/4`, which read and fingerprinted all 20,000 rows to sum them; it now has the database sum the rows the overlay does not touch and reads only the overlaid ones.
+
+| tree search, median ms | ramal | copy | delta | ramal / delta |
+|---|---|---|---|---|
+| before (`full-20261022.json`) | 5,704.73 | 728.41 | 247.19 | 23.1 |
+| after (`full-20261022-after-fast-aggregates.json`) | 183.27 | 586.48 | 171.99 | 1.07 |
+
+Ramal is 31 times faster than before. The two baselines are also lower in the second run (by 20% and 30%), because they were measured in a different run of a shared sandbox, so compare the last column, which cancels that out, rather than the absolute times across rows. The benchmark raises if the variants disagree on the best score, and none did.
 
 ### Fingerprints
 
 | records | median ms |
 |---|---|
-| 100 | 0.09 |
-| 1,000 | 0.72 |
-| 20,000 | 28.39 |
+| 100 | 0.08 |
+| 1,000 | 0.66 |
+| 20,000 | 22.12 |
 
-About 1.4 microseconds per row. A `wide` read in an empty branch takes 11.93 ms against 7.30 ms for the same read with no branch, 63% more; this run is the figure behind DESIGN open question 5.
+About 1.1 microseconds per row. A `wide` read in an empty branch takes 9.88 ms against 5.93 ms for the same read with no branch, 67% more; this run is the figure behind DESIGN open question 5.
 
 ## What this is not
 
-It is not a reproduction of the [DAPLab benchmark](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html) (BranchBench). The workload is modelled on the workload the article focuses on, a Monte Carlo tree search that keeps forking promising partial states, mutates, queries and prunes; ours is a fixed-shape tree search, not MCTS, and it does not use their harness, schemas or step counts, and none of its figures are quoted. It compares one Postgres schema at one size on one machine; Neon, Dolt and other branching databases are not measured.
+It is not a reproduction of the [DAPLab benchmark](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html) (BranchBench). The workload is modelled on the workload the article focuses on, a Monte Carlo tree search that keeps forking promising partial states, mutates, queries and prunes; ours is a fixed-shape tree search, not MCTS, and it does not use their harness, schemas or step counts. The article reports that Neon finished 33 of 1,000 steps before hitting its active branch limit and that Dolt finished 170 steps before a two-hour timeout; those are their figures from their harness, cited here and deliberately kept out of the tables above, which were not measured the same way. It compares one Postgres schema at one size on one machine; Neon, Dolt and other branching databases are not measured.

@@ -32,7 +32,8 @@ installs do not run for it. The database part is therefore never patched.
 
 ## Consequences
 
-- The cost follows the overlay, not the table. The tree-search case of the benchmark is the measurement.
+- The cost follows the overlay, not the table. The tree-search case of the benchmark is the measurement: 5.7 s before,
+  0.18 s after, against 0.17 s for the delta baseline (`bench/README.md`, "Before and after fast aggregates").
 - **The database's part is not fingerprinted**, so an aggregate no longer adds unread rows to the merge staleness check
   (ADR 0011 said it did). A branch that only aggregated a row and never read or wrote it does not go stale when that
   row changes; its aggregate was true when it was asked. The rows of the overlay are read, and are still checked.
