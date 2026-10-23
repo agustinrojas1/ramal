@@ -5,13 +5,13 @@ and tests tie the two together (see [How the models meet the code](#how-the-mode
 
 | | what | tool | checked by |
 |---|---|---|---|
-| [`tla/`](tla) | the life of branches across processes: writes, reads, fork, propose, approve, reject, discard, merge, idle unload, kills, restarts, the write log of durable branches; and a nested fork merging into its parent | TLA+, model-checked with TLC 1.8.0 | `check.sh tla` |
+| [`tla/`](tla) | the life of branches across processes: actions that write one or several rows, reads, fork, propose, approve, reject, discard, merge, idle unload, kills, restarts, the write log of durable branches; and a nested fork merging into its parent | TLA+, model-checked with TLC 1.8.0 | `check.sh tla` |
 | [`tla/Cluster.tla`](tla/Cluster.tla) | one branch in a cluster: `:global` names, the storage's epoch, splits, heals, a node crash | TLA+, TLC 1.8.0 | `check.sh tla` |
 | [`bend/`](bend) | the data rules: overlay entries, what a read in a branch sees, what a merge writes | Bend 2.0.38, also rechecked by its Lean-proved kernel (`--verdict`) | `check.sh bend` |
 
 ```sh
 verification/check.sh          # both
-verification/check.sh tla      # about 7 minutes on 4 cores
+verification/check.sh tla      # about 10 minutes on 4 cores
 verification/check.sh bend     # under a second
 ```
 
@@ -40,11 +40,12 @@ and either a node restart or a merger that dies after its commit; 5,457,656 dist
 | `OverlayMatchesLog` | what reads see (the overlay) is what the log says, so a merge writes what the branch showed |
 | `CommitIsFinal` | a merge reported as failed did not commit (ADR 0023) |
 | `StatusMonotonic` | a stored status only moves forward, and merged, rejected and discarded are final |
+| `NoTornAction` | a fork, a merge and a stored branch hold all the writes of an action that succeeded or none of them (see [Actions that write several rows](#actions-that-write-several-rows)) |
 
 [`MC-durable.cfg`](tla/MC-durable.cfg) turns on `Durable` (ADR 0048): an action that ends appends its write to the
 `wal` before it returns, a restart loads the snapshot with the `wal` applied, and `Compact` is the snapshot that covers
 the `wal`. It has two rows, so two actions of one branch can end in either order, one node restart, and no outside write
-or heap kill or dying merger, which durability does not touch (MC.cfg has those); 2,580,972 distinct states, depth 22. A
+or heap kill or dying merger, which durability does not touch (MC.cfg has those); 2,580,972 distinct states, depth 21. A
 run of the same configuration with one heap kill (`MaxKills = 1`) also found no violation, over 14,185,904 distinct
 states (depth 23), and takes too long for CI. It checks the properties above and three more:
 
@@ -74,8 +75,10 @@ that write as atomic with the commit, which holds for Postgres storage on the re
 Postgres on another repo, the mark is written just before the commit and outside it (ADR 0035); the model does not
 cover a merger killed in that instant.
 
-**Abstractions.** A row is a version number and an action makes one write; nested writes, policies and validations are
-not modelled. Storage writes are atomic and may fail; a failed one changes nothing. The Registry, the watcher and the
+**Abstractions.** A row is a version number; policies and validations are not modelled. An action makes up to
+`MaxWrites` writes, see below. A durable commit whose caller gave up waiting (`:timeout`, "the request may still be
+carried out") is the action having succeeded without its caller knowing, which the model does not distinguish from a
+success; `Server.settle/1` is how a caller finds out. Storage writes are atomic and may fail; a failed one changes nothing. The Registry, the watcher and the
 running marks are modelled as what they decide, not as processes. A node restart loses the writes not yet persisted, as
 Ramal documents, so `NoLostWrite` asks only for the writes that survived it; a durable branch has persisted every
 acknowledged write, so there it asks for all of them. An append the storage refuses is the action failing (`Fail`),
@@ -83,6 +86,27 @@ and a delta holds the write and the fingerprint of its row, the part of a delta 
 The fingerprint of a row that was only read is not in a delta, so a restart loses it, as the code does; no property asks
 for it. The model is bounded: what TLC proves holds for the sizes in `MC.cfg` and `MC-durable.cfg`, and larger sizes are
 left out to keep the check to a few minutes.
+
+### Actions that write several rows
+
+A bulk action runs one captured write per record (ADR 0036), and the hooks of an action can write other rows, so in the
+code an action is the outermost call, whose writes the branch process holds together under the calling process
+(`Server.hold/3`), stores in one delta (`Branch.delta/2`) and takes back together (`Capture.rollback/3`, or the monitor
+when the caller dies). An action nested in it can fail and take back only its own writes while the outer one goes on.
+`MaxWrites` (1 in `MC.cfg`, so an action is one write) lets an action make more; `WriteMore` is a later write of the same
+action, `Retract` a nested action failing, and `FixUndoOrder` the order `Branch.undo/2` takes writes back in, newest
+first, so a row written twice goes back to before both. Three configurations check it:
+
+| config | what it checks |
+|---|---|
+| [`MC-multi.cfg`](tla/MC-multi.cfg) | the whole lifecycle (fork, propose, merge, claim, compaction, restart) with durable actions of two writes on one row: 879,234 distinct states, depth 22 |
+| [`MC-multi-rows.cfg`](tla/MC-multi-rows.cfg) | durable actions of two writes over two rows with three actions and one restart, and no fork, proposal or merge (`ProcessOnly` in [`MCRamal.tla`](tla/MCRamal.tla)): 496,254 distinct states, depth 19 |
+| [`MC.cfg`](tla/MC.cfg) and the rest | `MaxWrites = 1`: the same 5,457,656 states as before the extension |
+
+| config | what TLC finds without the fix |
+|---|---|
+| [`bug-undo-order.cfg`](tla/bug-undo-order.cfg) | (a design the model rejects) an action writes a row twice and then fails: its writes go back oldest first, the overlay keeps the first write and the log holds none (`OverlayMatchesLog`) |
+| [`bug-torn.cfg`](tla/bug-torn.cfg) | with `FixPending` off, a fork, a proposal or a merge takes the first write of a running action and not the second (`NoTornAction`) |
 
 ## TLA+: a nested fork merging into its parent
 
@@ -188,7 +212,10 @@ and the induction hypothesis; most of the work is the 32-way case split of `capt
 - The staleness check is sound: a row whose fingerprint did not change did not change. `:erlang.phash2` can collide, so
   this holds up to a hash collision; and a row read with `select` is not fingerprinted (ADR 0006).
 - A row the branch only created has no fingerprint; the hypothesis of `merge_shows_branch` holds for it because the
-  replayed create fails on the primary key if someone created the row meanwhile.
+  replayed create fails on the primary key if someone created the row meanwhile. An upsert that found no row is the
+  exception (ADR 0038): it is replayed as an upsert, so a row someone created meanwhile is updated with the upsert's
+  fields and the merged row is that row, not the one the branch showed. The laws cover an upsert whose row is as the
+  branch found it (absent, or present and unchanged), where it is a create or a set.
 - An action does the same thing to the same row at merge as in the branch. Policies, validations and hooks that read
   other rows can decide differently at merge; the merge then fails (`:merge_failed`) rather than write something else.
 - Each action writes one row. Writes made by hooks are nested and replayed by their outer action, not modelled here.
@@ -197,8 +224,9 @@ and the induction hypothesis; most of the work is the 32-way case split of `capt
   stores outside the input is not renamed (ADR 0042).
 
 **Not covered**: filtering, sorting, `limit` and `offset` of a patched read (`Ramal.Overlay.patch/4`), `diff/2`, and
-the relationship and aggregate paths. Those are tested with StreamData properties instead
-(`test/ramal/overlay_property_test.exs`, `aggregate_property_test.exs`).
+the relationship, aggregate, paged, `through` and collation paths of `Ramal.Preparation`. Those are tested with
+StreamData properties and the tests named in [`model_map.exs`](model_map.exs) instead (`test/ramal/overlay_property_test.exs`,
+`aggregate_property_test.exs`, ...).
 
 ## How the models meet the code
 
@@ -210,8 +238,40 @@ the relationship and aggregate paths. Those are tested with StreamData propertie
 - `test/ramal/cluster_nodes_test.exs` starts real nodes with `:peer` against Postgres and runs the traces of
   `Cluster.tla`: a split in which the node that held the branch is fenced, a heal in which the higher epoch keeps it, a
   crash. `test/ramal/cluster_test.exs` and the storage tests check the fence on one node.
-- The TLA+ steps name the functions they model, so a change to one of those functions is a change to check against the
-  model. The Verification workflow runs on changes to them.
+- [`model_map.exs`](model_map.exs) says which functions of `lib/` each step of each model stands for, and every
+  file under `lib/` is either read by a step or listed there with the reason no model needs it. `test/ramal/model_map_test.exs`
+  runs with `mix ci` and fails when a function a model cites is renamed, when a new module is in neither list, when the
+  Verification workflow's `paths` leave out a file a model reads, and when the code of a step changed since someone last
+  checked the step against it. [How the models stay in step](#how-the-models-stay-in-step-with-the-code) says what to
+  do then.
 
-What no model covers yet: other processes' reads see a running action's writes (read-uncommitted within a branch);
-multitenancy (a branch in one tenant, ADR 0034); Postgres storage specifics such as the owner column; and the inspector.
+What no model covers yet, and why that is acceptable for now:
+
+- Other processes' reads see a running action's writes (read-uncommitted within a branch, ADR 0033). A reader can see a
+  write its action then takes back; nothing is stored or merged from such a read, because a merge waits for the action.
+- Multitenancy (a branch in one tenant, ADR 0034). The tenant selects which rows a branch's writes and replay reach; the
+  rows of one tenant behave as the models say, and `test/ramal/multitenancy_test.exs` and `pg_multitenancy_test.exs`
+  check that a branch reads and writes inside its tenant and that a merge leaves the other tenants' rows alone.
+- The `owner` column is a filter for `Ramal.list/2`; it decides nothing about a branch.
+- The read side (aggregates, pages, relationship filters, collation), by StreamData properties and tests.
+- The inspector (`ramal_live/`).
+
+## How the models stay in step with the code
+
+The models are written by hand and nothing derives them from the code, so they can only be kept true by making a change to
+the code the moment someone has to look at the model. Three things do it, in this order of how early they speak:
+
+1. **`mix ci` fails** (`test/ramal/model_map_test.exs`) when a function a step models changed. The message names the steps
+   and the functions. Read each step next to the new code. If its rule still holds, run
+   `STAMP=1 mix test test/ramal/model_map_test.exs` and commit `model_map.stamps`: the stamp is a hash of the function's
+   syntax tree, so comments, docs and formatting never move it. If it does not hold, change the `.tla` or `.bend` file, its
+   properties, and `bug-*.cfg` when the change closes a bug. The stamp file is under `verification/`, so a moved stamp
+   runs the Verification workflow.
+2. **The Verification workflow runs** TLC and Bend when a file a model reads changes (its `paths` are tested against the
+   map), so a change to the model itself is checked before it merges, and every `bug-*.cfg` must still fail on the
+   property it names.
+3. **The pull request checklist** asks the author to name the steps they checked.
+
+A new module under `lib/` fails the same test until it is classified, which is the moment to ask whether a model's rules
+depend on it. A new step in a model fails it too, until the map names the code it stands for.
+

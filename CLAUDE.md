@@ -44,7 +44,7 @@ test/support/farm/           the test domain (Paddock, Herd, Move) and its repo
 docs/                        DESIGN.md, ROADMAP.md, agents.md (the guide for AI agents), ADRs under docs/adr/
 usage-rules.md               rules for coding agents that use Ramal, in the `usage_rules` format (ships in the Hex package)
 usage-rules/skills/ramal/    the skill for those agents (ships in the Hex package)
-verification/                the TLA+ model (tla/) and the Bend proofs (bend/); check.sh runs both, README.md says what they prove
+verification/                the TLA+ models (tla/) and the Bend proofs (bend/); check.sh runs both, README.md says what they prove; model_map.exs says which code each step stands for (ADR 0050)
 bench/                       a separate Mix project, never a dependency of the library
 examples/ash_ai/            a separate Mix project that runs AshAi tools in a branch, pinned to one ash_ai version; depends on ramal
 ramal_live/                  a separate Mix project, the LiveView inspector; depends on ramal, never the other way round
@@ -74,6 +74,7 @@ Do not add a module `docs/DESIGN.md` does not name without first adding it there
 
 - `mix test` runs against the real Postgres through the `Farm` test domain. Pure modules get unit tests with plain maps and structs, no database.
 - Every bug fix adds a test that failed before the fix. Every hook has a test proving it is transparent when no branch is active.
+- A change to a function that `verification/model_map.exs` names (the branch process, capture, merge, storage, the overlay) fails `test/ramal/model_map_test.exs` until you read the model's step against the new code. Change the model when the rule changed, then run `STAMP=1 mix test test/ramal/model_map_test.exs` and commit `verification/model_map.stamps`; say in the PR which steps you checked. A new module under `lib/` goes in the map: a step cites its function, or `not_modelled` gives the reason.
 - Property tests (StreamData) for the overlay: apply then diff round-trips, fork isolation, patch respects filters.
 - Name tests by behaviour: `test "a read inside a branch sees rows created in that branch"`.
 
