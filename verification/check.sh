@@ -29,6 +29,10 @@ echo "== TLC: MC.cfg (every property holds)"
 $tlc -config MC.cfg MCRamal.tla > tlc.out 2>&1 || { tail -60 tlc.out; exit 1; }
 grep -E "^[0-9,]+ states generated|No error has been found" tlc.out
 
+echo "== TLC: MC-durable.cfg (durable branches, every property holds)"
+$tlc -config MC-durable.cfg MCRamal.tla > tlc.out 2>&1 || { tail -60 tlc.out; exit 1; }
+grep -E "^[0-9,]+ states generated|No error has been found" tlc.out
+
 expect() {
   config=$1
   property=$2
@@ -46,5 +50,6 @@ expect bug-overlay.cfg OverlayMatchesLog
 expect bug-marker.cfg OneMerger
 expect bug-mark-node-crash.cfg NoClaimAfterCommit
 expect bug-mark-merger-crash.cfg NoClaimAfterCommit
+expect bug-durable-held.cfg NoHeldPersisted
 rm -f tlc.out
 echo "== all checks passed"

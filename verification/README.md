@@ -5,12 +5,12 @@ and tests tie the two together (see [How the models meet the code](#how-the-mode
 
 | | what | tool | checked by |
 |---|---|---|---|
-| [`tla/`](tla) | the life of branches across processes: writes, reads, fork, propose, approve, reject, discard, merge, idle unload, kills, restarts | TLA+, model-checked with TLC 1.8.0 | `check.sh tla` |
+| [`tla/`](tla) | the life of branches across processes: writes, reads, fork, propose, approve, reject, discard, merge, idle unload, kills, restarts, and the write log of durable branches | TLA+, model-checked with TLC 1.8.0 | `check.sh tla` |
 | [`bend/`](bend) | the data rules: overlay entries, what a read in a branch sees, what a merge writes | Bend 2.0.38, also rechecked by its Lean-proved kernel (`--verdict`) | `check.sh bend` |
 
 ```sh
 verification/check.sh          # both
-verification/check.sh tla      # about 4 minutes on 4 cores
+verification/check.sh tla      # about 6 minutes on 4 cores
 verification/check.sh bend     # under a second
 ```
 
@@ -40,6 +40,19 @@ and either a node restart or a merger that dies after its commit; 5,457,656 dist
 | `CommitIsFinal` | a merge reported as failed did not commit (ADR 0023) |
 | `StatusMonotonic` | a stored status only moves forward, and merged, rejected and discarded are final |
 
+[`MC-durable.cfg`](tla/MC-durable.cfg) turns on `Durable` (ADR 0048): an action that ends appends its write to the
+`wal` before it returns, a restart loads the snapshot with the `wal` applied, and `Compact` is the snapshot that covers
+the `wal`. It has two rows, so two actions of one branch can end in either order, one node restart, and no outside write
+or heap kill or dying merger, which durability does not touch (MC.cfg has those); 2,580,972 distinct states, depth 22. A
+run of the same configuration with one heap kill (`MaxKills = 1`) also found no violation, over 14,185,904 distinct
+states (depth 23), and takes too long for CI. It checks the properties above and three more:
+
+| property | meaning |
+|---|---|
+| `DurableAcked` | a branch loaded from storage now (the snapshot with the log applied) holds every write whose action returned, unless it was discarded: a crash loses no acknowledged write |
+| `RecoveredMatchesLog` | what a loaded branch shows (the overlay) is what its log says, whatever order the actions ended in |
+| `NoHeldPersisted` | storage never holds a write of an action that has not ended (ADR 0033), neither in the `wal` nor in a snapshot a compaction made while the action ran |
+
 **Bugs it found**, each confirmed by a test that failed before the fix (`test/ramal/running_actions_test.exs`,
 [ADR 0033](../docs/adr/0033-running-actions-hold-their-writes.md); `test/ramal/merged_marker_test.exs`,
 [ADR 0035](../docs/adr/0035-merged-status-in-the-merge-transaction.md)). A config with the fix switched off shows each one:
@@ -51,6 +64,7 @@ and either a node restart or a merger that dies after its commit; 5,457,656 dist
 | [`bug-marker.cfg`](tla/bug-marker.cfg) | the process holding a claimed merge is killed for its heap and reloaded from storage before its watcher marks it: a second caller claims the same branch while the first still holds its claim, and both can commit |
 | [`bug-mark-node-crash.cfg`](tla/bug-mark-node-crash.cfg) | the node restarts after a merge committed and before the merged branch was stored: storage has it open, and it is merged again |
 | [`bug-mark-merger-crash.cfg`](tla/bug-mark-merger-crash.cfg) | the process running a merge dies after the commit and before `finish_merge`: the claim is released and the branch is merged again |
+| [`bug-durable-held.cfg`](tla/bug-durable-held.cfg) | (a design the model rejected, not a bug that shipped) the `wal` is appended on every write, not when the action ends: it holds a write of an action that has not ended, which the action may still take back (`NoHeldPersisted`) |
 
 In the last two, a second merge was refused as `:stale` for every row the branch fingerprinted, and failed on the
 primary key for every row it created, unless the caller passed `on_stale: :ignore`; the model lets the caller pass it.
@@ -62,8 +76,12 @@ cover a merger killed in that instant.
 **Abstractions.** A row is a version number and an action makes one write; nested writes, policies and validations are
 not modelled. Storage writes are atomic and may fail; a failed one changes nothing. The Registry, the watcher and the
 running marks are modelled as what they decide, not as processes. A node restart loses the writes not yet persisted, as
-Ramal documents, so `NoLostWrite` asks only for the writes that survived it. The model is bounded: what TLC proves holds for the
-sizes in `MC.cfg`, and larger sizes are left out to keep the check to a few minutes.
+Ramal documents, so `NoLostWrite` asks only for the writes that survived it; a durable branch has persisted every
+acknowledged write, so there it asks for all of them. An append the storage refuses is the action failing (`Fail`),
+and a delta holds the write and the fingerprint of its row, the part of a delta that matters to the properties.
+The fingerprint of a row that was only read is not in a delta, so a restart loses it, as the code does; no property asks
+for it. The model is bounded: what TLC proves holds for the sizes in `MC.cfg` and `MC-durable.cfg`, and larger sizes are
+left out to keep the check to a few minutes.
 
 ## Bend: the data rules
 

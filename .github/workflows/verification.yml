@@ -13,6 +13,8 @@ on:
       - "lib/ramal/branch/server.ex"
       - "lib/ramal/capture.ex"
       - "lib/ramal/merge.ex"
+      - "lib/ramal/storage.ex"
+      - "lib/ramal/storage/**"
       - ".github/workflows/verification.yml"
 
 jobs:
