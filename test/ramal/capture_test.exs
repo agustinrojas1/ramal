@@ -227,6 +227,39 @@ defmodule Ramal.CaptureTest do
     end
   end
 
+  describe "a row the branch already destroyed" do
+    test "cannot be updated or destroyed again, as the data layer would refuse", %{
+      branch: branch,
+      herds: herds
+    } do
+      inside(branch, fn ->
+        Ash.destroy!(herds.r9, authorize?: false)
+
+        assert {:error, error} = Ash.update(herds.r9, %{head: 99}, authorize?: false)
+        assert [%Ash.Error.Changes.StaleRecord{resource: Herd}] = error.errors
+
+        assert {:error, error} = Ash.destroy(herds.r9, authorize?: false)
+        assert [%Ash.Error.Changes.StaleRecord{resource: Herd}] = error.errors
+
+        assert names(Ash.read!(Herd, authorize?: false)) == ["R7", "R8"]
+      end)
+
+      branch = state(branch)
+      assert branch.overlay == %{{Herd, herds.r9.id} => :deleted}
+      assert length(branch.log) == 1
+    end
+
+    test "leaves a branch that still merges", %{branch: branch, herds: herds} do
+      inside(branch, fn ->
+        Ash.destroy!(herds.r9, authorize?: false)
+        {:error, _} = Ash.update(herds.r9, %{head: 99}, authorize?: false)
+      end)
+
+      assert {:ok, %Ramal.Merge.Result{replayed: 1}} = Ramal.merge(branch, authorize?: false)
+      assert db_names() == ["R7", "R8"]
+    end
+  end
+
   describe "the actions of the test domain" do
     test "Herd.move validates capacity against moves made earlier in the same branch", %{
       branch: branch,

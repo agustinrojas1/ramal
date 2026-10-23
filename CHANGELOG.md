@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- Updating or destroying a row the branch had already destroyed is refused with Ash's `StaleRecord`, as AshPostgres refuses it on the real table. Before, an update brought the row back and a second destroy was logged, and `Ramal.merge/2` then failed replaying them against a row that was not there.
 - `Ramal.merge/2` and `Ramal.aggregate/4` work on a resource whose read action requires pagination (`pagination required?: true`) or has a default limit. The staleness check of a merge raised `Protocol.UndefinedError` on the page it got back, and `Ramal.aggregate/4` raised `ArgumentError`; both now read every matching row whatever the action's pagination.
 - An `atomic_update` (the change, or `Ash.Changeset.atomic_update/3`) inside a branch is applied to the row the branch holds. It was dropped, so a read, the action's result and `Ramal.diff/1` showed the row unchanged while `Ramal.merge/2` replayed the update and incremented it. An expression that needs the database fails the action with the new reason `:atomic_unsupported` instead of being dropped.
 - A many_to_many load inside a branch sees the links the branch created or destroyed, so `manage_relationship` with `type: :remove` finds a link the branch created and `type: :append` no longer links a vet twice. `type: :append_and_remove` with a link to remove is still refused as a bulk action ([ADR 0017](docs/adr/0017-many-to-many-links-in-a-branch.md)).
