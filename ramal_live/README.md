@@ -58,10 +58,34 @@ scope "/admin" do
 end
 ```
 
-Options of `ramal_inspector/2`: `:domain`, `:pubsub` and `:actor` (all required) and `:debounce` (milliseconds, default 50).
+Options of `ramal_inspector/2`: `:domain`, `:pubsub` and `:actor` (all required), and `:owner` and `:debounce` (optional).
 `:actor` is `{module, function}`; the page calls `module.function(socket)` and uses the result as the actor that is
 recorded as `decided_by` and replays a merge, or refuses to act when it returns `nil`. A router without it does not compile.
 For a development tool with no users, return a constant (`def actor(_socket), do: :dev`).
+
+`:owner` is also `{module, function}` and off by default. When given, the page calls `module.function(actor)` with what
+`:actor` returned and shows only the branches created with that owner (`Ramal.branch(domain, owner: ...)`), so each signed-in user
+sees their own and forks they make belong to them. When the actor or the owner is `nil` it shows nothing. It is a view, not
+access control (see below). `:debounce` is how many milliseconds the page waits to coalesce a burst of writes before it
+reads the branch again (default 50).
+
+```elixir
+defmodule MyAppWeb.Inspector do
+  def actor(socket), do: socket.assigns.current_user
+  def owner(user), do: user && user.id
+end
+
+ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub,
+  actor: {MyAppWeb.Inspector, :actor}, owner: {MyAppWeb.Inspector, :owner}
+```
+
+## When to use it
+
+- **In development**, mounted with a constant actor, to watch what an agent or a feature does to its branches.
+- **As an internal admin page**, behind your administrators' login, to review proposals and clean up stale branches.
+- **Not as a user-facing page** unless you mount it with `:owner` *and* check the rest yourself: the page can merge, approve and
+  discard, and it does not check who may. If your users should see only their own change, build that page on `Ramal.list/2`,
+  `Ramal.diff/1` and `Ramal.merge/2` instead and use this one as a reference.
 
 ## Things to know
 
@@ -70,6 +94,12 @@ For a development tool with no users, return a constant (`def actor(_socket), do
   same, and give `:actor` (required) so decisions have a decider: when that function returns `nil` the page refuses every action.
   Mounts that differ in who may use them need separate `live_session`s, because the page reads its options from the URL the
   browser joins with. [SECURITY.md](https://github.com/agustinrojas1/ramal/blob/main/SECURITY.md) has the whole list.
+- **`:owner` filters, it does not authorize.** The page ignores events for other owners' branches, but anyone who reaches the
+  socket and holds a branch id is still bound only by your own checks.
+- **Fork creates a branch**, which is a process and a stored row, and does not ask for confirmation. Set `:max_active_branches` and
+  `:branch_rate` on `Ramal.Supervisor`, and rate limit the route if untrusted users can reach it.
+- **Origin and sessions.** Every change is a LiveView event on your socket, protected by its CSRF token and `check_origin`: keep
+  `check_origin` on in production, and give your sockets a `live_socket_id` and disconnect it on logout.
 - **Secrets.** Attributes marked `sensitive?: true` show as `[redacted]` in the diff.
 - **Fonts.** Headings ask for Barlow Condensed and data for IBM Plex Mono. The page loads neither; add the link tag to your
   root layout if you want them, or the system's condensed and monospace fonts are used.
@@ -82,7 +112,7 @@ For a development tool with no users, return a constant (`def actor(_socket), do
 
 ## Try it
 
-You do not need an app of your own to see the inspector. A runnable demo, the one the screenshot above and the animation below come from, lives in `examples/farm_demo.exs`. It needs Elixir 1.18+, Docker (for Postgres) and a clone of the repository. It is a single file that installs its own
+You do not need an app of your own to see the inspector. A runnable demo, the one the screenshot above and the animation below come from, lives in [`examples/farm_demo.exs`](https://github.com/agustinrojas1/ramal/blob/main/ramal_live/examples/farm_demo.exs). It needs Elixir 1.18+, Docker (for Postgres) and a clone of the repository. It is a single file that installs its own
 dependencies with `Mix.install` (so the first start compiles for a few minutes), runs a [Phoenix
 Playground](https://github.com/phoenixframework/phoenix_playground) app on a seeded farm in Postgres, and mounts the
 inspector with the `ramal_inspector` line above.
