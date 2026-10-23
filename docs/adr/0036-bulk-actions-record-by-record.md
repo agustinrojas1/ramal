@@ -10,11 +10,11 @@ than code that calls a bulk action by name: `manage_relationship` with `type: :a
 destroy (#43), and AshAi runs every `update` and `destroy` tool as a bulk action on a `limit(1)` query. The workarounds
 were a loop of single actions, `:remove` plus `:append`, and a hand-written generic action per tool.
 
-Ash 3.37 does not run every changeset of a bulk action in a batch. `Ash.Actions.Helpers.split_and_run_simple/7`
-(`lib/ash/actions/helpers.ex`), called by the create, update and destroy bulk modules, takes each changeset that has an
-`around_action` or `around_transaction` hook out of the batch and runs it with `Ash.Actions.Create.run/4`,
-`Update.run/4` or `Destroy.run/4`, the functions a single action uses, because such a hook must wrap the whole
-operation. Those honour `Ash.Changeset.set_result/2`. The capture change installs exactly such a hook on every changeset
+Ash 3.37 does not run every changeset of a bulk action in a batch. `split_and_run_simple/7` in
+`lib/ash/actions/helpers.ex`, called by the create, update and destroy bulk modules, takes each changeset that has an
+`around_action` or `around_transaction` hook out of the batch and runs it with the `run/4` of the create, update or
+destroy action (`lib/ash/actions/{create,update,destroy}`), the functions a single action uses, because such a hook
+must wrap the whole operation. Those honour `Ash.Changeset.set_result/2`. The capture change installs exactly such a hook on every changeset
 built inside a branch.
 
 ## Decision
@@ -40,6 +40,6 @@ the data layer is reached instead of writing the base.
   that succeeded stay in the branch.
 - A bulk update or destroy of a query reads its source with `Ash.stream!/2` in pages of `batch_size` and writes between
   the pages. The pages are cut from the patched list like any paged read (ADR 0030); the source read of the bulk
-  action carries `query_for: :bulk_update` as well, so `Ramal.Preparation.Paged` tells a page of the stream from the
-  whole-list read of an atomic strategy by the `bypass_max_page_size?` mark that `Ash.Actions.Read.Stream` sets.
+  action carries `query_for: :bulk_update` as well, so `lib/ramal/preparation/paged.ex` tells a page of the stream from the
+  whole-list read of an atomic strategy by the `bypass_max_page_size?` mark that `lib/ash/actions/read/stream.ex` sets.
 - `:bulk_unsupported` remains as the guard's reason only.
