@@ -9,6 +9,25 @@ defmodule Ramal.BranchProcessesTest do
   doctest Ramal.Supervisor
   doctest Ramal.Telemetry
 
+  defmodule FlakyStorage do
+    @moduledoc false
+    # ETS storage whose writes fail while a test has registered itself as :ramal_test_storage_down.
+    @behaviour Ramal.Storage
+
+    defdelegate fetch(id, config), to: ETS
+    defdelegate delete(id, config), to: ETS
+    defdelegate list(domain, filters, config), to: ETS
+    defdelegate count(domain, statuses, config), to: ETS
+
+    def put(branch, config) do
+      if Process.whereis(:ramal_test_storage_down) do
+        {:error, Ramal.Error.new(:storage, "storage is down")}
+      else
+        ETS.put(branch, config)
+      end
+    end
+  end
+
   defp touch(id, ref, record) do
     {:ok, branch} =
       Server.update(id, &%{&1 | overlay: Overlay.put_created(&1.overlay, ref, record)})
@@ -188,6 +207,47 @@ defmodule Ramal.BranchProcessesTest do
     test "an unknown id is :not_found and the function does not run" do
       assert {:error, %Error{reason: :not_found}} =
                Ramal.run("00000000-0000-0000-0000-000000000000", fn -> flunk("ran") end)
+    end
+  end
+
+  describe "a storage that refuses the write" do
+    @describetag supervisor: [idle_timeout: 60, storage: FlakyStorage]
+
+    test "an idle branch stays loaded with its overlay until the write succeeds" do
+      capture_branch_events()
+      {:ok, branch} = Ramal.branch(Farm, name: "sleepy")
+      id = branch.id
+      expected = touch(id, {Herd, 7}, %{id: 7, name: "R7"})
+
+      Process.register(self(), :ramal_test_storage_down)
+
+      assert_receive {:telemetry, [:ramal, :branch, :persist_failed],
+                      %{branch_id: ^id, reason: :idle}},
+                     1_000
+
+      assert loaded?(id)
+      refute_received {:telemetry, [:ramal, :branch, :unload], _}
+      assert Ramal.get(id) == {:ok, expected}
+
+      Process.unregister(:ramal_test_storage_down)
+      eventually(fn -> not loaded?(id) end)
+      assert_received {:telemetry, [:ramal, :branch, :unload], %{branch_id: ^id, reason: :idle}}
+      assert {:ok, ^expected} = ETS.fetch(id, [])
+    end
+
+    test "a shutdown whose write fails reports it instead of announcing an unload" do
+      capture_branch_events()
+      {:ok, branch} = Ramal.branch(Farm)
+      id = branch.id
+      pid = RamalSupervisor.whereis(id)
+
+      Process.register(self(), :ramal_test_storage_down)
+      :ok = DynamicSupervisor.terminate_child(RamalSupervisor.dynamic_supervisor(), pid)
+
+      assert_received {:telemetry, [:ramal, :branch, :persist_failed],
+                       %{branch_id: ^id, reason: :shutdown}}
+
+      refute_received {:telemetry, [:ramal, :branch, :unload], _}
     end
   end
 

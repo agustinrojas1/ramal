@@ -12,6 +12,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- An idle branch whose storage write fails no longer unloads and loses its overlay and log. It stays loaded and tries again at the next idle timeout. Before, `terminate/2` ignored the error and announced an unload; now the failure is the new event `[:ramal, :branch, :persist_failed]`, also emitted when a shutdown cannot persist.
 - An update through a struct older than the branch's copy of the row keeps the earlier changes. Updating a record twice (`Ash.update!(herd, %{head: 31})`, then `Ash.update!(herd, %{name: "x"})` on the same struct) put the stale struct back with only the second change, so reads and `Ramal.diff/1` lost the first one while `Ramal.merge/2` applied both. The changes now go onto the row the branch holds, which is what two UPDATE statements do.
 - `Ramal.Tools` no longer builds its status map with `String.to_existing_atom/1` at compile time. It needed another module of the same compile to have created the atoms already, and an incremental `mix compile` (and so `mix docs`) failed with "not an already existing atom".
 - Updating or destroying a row the branch had already destroyed is refused with Ash's `StaleRecord`, as AshPostgres refuses it on the real table. Before, an update brought the row back and a second destroy was logged, and `Ramal.merge/2` then failed replaying them against a row that was not there.

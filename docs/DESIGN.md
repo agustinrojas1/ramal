@@ -59,7 +59,8 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
   resource. Reads of the overlay are frequent and small; if they become a bottleneck, the server publishes the
   overlay to an ETS table it owns. Not before the benchmark says so.
 - Idle branches unload: after `idle_timeout` (default 5 minutes, a `Ramal.Supervisor` option) the server persists its
-  state through the storage backend and stops. A branch is also persisted when it is created, discarded, and when the
+  state through the storage backend and stops. If the storage refuses the write the process stays loaded, with its
+  overlay, and tries again at the next idle timeout (`[:ramal, :branch, :persist_failed]`). A branch is also persisted when it is created, discarded, and when the
   supervisor shuts down; writes in between live only in the process (ADR 0003). `Ramal.branch/2`, `run/2`, `fork/1`, `diff/1`, `merge/2` and `discard/1` all accept a branch id and
   rehydrate the process on demand. The host never needs to know whether the process is alive.
 - Limits: `max_active_branches` and `branch_rate`, `Ramal.Supervisor` options, both off by default. The internal module Ramal.Limits checks
@@ -331,6 +332,7 @@ skipping action logic; it is faster and less safe, and needs its own ADR.
 Events, all with `%{branch_id, domain}` metadata:
 
 `[:ramal, :branch, :create]`, `[:ramal, :branch, :fork]`, `[:ramal, :branch, :unload]`, `[:ramal, :branch, :load]`,
+`[:ramal, :branch, :persist_failed]` (storage refused a write on `:idle` or `:shutdown`, with the `error`),
 `[:ramal, :branch, :discard]`, `[:ramal, :branch, :propose]`, `[:ramal, :branch, :approve]`, `[:ramal, :branch, :reject]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
 `[:ramal, :read, :patch]` with measurements `%{base_rows, overlay_rows, result_rows, duration}`,
 `[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource, action, nested?}`.
