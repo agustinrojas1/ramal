@@ -1,4 +1,4 @@
-# 0039. A relationship page is cut from the patched rows, per source record
+# 0040. A relationship page is cut from the patched rows, per source record
 
 Status: accepted, 2026-10-23. Amends [ADR 0017](0017-many-to-many-links-in-a-branch.md) and
 [ADR 0030](0030-pages-cut-from-the-patched-list.md).

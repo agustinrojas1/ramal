@@ -167,7 +167,7 @@ This is the section that decides correctness. In a read action's preparation, wh
    branch deleted still finds its place. `Ash.stream!/2` pages the same way. The cost is a read of every row the filter
    matches for each page, as for an unpaged read; when the overlay has no entry for the resource the database pages as
    usual. A paged relationship load is cut the same way, per source record
-   ([ADR 0030](adr/0030-pages-cut-from-the-patched-list.md), [ADR 0039](adr/0039-relationship-pages-cut-per-source.md)).
+   ([ADR 0030](adr/0030-pages-cut-from-the-patched-list.md), [ADR 0040](adr/0040-relationship-pages-cut-per-source.md)).
 6. **Policies:** the query's filter, including one a policy added, is applied to overlay records. Checks that act on
    results (`authorize_results`) are taken off the query once the overlay touches the resource and run on the patched
    rows in the `after_action` hook ([ADR 0037](adr/0037-result-checks-run-on-the-patched-rows.md)).
@@ -181,7 +181,7 @@ This is the section that decides correctness. In a read action's preparation, wh
    ([ADR 0017](adr/0017-many-to-many-links-in-a-branch.md)). A relationship loaded with a page, a limit or an offset is one
    lateral join that limits per source record; when the branch changed its destination (or the join resource) the same
    hook reads the rows of all the sources whole and pages each source on its own, so the page, its `more?` and its
-   count see the branch ([ADR 0039](adr/0039-relationship-pages-cut-per-source.md)). A `through` path of several hops
+   count see the branch ([ADR 0040](adr/0040-relationship-pages-cut-per-source.md)). A `through` path of several hops
    keeps seeing the base rows of its intermediate resources. Because `manage_relationship` decides from that load, `:remove` finds a link the
    branch created and `:append` does not link a vet twice. One limit remains: `type: :append_and_remove` is refused
    with `:bulk_unsupported` when it has a link to remove (Ash unrelates with `Ash.bulk_destroy/4`,

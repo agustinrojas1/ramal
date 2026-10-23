@@ -24,7 +24,7 @@ defmodule Ramal.Preparation.ManyToMany do
   # Per-source `limit` and `offset` are what the lateral subquery applied; they are applied here per source after the
   # destination rows are patched and sorted. The same is done for the lateral read of a has_many (one hop) that has a
   # limit, an offset or a page, when the branch changed its destination, and a page is cut per source by the last
-  # `before_action` hook of `Ramal.Preparation` (ADR 0039).
+  # `before_action` hook of `Ramal.Preparation` (ADR 0040).
 
   import Ash.Expr, only: [ref: 1]
 

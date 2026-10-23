@@ -14,7 +14,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
-- A relationship loaded with a page, a limit or an offset sees the branch: a has_many or many_to_many load whose destination (or join resource) the branch changed reads the rows of all the sources, tags each with its source records and pages each source on its own, so the page, `more?` and `count` agree with the patched rows, and `Ash.page!(page, :next)` works on it. A `limit` on a load used to return nothing for any source once a row of the destination had been created in the branch. ADR 0039.
+- A relationship loaded with a page, a limit or an offset sees the branch: a has_many or many_to_many load whose destination (or join resource) the branch changed reads the rows of all the sources, tags each with its source records and pages each source on its own, so the page, `more?` and `count` agree with the patched rows, and `Ash.page!(page, :next)` works on it. A `limit` on a load used to return nothing for any source once a row of the destination had been created in the branch. ADR 0040.
 - A read inside a branch runs the action's `authorize_results` checks (the runtime half of a policy) on the patched rows, so a row the branch created or changed is judged like any other and a row the branch destroyed is not. They ran on the database's rows before the patch. ADR 0037.
 
 ## [0.6.1] - 2026-10-23

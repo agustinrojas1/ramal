@@ -41,4 +41,4 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0035](0035-merged-status-in-the-merge-transaction.md) | The merge's transaction stores the merged status | accepted |
 | [0037](0037-result-checks-run-on-the-patched-rows.md) | Result checks run on the patched rows | accepted |
 | [0038](0038-upserts-in-the-branch-view.md) | Upserts are decided in the branch's view | accepted |
-| [0039](0039-relationship-pages-cut-per-source.md) | A relationship page is cut from the patched rows, per source record | accepted |
+| [0040](0040-relationship-pages-cut-per-source.md) | A relationship page is cut from the patched rows, per source record | accepted |

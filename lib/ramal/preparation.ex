@@ -40,7 +40,7 @@ defmodule Ramal.Preparation do
       pages, `count`, `more?` and the cursors are those of the patched list (ADR 0030). A relationship loaded with a page,
       a limit or an offset is one lateral join that limits per source record: when the branch changed its destination or
       its join resource, the rows of all the sources are read whole, tagged with their source and cut per source, and the
-      page is handed to Ash the same way (ADR 0039). Without overlay entries for the resource the database pages as
+      page is handed to Ash the same way (ADR 0040). Without overlay entries for the resource the database pages as
       before.
     * `authorize_results` checks (the runtime half of a policy, which `Ash.Can` adds when `strict_check` cannot decide)
       run in the read action of Ash on the data layer's rows, before any `after_action` hook, so they would never see a row
@@ -72,7 +72,7 @@ defmodule Ramal.Preparation do
     * a sort on text uses byte order once the overlay touches the resource, where Postgres uses its collation, so mixed-case
       text can come out in another order than outside the branch (ADR 0024);
     * a paged read of a resource the overlay touches reads every row the filter matches and pages the list in Elixir,
-      so it costs what an unpaged read does, not one page (ADR 0030, and per source for a relationship load, ADR 0039).
+      so it costs what an unpaged read does, not one page (ADR 0030, and per source for a relationship load, ADR 0040).
 
   ## Example
 
