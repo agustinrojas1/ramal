@@ -1,6 +1,6 @@
 defmodule Ramal.Preparation.Paged do
   @moduledoc false
-  # A paginated read of a resource the branch changed is paged in Elixir, after the patch (ADR 0028).
+  # A paginated read of a resource the branch changed is paged in Elixir, after the patch (ADR 0030).
   #
   # Ash adds a page's limit and offset, or its keyset filter, after the `before_action` hooks
   # (`paginate/3` in `lib/ash/actions/read/read.ex`, Ash 3.37), so the database would page the base and the patch would

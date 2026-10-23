@@ -306,7 +306,7 @@ defmodule Ramal do
 
   `Ash.load/3` first reselects the relationship's source attribute (for example `paddock_id`) from the data layer, and
   that read runs none of the read hooks (`reselect_and_load/6` in Ash 3.37), so after a herd moved to another paddock in
-  the branch `Ash.load(herd, :paddock)` follows the database's foreign key (ADR 0030). Inside a branch this puts the
+  the branch `Ash.load(herd, :paddock)` follows the database's foreign key (ADR 0031). Inside a branch this puts the
   branch's attribute values on each record that has an overlay entry, then loads with `reuse_values?: true`, which skips
   the reselect; the relationship itself is read through the read actions, so it is patched too. Outside a branch it is
   `Ash.load/3`.

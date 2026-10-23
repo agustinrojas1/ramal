@@ -137,12 +137,12 @@ This is the section that decides correctness. In a read action's preparation, wh
    layer, and that read runs no hooks (`reselect_and_load/6` in Ash 3.37), so a foreign key the branch changed is not
    seen and the load follows the database's. Ash gives the preparation no way in (the reselect is a raw data-layer read
    and `reuse_values?` is read from the options before the preparations run), so `Ramal.load/3` is the supported call
-   (ADR 0030): inside a branch it puts the branch's attribute values on each record that has an overlay entry and loads
+   (ADR 0031): inside a branch it puts the branch's attribute values on each record that has an overlay entry and loads
    with `reuse_values?: true`. A load inside a read (`Ash.Query.load/2`) is patched too; the test in
    `preparation_test.exs` pins the plain call, `Ramal.load/3` and both.
 4. **Aggregates and calculations:** an aggregate a read loads (`count`, `exists`, `sum`, `min`, `max`, `avg`, declared on the
    resource or added to the query) is computed again after the patch from the related records read through the branch, for
-   every row when the branch changed a resource on its path and for the rows the overlay supplied otherwise (ADR 0030).
+   every row when the branch changed a resource on its path and for the rows the overlay supplied otherwise (ADR 0029).
    `first`, `list` and `custom` aggregates, `uniq?`, a join filter, a custom read action, a field that is not an attribute
    and an aggregate query with a limit, offset or distinct keep the database's value and emit
    `[:ramal, :read, :unpatched_aggregate]`, so a host can detect it in tests. A filter or sort on an aggregate is judged by the
@@ -274,7 +274,7 @@ This is the section that decides correctness. In a read action's preparation, wh
 # kind: :count | :exists | :sum | :min | :max | :avg, computed in Elixir over the rows a read returns in the branch
 
 @spec load(record | [record], load, keyword) :: {:ok, record | [record]} | {:error, Ash.Error.t()}
-# Ash.load/3 that follows the branch's foreign keys (ADR 0030)
+# Ash.load/3 that follows the branch's foreign keys (ADR 0031)
 
 @spec discard(branch | id) :: :ok | {:error, Ramal.Error.t()}
 
@@ -505,5 +505,5 @@ action (ADR 0016).
 | 27 | A filter or sort through a relationship whose resource the branch changed is taken out of the data-layer query and evaluated in Elixir; `Ramal.aggregate/4` leaves the delta for it | The data layer joined the base's rows, so a renamed paddock left its herds matched by the old name. The cost is a broader base read. [ADR 0025](adr/0025-relationship-filters-in-elixir.md) |
 | 28 | Hooks check the branch again when the action runs; tasks started with `Task` inherit the branch through `$callers` | The branch was decided once, at build time, and lived in one process, so a changeset built elsewhere, a bulk task and a host task wrote for real. Ash 3.37 has no ambient context to set. [ADR 0023](adr/0026-branch-checked-at-execution.md) |
 | 29 | `Ramal.branch/2` refuses a domain with a resource that has write actions and neither uses `Ramal.Resource` nor opts out | A write to such a resource reached the database from inside a branch with no signal. [ADR 0024](adr/0027-domain-coverage.md) |
-| 30 | An aggregate a read loads is recomputed after the patch from the related records read through the branch; kinds and shapes it cannot do keep the database's value and emit the unpatched event | The database's aggregate never saw the overlay, and a row the branch changed came back with `Ash.NotLoaded`. The cost is a read of the related rows per recomputed row. [ADR 0028](adr/0029-declared-aggregates-in-branches.md) |
+| 30 | An aggregate a read loads is recomputed after the patch from the related records read through the branch; kinds and shapes it cannot do keep the database's value and emit the unpatched event | The database's aggregate never saw the overlay, and a row the branch changed came back with `Ash.NotLoaded`. The cost is a read of the related rows per recomputed row. [ADR 0029](adr/0029-declared-aggregates-in-branches.md) |
 | 31 | A paginated read of a resource the overlay touches reads the whole patched list, cuts the page in Elixir and gives Ash the rows with `set_result` and the count with `full_count` | The database cannot page rows it does not have, and Ash fixes `more?` and `count` from the database before any hook after the data layer can speak. The cost is a read of every matching row per page. [ADR 0030](adr/0030-pages-cut-from-the-patched-list.md) |
