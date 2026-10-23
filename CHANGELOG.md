@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-23
+
+A release about trust rather than features: what Ramal assumes about Ash is now declared, tested on every Ash version CI can reach, and checked at boot, and what is stable before 1.0 is written down. Nothing a branch does changed, so upgrading from 0.7 needs no step beyond the version (and `ramal_live ~> 0.8.0`, which shares it).
+
 ### Added
 
 - **A stability promise.** From 0.8.0, `branch`, `run`, `fork`, `diff`, `merge`, `propose`, `approve`, `reject` and `discard` keep their names, required arguments and return shapes through 0.x and into 1.0, and a change to one of them gets a deprecation warning for at least one minor release first. Everything else is listed as extended. Releases now come when there is something worth releasing, not after every merge. See `docs/STABILITY.md`.
@@ -288,7 +292,8 @@ Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspec
 - A multitenant resource used with a tenant inside a branch is refused with `:multitenancy_unsupported` (the `ensure_untenanted/2` check), instead of mixing tenants in one overlay or failing at merge.
 - Stored branches no longer hold the `sensitive?` attributes of an actor that is an Ash record (they are stored as `nil`); other actors are stored as before.
 
-[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/agustinrojas1/ramal/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/agustinrojas1/ramal/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/agustinrojas1/ramal/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/agustinrojas1/ramal/compare/v0.5.0...v0.6.0
