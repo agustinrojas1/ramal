@@ -26,6 +26,10 @@ defmodule Bench.RamalSide do
     Ramal.run!(branch, fn -> read_base(bucket_bound) end)
   end
 
+  def read_note(branch), do: Ramal.run!(branch, fn -> Ash.read!(Bench.Note) end)
+
+  def read_note_base, do: Ash.read!(Bench.Note)
+
   def sum(branch), do: Ramal.run!(branch, fn -> Ramal.aggregate!(Item, :sum, :score) || 0 end)
 
   def diff(branch) do

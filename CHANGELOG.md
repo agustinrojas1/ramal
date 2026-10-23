@@ -18,6 +18,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- A read in a branch with a large overlay no longer scans the whole overlay for the resource it reads. From 5,000 entries on, once two reads in a row have found the overlay unchanged, the branch process groups it by resource and answers `overlay?`, `keys`, `slice` and `select` from that group, so a read of a resource the branch barely touched costs the same whatever else the branch holds (10,000 entries in another resource: about 1.0 ms to 0.65 ms). A write drops the grouping, so a branch that alternates writes and reads keeps scanning, as before.
 - `Ramal.fork/2` copies the branch once less: the new process is started empty and receives the fork in one message, instead of the fork travelling through the dynamic supervisor (copied into it, then into the process). A fork of a branch with 1,000 changes took about 2.7 ms instead of 4.8.
 - `Ramal.diff/1` is about a third faster for a branch with many changes: it no longer builds and deduplicates a list of attribute names for every updated row, and `Ramal.Resource.attributes/1` makes one pass over the attribute names. Same changes, same order.
 - `Ramal.diff/1` runs inside the branch process, so only the changes cross the process boundary and not the whole branch (overlay, log and base). The diff of a branch with 1,000 changes took about 2.8 ms instead of 5.4. The process is busy for the length of the diff, as it is for any other call.

@@ -104,6 +104,28 @@ defmodule Bench.Cases do
     end
   end
 
+  # A read of `Bench.Note`, which the branch never touched, in a node whose overlay holds `size` updated `Bench.Item`
+  # rows. The read asks the branch process what it holds for the resource, so this is the price of the other resource's
+  # overlay. Only Ramal has the case; `ash_no_branch` is the same read with no branch.
+  def read_other(profile, env) do
+    ramal = variants().ramal
+
+    for size <- profile.other_overlay_sizes do
+      node = loaded(ramal, env.ids, size)
+      stats = measure_read(profile, fn -> RamalSide.read_note(node) end)
+      ramal.discard.(node)
+      result(:read_other, :ramal, %{overlay: size}, stats)
+    end ++
+      [
+        result(
+          :read_other,
+          :ash_no_branch,
+          %{overlay: 0},
+          measure_read(profile, fn -> RamalSide.read_note_base() end)
+        )
+      ]
+  end
+
   # The sum of `score` over the whole table in a node with that overlay: what `Ramal.aggregate!/4` costs next to the
   # same sum in the baselines and with no branch at all.
   def aggregate(profile, env) do

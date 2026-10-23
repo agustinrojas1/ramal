@@ -16,6 +16,10 @@ defmodule Ramal.Branch.Server do
 
   @max_attempts 6
 
+  # An overlay with fewer entries than this is scanned for each read. Grouping it by resource costs several scans, so it
+  # is only done for a large overlay that two reads in a row found unchanged (see index/1).
+  @index_min 5_000
+
   # How long a process started for a handed-over branch waits for it (see start_forked/2).
   @handoff_timeout 5_000
 
@@ -315,7 +319,15 @@ defmodule Ramal.Branch.Server do
   end
 
   defp process_state(branch, config),
-    do: %{branch: branch, config: config, stop: nil, merging: nil, persisted: false}
+    do: %{
+      branch: branch,
+      config: config,
+      stop: nil,
+      merging: nil,
+      persisted: false,
+      index: nil,
+      seen: nil
+    }
 
   @impl true
   def handle_continue({:handoff, ref}, %{config: config} = state) do
@@ -337,38 +349,33 @@ defmodule Ramal.Branch.Server do
   def handle_call({:diff, opts}, _from, state), do: reply(state, Branch.diff(state.branch, opts))
 
   def handle_call({:slice, resource}, _from, state) do
-    if usable?(state) do
-      reply(state, {:ok, Overlay.slice(state.branch.overlay, resource)})
-    else
-      reply(state, {:error, unavailable(state)})
-    end
+    read_overlay(state, fn overlay, index ->
+      if index, do: Map.get(index, resource, %{}), else: Overlay.slice(overlay, resource)
+    end)
   end
 
   def handle_call({:keys, resource}, _from, state) do
-    if usable?(state) do
-      reply(state, {:ok, Overlay.keys(state.branch.overlay, resource)})
-    else
-      reply(state, {:error, unavailable(state)})
-    end
+    read_overlay(state, fn overlay, index ->
+      if index,
+        do: index |> Map.get(resource, %{}) |> Map.keys(),
+        else: Overlay.keys(overlay, resource)
+    end)
   end
 
   def handle_call({:overlay?, resource}, _from, state) do
-    if usable?(state) do
-      reply(state, {:ok, Overlay.any?(state.branch.overlay, resource)})
-    else
-      reply(state, {:error, unavailable(state)})
-    end
+    read_overlay(state, fn overlay, index ->
+      if index, do: is_map_key(index, resource), else: Overlay.any?(overlay, resource)
+    end)
   end
 
   def handle_call({:select, resource, base_keys, plan}, _from, state) do
-    if usable?(state) do
-      selected =
-        Overlay.select(state.branch.overlay, resource, base_keys, &Prefilter.possible?(plan, &1))
+    possible? = &Prefilter.possible?(plan, &1)
 
-      reply(state, {:ok, selected})
-    else
-      reply(state, {:error, unavailable(state)})
-    end
+    read_overlay(state, fn overlay, index ->
+      if index,
+        do: index |> Map.get(resource, %{}) |> Overlay.select_slice(base_keys, possible?),
+        else: Overlay.select(overlay, resource, base_keys, possible?)
+    end)
   end
 
   def handle_call({:update, fun}, _from, state) do
@@ -515,6 +522,36 @@ defmodule Ramal.Branch.Server do
   defp timeout(_state), do: :infinity
 
   defp usable?(state), do: Branch.open?(state.branch) and state.merging == nil
+
+  # Answers a read of the overlay with `fun.(overlay, index)`, where `index` is the overlay grouped by resource
+  # (`Ramal.Overlay.index/1`) or `nil` when it is scanned instead.
+  defp read_overlay(state, fun) do
+    if usable?(state) do
+      {index, state} = index(state)
+      reply(state, {:ok, fun.(state.branch.overlay, index)})
+    else
+      reply(state, {:error, unavailable(state)})
+    end
+  end
+
+  # A scan of the overlay costs what the overlay holds, whichever resource the read is for. For a large overlay the
+  # process groups it by resource, once it has seen two reads of the same overlay in a row: a write, which changes the
+  # overlay, throws the index away, so a branch that alternates writes and reads keeps scanning and never pays for an
+  # index. `==` finds a changed overlay quickly (the maps share most of their structure) and an identical one at once.
+  defp index(%{branch: %{overlay: overlay}} = state) when map_size(overlay) < @index_min,
+    do: {nil, %{state | index: nil, seen: nil}}
+
+  defp index(%{branch: %{overlay: overlay}, index: {indexed, by_resource}} = state)
+       when indexed == overlay,
+       do: {by_resource, state}
+
+  defp index(%{branch: %{overlay: overlay}, seen: seen} = state) when seen == overlay do
+    by_resource = Overlay.index(overlay)
+    {by_resource, %{state | index: {overlay, by_resource}, seen: nil}}
+  end
+
+  defp index(%{branch: %{overlay: overlay}} = state),
+    do: {nil, %{state | index: nil, seen: overlay}}
 
   defp unavailable(state, wanted \\ :open)
 

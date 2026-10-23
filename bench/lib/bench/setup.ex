@@ -16,6 +16,7 @@ defmodule Bench.Setup do
     for sql <- [
           "DROP TABLE IF EXISTS bench_deltas",
           "DROP TABLE IF EXISTS bench_items",
+          "DROP TABLE IF EXISTS bench_notes",
           """
           CREATE TABLE bench_items (
             id uuid PRIMARY KEY,
@@ -25,6 +26,8 @@ defmodule Bench.Setup do
           )
           """,
           "CREATE INDEX bench_items_bucket ON bench_items (bucket)",
+          "CREATE TABLE bench_notes (id uuid PRIMARY KEY, body text NOT NULL)",
+          "INSERT INTO bench_notes (id, body) SELECT gen_random_uuid(), 'note-' || i FROM generate_series(1, 20) AS i",
           """
           CREATE TABLE bench_deltas (
             state integer NOT NULL,

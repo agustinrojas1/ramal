@@ -178,7 +178,9 @@ defmodule Ramal.Overlay do
   @spec select(t, resource, [key], (record -> boolean)) :: {slice, non_neg_integer}
   def select(overlay, resource, base_keys, possible?) when is_function(possible?, 1) do
     replaced =
-      Enum.reduce(base_keys, %{}, &select_base_entry(&2, overlay, resource, &1, possible?))
+      Enum.reduce(base_keys, %{}, fn key, selected ->
+        select_base_entry(selected, key, Map.fetch(overlay, {resource, key}), possible?)
+      end)
 
     Enum.reduce(overlay, {replaced, 0}, fn
       {{^resource, key}, entry}, {selected, count} ->
@@ -189,18 +191,54 @@ defmodule Ramal.Overlay do
     end)
   end
 
-  defp select_base_entry(selected, overlay, resource, key, possible?) do
-    case Map.fetch(overlay, {resource, key}) do
-      {:ok, {_kind, record} = entry} ->
-        Map.put(selected, key, if(possible?.(record), do: entry, else: :deleted))
+  @doc """
+  The overlay grouped by resource: `resource => slice`, with a resource only when it has an entry.
 
-      {:ok, :deleted} ->
-        Map.put(selected, key, :deleted)
+  `select_slice/3` and a plain `Map` lookup answer from it what `select/4`, `slice/2`, `keys/2` and `any?/2` answer
+  from the overlay, at a cost that follows the resource's entries instead of the whole overlay. Building it costs
+  about as much as a few scans, so it pays when the overlay is large and read again unchanged.
 
-      :error ->
-        selected
-    end
+  ## Example
+
+      iex> overlay = %{{MyApp.Herd, 1} => :deleted, {MyApp.Paddock, 9} => {:created, %{id: 9}}}
+      iex> Ramal.Overlay.index(overlay)
+      %{MyApp.Herd => %{1 => :deleted}, MyApp.Paddock => %{9 => {:created, %{id: 9}}}}
+  """
+  @spec index(t) :: %{optional(resource) => slice}
+  def index(overlay) do
+    Enum.reduce(overlay, %{}, fn {{resource, key}, entry}, by_resource ->
+      Map.update(by_resource, resource, %{key => entry}, &Map.put(&1, key, entry))
+    end)
   end
+
+  @doc """
+  `select/4` over the slice of one resource (a value of `index/1`) instead of the whole overlay.
+
+  ## Example
+
+      iex> slice = %{1 => {:updated, %{id: 1, n: 1}}, 2 => {:updated, %{id: 2, n: 9}}, 3 => {:created, %{id: 3, n: 1}}}
+      iex> Ramal.Overlay.select_slice(slice, [1, 2], &(&1.n < 5))
+      {%{1 => {:updated, %{id: 1, n: 1}}, 2 => :deleted, 3 => {:created, %{id: 3, n: 1}}}, 3}
+  """
+  @spec select_slice(slice, [key], (record -> boolean)) :: {slice, non_neg_integer}
+  def select_slice(slice, base_keys, possible?) when is_function(possible?, 1) do
+    replaced =
+      Enum.reduce(base_keys, %{}, fn key, selected ->
+        select_base_entry(selected, key, Map.fetch(slice, key), possible?)
+      end)
+
+    Enum.reduce(slice, {replaced, 0}, fn {key, entry}, {selected, count} ->
+      {add_candidate(selected, key, entry, possible?), count + 1}
+    end)
+  end
+
+  defp select_base_entry(selected, key, {:ok, {_kind, record} = entry}, possible?),
+    do: Map.put(selected, key, if(possible?.(record), do: entry, else: :deleted))
+
+  defp select_base_entry(selected, key, {:ok, :deleted}, _possible?),
+    do: Map.put(selected, key, :deleted)
+
+  defp select_base_entry(selected, _key, :error, _possible?), do: selected
 
   defp add_candidate(selected, key, {_kind, record} = entry, possible?) do
     if not is_map_key(selected, key) and possible?.(record),
