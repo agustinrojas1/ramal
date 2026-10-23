@@ -253,7 +253,8 @@ keyed by `{resource, key}`. On `merge/2`:
    While claimed, the branch process refuses every other call, so nothing is written between check and replay.
 2. Inside one `Ash.transact/3`, re-read every fingerprinted row from the base (one query per resource, key filter,
    `FOR UPDATE` where the data layer supports it, and whatever the primary read action's pagination: the read skips it
-   with `Ash.Actions.Read.unpaginated_read/3`, because a page would cut the set at the default limit). A row whose hash differs is `:changed`; one that no longer exists
+   with Ash's `unpaginated_read` in `lib/ash/actions/read/read.ex`, because a page would cut the set at the
+   default limit). A row whose hash differs is `:changed`; one that no longer exists
    is `:deleted`.
 3. Apply `on_stale`: `:error` (default) returns `{:error, %Ramal.Error{reason: :stale, details: %{rows: [...]}}}`;
    `:ignore` continues; a function receives the stale rows and returns `:continue` or `:abort`.
