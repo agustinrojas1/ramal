@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- The README logo and screenshots render on Hex.pm and HexDocs, and the "Run in Livebook" badge opens the notebook, without the repository being public: the images and `demo/ramal_tour.livemd` are published with the docs and the READMEs link their HexDocs URLs.
+
 ## [0.4.0] - 2026-10-23
 
 Faster fork, diff and reads of a large branch, a third of the memory and storage, an indexed `owner` column, and fixes to calculations and the read prefilter. One migration and one deploy caveat; read **Upgrading from 0.3.0** first.

@@ -4,7 +4,7 @@
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ramal_live.svg)](https://hex.pm/packages/ramal_live) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal__live-blue.svg)](https://hexdocs.pm/ramal_live)
 
-![The inspector with four open branches, each moving herd R7 to a different paddock, shown as columns of before and after rows](https://raw.githubusercontent.com/agustinrojas1/ramal/main/assets/inspector.png)
+![The inspector with four open branches, each moving herd R7 to a different paddock, shown as columns of before and after rows](https://hexdocs.pm/ramal_live/assets/inspector.png)
 
 [Ramal](https://hex.pm/packages/ramal) gives an Ash application Git-style branches of its data: a branch is a process
 that holds a few changes on top of your database, and nothing reaches the database until the branch is merged. That is
@@ -127,7 +127,7 @@ out of paddock L07 into a different paddock, and the columns fill in as the writ
 R7 in its new paddock, and merging any other column is refused as stale, because that branch read R7 where it used to be.
 **Reset** discards every branch and seeds the farm again.
 
-![The columns filling in as the four branches write](https://raw.githubusercontent.com/agustinrojas1/ramal/main/assets/inspector.gif)
+![The columns filling in as the four branches write](https://hexdocs.pm/ramal_live/assets/inspector.gif)
 
 The demo uses a `ramal_dev` database on the server of the test database, creates it if it is missing, and drops and
 recreates its three tables on every start, so do not point it at data you want to keep. `RAMAL_PG_HOST`, `RAMAL_PG_PORT`,
