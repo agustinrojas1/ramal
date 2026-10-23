@@ -70,6 +70,7 @@ Done; released in 0.3.0.
 - 0.3.0: Agent tooling, branch owners, the faster read, merge, aggregate and codec paths ([ADR 0020](adr/0020-read-selects-overlay.md)), and the fixes listed in `CHANGELOG.md`.
 - 0.4.0: The `owner` column ([ADR 0021](adr/0021-owner-column.md)), the compact stored state ([ADR 0022](adr/0022-compact-state.md)), less memory per branch, faster fork and diff, the demo and Livebook tour, and fixes to calculations and the prefilter. Upgrade notes are in `CHANGELOG.md`.
 - 0.5.0: Reads that agree with the branch: pages ([ADR 0030](adr/0030-pages-cut-from-the-patched-list.md)), aggregates ([ADR 0029](adr/0029-declared-aggregates-in-branches.md), [0032](adr/0032-aggregate-filters-and-sorts.md)), late-binding queries ([ADR 0028](adr/0028-late-binding-queries.md)), `Ramal.load/3` ([ADR 0031](adr/0031-ramal-load.md)), and the AshAi example. Upgrade notes are in `CHANGELOG.md`.
+- 0.6.0: A branch in one tenant ([ADR 0034](adr/0034-one-tenant-per-branch.md)), and the formal verification under `verification/` (a TLA+ model checked with TLC and Bend 2 proofs) with the three bugs it found: running actions hold their writes ([ADR 0033](adr/0033-running-actions-hold-their-writes.md)) and the merged status is stored in the merge's transaction ([ADR 0035](adr/0035-merged-status-in-the-merge-transaction.md)). Upgrade notes are in `CHANGELOG.md`.
 
 ## 1.0
 
