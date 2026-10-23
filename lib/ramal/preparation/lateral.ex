@@ -20,11 +20,16 @@ defmodule Ramal.Preparation.Lateral do
   #     `through_1.destination_attribute_1 = source.source_attribute_1` inside one lateral subquery
   #     (`lateral_join_query/3` and `build_through_queries/4` in `deps/ash_postgres/lib/data_layer.ex`), so the
   #     intermediate tables are the database's rows; the branch's are not in it.
-  #   * A many_to_many as a hop is broken upstream: the path holds the many_to_many relationship itself, whose
+  #   * A many_to_many as a hop is broken in Ash 3.37: the path holds the many_to_many relationship itself, whose
   #     `source_attribute` and `destination_attribute` are the primary keys, and AshPostgres joins
   #     `vets JOIN herds ON herds.id = vets.id`, ignoring the join resource. The load is empty for every record, with or
-  #     without a branch (`test/ramal/through_test.exs` pins it), so a path with a many_to_many hop is left to the
-  #     database.
+  #     without a branch, so a path with a many_to_many entry is left to the database. Ash after 3.37 (commit 3c4b41a,
+  #     "read each step of a through relationship the way its relationship reads") expands the hop into the join
+  #     resource and its destination, so every entry is a plain hop and the path is walked like any other
+  #     (`test/ramal/through_test.exs` holds on both).
+  #   * That Ash also reads each later hop with the arriving relationship's limit, and adds a step of its own when the
+  #     last relationship has a limit, an offset or a `parent` filter. A walk reads a hop for all sources at once, so a
+  #     limit there would cut the wrong rows: an entry query with a limit or an offset is left to the database too.
   #
   # The walk. Each source record reaches the values of `source_attribute_1`. For each later hop the entry query is read
   # (through Ramal's own preparation, so it is the patched read) with `destination_attribute_(i-1) in ^reached`, and
@@ -35,8 +40,10 @@ defmodule Ramal.Preparation.Lateral do
   # each source record that reaches it.
   #
   # Left to the database (as a lateral load with no overlay entry on the path is): a path that has a hop with a
-  # relationship filter (the SQL applies it in a place the walk does not reproduce), a `distinct`, and a `parent`
-  # expression in the relationship's filter or sort, which needs the join to be evaluated.
+  # relationship filter (the SQL applies it in a place the walk does not reproduce), a hop read with a limit or an
+  # offset, a `distinct`, and a `parent` expression in the relationship's filter or sort, which needs the join to be
+  # evaluated. A row the branch created is not in such a load, since the database's join never reached it
+  # (`drop_unplaced/2` in `Ramal.Preparation`).
 
   import Ash.Expr, only: [ref: 1]
 
@@ -75,11 +82,16 @@ defmodule Ramal.Preparation.Lateral do
     end
   end
 
-  defp supported?(query, path) do
-    Enum.all?(path, fn {_query, _source, _destination, relationship} ->
+  # The first entry query is the sources' own read, whose page is not a hop's.
+  defp supported?(query, [_first | rest] = path) do
+    Enum.all?(path, fn {_entry, _source, _destination, relationship} ->
       relationship.type != :many_to_many and relationship.filter in [nil, []]
-    end) and query.distinct in [nil, []] and not parent_expr?(query)
+    end) and Enum.all?(rest, &unlimited?/1) and query.distinct in [nil, []] and
+      not parent_expr?(query)
   end
+
+  defp unlimited?({entry, _source, _destination, _relationship}),
+    do: entry.limit == nil and entry.offset in [nil, 0]
 
   # The relationship the query loads is not in the path (only its hops are); Ash tells the read which it is.
   defp parent_expr?(query) do

@@ -47,6 +47,14 @@ defmodule Ramal.ThroughTest do
 
   defp day_list(moves), do: moves |> Enum.map(& &1.moved_on.day) |> Enum.sort()
 
+  # The vets each paddock reaches through its herds, as %{paddock name => [vet name]}.
+  defp vets do
+    Paddock
+    |> Ash.Query.load(:herd_vets)
+    |> Ash.read!(authorize?: false)
+    |> Map.new(&{&1.name, &1.herd_vets |> Enum.map(fn vet -> vet.name end) |> Enum.sort()})
+  end
+
   describe "a through path of several hops" do
     test "outside a branch the database answers" do
       assert days() == %{"L07" => [1, 2, 3], "L18" => [4]}
@@ -152,6 +160,32 @@ defmodule Ramal.ThroughTest do
       end)
     end
 
+    # A `distinct` is one of the loads the walk leaves to the database (ADR 0046). A move the branch created, of a herd
+    # it created, reached no paddock in the database's join, so it is not in the load; before, Ash raised grouping it
+    # by its missing source.
+    test "a load left to the database leaves out a row the branch created", %{
+      branch: branch,
+      paddocks: p
+    } do
+      distinct = Move |> Ash.Query.distinct(:herd_id) |> Ash.Query.sort(:moved_on)
+
+      herds = fn ->
+        days(load: [herd_moves: distinct]) |> Map.new(fn {name, days} -> {name, length(days)} end)
+      end
+
+      outside = herds.()
+
+      assert inside(branch, fn ->
+               herd =
+                 Ash.create!(Herd, %{name: "N1", head: 1, paddock_id: p.l18.id},
+                   authorize?: false
+                 )
+
+               move!(herd, 5)
+               herds.()
+             end) == outside
+    end
+
     test "a load of a single record sees the branch", %{branch: branch, herds: h, paddocks: p} do
       inside(branch, fn ->
         move!(h.r9, 5)
@@ -237,30 +271,87 @@ defmodule Ramal.ThroughTest do
   end
 
   describe "a through path with a many_to_many hop" do
-    # AshPostgres 2.15 joins `vets` to `herds` on `herds.id = vets.id` and ignores the join resource, so the path is empty
-    # whatever the data: the load is left to the database, in a branch and out of it (ADR 0046).
+    # Ash 3.37 keeps the many_to_many as one hop of the lateral join's path, and AshPostgres 2.15 joins `vets` to
+    # `herds` on `herds.id = vets.id`, ignoring the join resource, so the path is empty whatever the data and Ramal
+    # leaves it to the database (ADR 0046). Ash after 3.37 expands the hop into the join resource and its destination
+    # (commit 3c4b41a, "read each step of a through relationship the way its relationship reads"), so every hop of the
+    # path is a plain one and the branch walks it. These tests hold on both: `expanded?` tells which Ash answers.
     setup %{herds: h} do
       ana = Ash.create!(Vet, %{name: "Ana"}, authorize?: false)
-      Ash.create!(HerdVet, %{herd_id: h.r7.id, vet_id: ana.id}, authorize?: false)
-      :ok
+      link = Ash.create!(HerdVet, %{herd_id: h.r7.id, vet_id: ana.id}, authorize?: false)
+      {:ok, link: link, expanded?: vets()["L07"] != []}
     end
 
-    test "is empty outside a branch although the herd has a vet", %{herds: h} do
-      assert Ash.load!(h.r7, :vets, authorize?: false).vets != []
-
-      paddocks = Ash.read!(Paddock, authorize?: false) |> Ash.load!(:herd_vets, authorize?: false)
-      assert Enum.all?(paddocks, &(&1.herd_vets == []))
+    test "outside a branch the database answers", %{expanded?: expanded?} do
+      if expanded? do
+        assert vets() == %{"L07" => ["Ana"], "L18" => []}
+      else
+        assert vets() == %{"L07" => [], "L18" => []}
+      end
     end
 
-    test "is left to the database inside a branch", %{branch: branch, herds: h} do
-      inside(branch, fn ->
-        Ash.update!(h.r7, %{name: "R7b"}, authorize?: false)
+    test "a branch that changed the path but not its links reads what the database does", %{
+      branch: branch,
+      herds: h
+    } do
+      outside = vets()
 
-        paddocks =
-          Ash.read!(Paddock, authorize?: false) |> Ash.load!(:herd_vets, authorize?: false)
+      assert inside(branch, fn ->
+               Ash.update!(h.r7, %{name: "R7b"}, authorize?: false)
+               vets()
+             end) == outside
+    end
 
-        assert Enum.all?(paddocks, &(&1.herd_vets == []))
-      end)
+    test "a link created in the branch is reached when Ash expands the hop", %{
+      branch: branch,
+      herds: h,
+      expanded?: expanded?
+    } do
+      result =
+        inside(branch, fn ->
+          bob = Ash.create!(Vet, %{name: "Bob"}, authorize?: false)
+          Ash.create!(HerdVet, %{herd_id: h.r9.id, vet_id: bob.id}, authorize?: false)
+          vets()
+        end)
+
+      if expanded? do
+        assert result == %{"L07" => ["Ana"], "L18" => ["Bob"]}
+      else
+        assert result == %{"L07" => [], "L18" => []}
+      end
+
+      assert vets() ==
+               if(expanded?,
+                 do: %{"L07" => ["Ana"], "L18" => []},
+                 else: %{"L07" => [], "L18" => []}
+               )
+    end
+
+    test "a herd moved in the branch takes its vets to its new paddock when Ash expands the hop",
+         %{
+           branch: branch,
+           herds: h,
+           paddocks: p,
+           expanded?: expanded?
+         } do
+      result =
+        inside(branch, fn ->
+          Ash.update!(h.r7, %{paddock_id: p.l18.id}, authorize?: false)
+          vets()
+        end)
+
+      if expanded? do
+        assert result == %{"L07" => [], "L18" => ["Ana"]}
+      else
+        assert result == %{"L07" => [], "L18" => []}
+      end
+    end
+
+    test "a link destroyed in the branch is no longer reached", %{branch: branch, link: link} do
+      assert inside(branch, fn ->
+               Ash.destroy!(link, authorize?: false)
+               vets()
+             end) == %{"L07" => [], "L18" => []}
     end
   end
 

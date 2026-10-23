@@ -38,3 +38,6 @@ without a branch (`test/ramal/through_test.exs` pins it).
 - The code depends on the shape of `lateral_join_source` for a path (one entry per hop; entry *i* reads the source
   resource of hop *i*), as ADR 0017 does; the tests pin it.
 - The hops are read with the actor's authorization, as the entry queries were hydrated; the database joined them raw.
+- Update, 2026-10-23: Ash after 3.37 expands a many_to_many hop into its join resource (Ash commit 3c4b41a), so the walk
+  covers it with no change. A hop Ash reads with a limit or an offset joins the cases left to the database, and a load
+  left to the database leaves out the rows the branch created instead of handing Ash a row it cannot group.

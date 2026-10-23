@@ -530,6 +530,7 @@ defmodule Ramal.Preparation do
              key: &Resource.key(resource, &1),
              replace: &carry_lateral_source/2
            )
+           |> drop_unplaced(query)
            |> load_calculations(slice, query),
          {:ok, distinct} <- distinct(patched, query),
          {:ok, sorted} <- sort(distinct, query, id) do
@@ -647,6 +648,17 @@ defmodule Ramal.Preparation do
     if source != nil and Ramal.Ash.lateral_tag(record) == nil,
       do: Ramal.Ash.tag_lateral(record, source),
       else: record
+  end
+
+  # A lateral load left to the database (ADR 0046: a `through` path the walk does not cover) keeps the database's join,
+  # which places each row under the source records it reached. A record the branch created reached none in that join, so
+  # it is not part of the load, and Ash cannot group it: with no source tag, `attach_lateral_join_related_records/4` in
+  # deps/ash/lib/ash/actions/read/relationships.ex calls the key function of a `through` relationship's missing source
+  # attribute and raises. A rewritten load (`links`) tags its rows itself after the patch.
+  defp drop_unplaced(records, %{context: %{ramal: ramal}} = query) do
+    if ramal[:links] == nil and Ramal.Ash.lateral_load?(query),
+      do: Enum.reject(records, &(Ramal.Ash.lateral_tag(&1) == nil)),
+      else: records
   end
 
   # The keys of overlay records that satisfy the query's filter. Computed once for the whole slice, so a filter that
