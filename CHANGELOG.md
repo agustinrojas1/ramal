@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- **A stored branch whose state is not an object with a version no longer crashes the caller.** `Ramal.get/1` and `Ramal.list/2` (and a durable branch's write log) now return `{:error, %Ramal.Error{reason: :storage}}` for a `state` of `{}`, `null`, a list or a string, or a `version` that is not a number, as SECURITY.md says they do. Found by fuzzing the decoder with mutated states. Only someone who can already write the `ramal_branches` table can store such a value.
+
 ## [0.9.0] - 2026-10-23
 
 Ramal now checks what it assumes about Ash on the Ash you run, not only in its own CI. Run `mix ramal.doctor` after upgrading Ash. If an assumption ever breaks, Ramal refuses the branch work that depends on it instead of writing to your database. This release also fixes a crash on some `through` loads inside a branch. Upgrading from 0.8 needs no step beyond the version (and `ramal_live ~> 0.9.0`, which shares it).
