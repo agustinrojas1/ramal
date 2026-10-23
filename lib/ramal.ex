@@ -362,13 +362,13 @@ defmodule Ramal do
   # With overlay entries the database aggregates the rows outside the overlay and the branch reads only the overlaid
   # ones (Ramal.Aggregate). Without any, the base is the branch, so the data layer's answer is exact.
   defp in_branch(query, kind, field, opts) do
-    case Server.slice(Current.id(), query.resource) do
-      {:ok, slice} when map_size(slice) == 0 ->
+    case Server.keys(Current.id(), query.resource) do
+      {:ok, []} ->
         outside_branch(query, kind, field, opts)
 
-      {:ok, slice} ->
-        if Ramal.Aggregate.applies?(query, map_size(slice)) do
-          Ramal.Aggregate.delta(query, kind, field, opts, Map.keys(slice))
+      {:ok, keys} ->
+        if Ramal.Aggregate.applies?(query, length(keys)) do
+          Ramal.Aggregate.delta(query, kind, field, opts, keys)
         else
           read_every_row(query, kind, field, opts)
         end
