@@ -162,4 +162,4 @@ an unattended agent:
 - It forks a branch and merges both. The second merge is `:stale`; that is the guard working.
 - It uses a bulk action. Bulk actions and upserts are refused inside a branch; it must loop over single-row actions.
 - It forgets branches. Set `max_active_branches` and `branch_rate` on `Ramal.Supervisor` when an agent can open branches.
-- It reads a calculation or aggregate declared on the resource. Those do not see the branch; `Ramal.aggregate/4` does.
+- It filters or sorts on an aggregate declared on the resource (`filter head_count > 10`). That is judged on the base rows; an aggregate it only loads is computed from the branch, and `Ramal.aggregate/4` gives one total.
