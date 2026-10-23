@@ -71,6 +71,7 @@ Done; released in 0.3.0.
 - 0.4.0: The `owner` column ([ADR 0021](adr/0021-owner-column.md)), the compact stored state ([ADR 0022](adr/0022-compact-state.md)), less memory per branch, faster fork and diff, the demo and Livebook tour, and fixes to calculations and the prefilter. Upgrade notes are in `CHANGELOG.md`.
 - 0.5.0: Reads that agree with the branch: pages ([ADR 0030](adr/0030-pages-cut-from-the-patched-list.md)), aggregates ([ADR 0029](adr/0029-declared-aggregates-in-branches.md), [0032](adr/0032-aggregate-filters-and-sorts.md)), late-binding queries ([ADR 0028](adr/0028-late-binding-queries.md)), `Ramal.load/3` ([ADR 0031](adr/0031-ramal-load.md)), and the AshAi example. Upgrade notes are in `CHANGELOG.md`.
 - 0.6.0: A branch in one tenant ([ADR 0034](adr/0034-one-tenant-per-branch.md)), and the formal verification under `verification/` (a TLA+ model checked with TLC and Bend 2 proofs) with the three bugs it found: running actions hold their writes ([ADR 0033](adr/0033-running-actions-hold-their-writes.md)) and the merged status is stored in the merge's transaction ([ADR 0035](adr/0035-merged-status-in-the-merge-transaction.md)). Upgrade notes are in `CHANGELOG.md`.
+- 0.7.0: The remaining limits: bulk actions ([ADR 0036](adr/0036-bulk-actions-record-by-record.md)), result checks on patched rows ([0037](adr/0037-result-checks-run-on-the-patched-rows.md)), upserts ([0038](adr/0038-upserts-in-the-branch-view.md)), `first`, `list` and `uniq?` aggregates ([0039](adr/0039-first-list-and-uniq-aggregates.md)), relationship pages ([0040](adr/0040-relationship-pages-cut-per-source.md)), replay keys ([0041](adr/0041-replay-keeps-hook-keys-and-caller-attributes.md)), database-generated keys ([0042](adr/0042-placeholder-keys-for-generated-primary-keys.md)), nested branches ([0043](adr/0043-nested-branches-merge-into-their-parent.md)), clusters ([0044](adr/0044-branches-in-a-cluster.md)), text collation ([0045](adr/0045-text-sorted-by-the-databases-collation.md)), multi-hop `through` paths ([0046](adr/0046-through-paths-walked-over-the-branch.md)), relationship filter narrowing ([0047](adr/0047-relationship-filter-narrowing.md)) and durable branches ([0048](adr/0048-durable-branches.md)). Upgrade notes are in `CHANGELOG.md`.
 
 ## Formal verification
 
@@ -81,10 +82,9 @@ Done; released in 0.6.0.
 
 ## 0.7 Remaining limits
 
-[limits-plan.md](https://github.com/agustinrojas1/ramal/blob/main/docs/limits-plan.md) gives the root cause and a design for each remaining limit, in the order they are
-being implemented: bulk actions, `authorize_results`, upserts, paged and multi-hop relationship loads, aggregates,
-merge replay keys, database-generated keys, text collation, durable branches, relationship filter push-down, nested
-branches, an optional authorizer, and clusters.
+Done; released in 0.7.0.
+
+[limits-plan.md](https://github.com/agustinrojas1/ramal/blob/main/docs/limits-plan.md) gave the root cause and a design for each limit, and each one is closed by the ADR listed under Releases: bulk actions, `authorize_results`, upserts, paged and multi-hop relationship loads, aggregates, merge replay keys, database-generated keys, text collation, durable branches, relationship filter push-down, nested branches and clusters. The optional authorizer is not done: authorization stays the host's.
 
 ## 1.0
 
