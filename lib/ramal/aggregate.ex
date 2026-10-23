@@ -40,6 +40,7 @@ defmodule Ramal.Aggregate do
 
   alias Ash.Actions.Sort
   alias Ash.Resource.Info
+  alias Ramal.Resource
 
   @kinds [:count, :exists, :sum, :min, :max, :avg]
 
@@ -136,7 +137,7 @@ defmodule Ramal.Aggregate do
     resource = query.resource
 
     with {:ok, base} <- database(exclude(query, keys), kind, field, opts),
-         {:ok, rows} <- Ash.read(restrict(query, keys), opts) do
+         {:ok, rows} <- Resource.read_all(restrict(query, keys), opts) do
       {:ok, combine(kind, field, resource, base, rows)}
     end
   end
