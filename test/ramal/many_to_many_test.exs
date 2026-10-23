@@ -6,6 +6,8 @@ defmodule Ramal.ManyToManyTest do
   # tuples.
   use Ramal.DataCase, async: false
 
+  require Ash.Query
+
   alias Ramal.Error
   alias Ramal.Merge.Result
   alias Ramal.Storage.Postgres
@@ -115,11 +117,10 @@ defmodule Ramal.ManyToManyTest do
       assert vets_of(herds.r7) == ["Ana"]
     end
 
-    # Known limit, DESIGN section 4.1 point 7. AshPostgres loads a many_to_many with one SQL query that joins the join
-    # table in the database (`lateral_join?/4` in deps/ash/lib/ash/actions/read/relationships.ex), so the links of the
-    # branch are not in it. The join relationship and the join resource itself are patched, which is how to read them
-    # in a branch.
-    test "does not see links created or destroyed in the branch", %{
+    # AshPostgres loads a many_to_many with one SQL query that joins the join table in the database
+    # (`lateral_join?/4` in deps/ash/lib/ash/actions/read/relationships.ex). Ramal.Preparation.ManyToMany replaces that
+    # join by the patched join rows when the branch changed the join resource (ADR 0017).
+    test "sees links created or destroyed in the branch", %{
       branch: branch,
       herds: herds,
       ana: ana,
@@ -130,8 +131,87 @@ defmodule Ramal.ManyToManyTest do
         drop_vets(herds.r7, [ana])
 
         assert links() == [{herds.r8.id, bruno.id}]
-        assert vets_of(herds.r8) == []
-        assert vets_of(herds.r7) == ["Ana"]
+        assert vets_of(herds.r8) == ["Bruno"]
+        assert vets_of(herds.r7) == []
+      end)
+
+      assert vets_of(herds.r8) == []
+      assert vets_of(herds.r7) == ["Ana"]
+    end
+
+    test "gives each source record its own vets when it loads several at once", %{
+      branch: branch,
+      herds: herds,
+      ana: ana,
+      bruno: bruno
+    } do
+      inside(branch, fn ->
+        add_vets(herds.r8, [ana, bruno])
+
+        loaded = Ash.load!([herds.r7, herds.r8, herds.r9], :vets, authorize?: false)
+
+        assert Map.new(loaded, &{&1.name, &1.vets |> Enum.map(fn v -> v.name end) |> Enum.sort()}) ==
+                 %{"R7" => ["Ana"], "R8" => ["Ana", "Bruno"], "R9" => []}
+      end)
+    end
+
+    test "sees the links from the vet's side too", %{
+      branch: branch,
+      herds: herds,
+      ana: ana
+    } do
+      inside(branch, fn ->
+        add_vets(herds.r8, [ana])
+        drop_vets(herds.r7, [ana])
+
+        vet = Ash.load!(ana, :herds, authorize?: false)
+        assert Enum.map(vet.herds, & &1.name) == ["R8"]
+      end)
+    end
+
+    test "applies the load's filter, sort and limit to each source record", %{
+      branch: branch,
+      herds: herds,
+      ana: ana,
+      bruno: bruno
+    } do
+      inside(branch, fn ->
+        cora = Ash.create!(Vet, %{name: "Cora"}, authorize?: false)
+        add_vets(herds.r8, [ana, bruno, cora])
+        add_vets(herds.r9, [bruno, cora])
+
+        by_name = fn query -> Ash.Query.sort(query, name: :desc) end
+
+        names = fn herd, query ->
+          herd
+          |> Ash.load!([vets: query], authorize?: false)
+          |> Map.fetch!(:vets)
+          |> Enum.map(& &1.name)
+        end
+
+        assert names.(herds.r8, by_name.(Vet)) == ["Cora", "Bruno", "Ana"]
+        assert names.(herds.r8, Vet |> by_name.() |> Ash.Query.limit(2)) == ["Cora", "Bruno"]
+
+        assert names.(herds.r8, Vet |> by_name.() |> Ash.Query.limit(2) |> Ash.Query.offset(1)) ==
+                 ["Bruno", "Ana"]
+
+        assert names.(herds.r9, Vet |> by_name.() |> Ash.Query.limit(1)) == ["Cora"]
+
+        assert names.(herds.r8, Ash.Query.filter(Vet, name != "Bruno")) |> Enum.sort() == [
+                 "Ana",
+                 "Cora"
+               ]
+      end)
+    end
+
+    test "leaves the load to the database while the branch has not touched the join resource", %{
+      branch: branch,
+      herds: herds,
+      ana: ana
+    } do
+      inside(branch, fn ->
+        Ash.update!(ana, %{name: "Ana M."}, authorize?: false)
+        assert vets_of(herds.r7) == ["Ana M."]
       end)
     end
   end
@@ -180,42 +260,90 @@ defmodule Ramal.ManyToManyTest do
       assert summary(changes) == [{HerdVet, {herds.r7.id, bruno.id}, :created}]
     end
 
-    # Known limit, DESIGN section 4.1 point 7. `append_and_remove` unrelates the missing destinations with
-    # `Ash.bulk_destroy/4` on the join resource (`bulk_delete_unused_unrelate/8` in
-    # deps/ash/lib/ash/actions/managed_relationships.ex), and a branch refuses bulk actions (ADR 0005).
-    test "append_and_remove is refused when it has a link to remove, and writes nothing", %{
+    # `append_and_remove` unrelates the missing destinations with `Ash.bulk_destroy/4` on the join resource
+    # (`bulk_delete_unused_unrelate/8` in deps/ash/lib/ash/actions/managed_relationships.ex). Ramal.Capture captures
+    # each destroy of that stream and keeps the data layer from deleting anything (ADR 0017).
+    test "append_and_remove destroys the links it removes in the branch and leaves the database alone",
+         %{
+           branch: branch,
+           herds: herds,
+           ana: ana,
+           bruno: bruno
+         } do
+      inside(branch, fn ->
+        Ash.update!(herds.r7, %{vet_ids: [bruno.id]}, action: :set_vets, authorize?: false)
+        assert links() == [{herds.r7.id, bruno.id}]
+        assert vets_of(herds.r7) == ["Bruno"]
+      end)
+
+      assert links() == [{herds.r7.id, ana.id}]
+
+      assert {:ok, changes} = Ramal.diff(branch)
+
+      assert summary(changes) ==
+               Enum.sort([
+                 {HerdVet, {herds.r7.id, ana.id}, :deleted},
+                 {HerdVet, {herds.r7.id, bruno.id}, :created}
+               ])
+
+      assert {:ok, %Result{stale: []}} = Ramal.merge(branch, authorize?: false)
+      assert links() == [{herds.r7.id, bruno.id}]
+    end
+
+    test "an append_and_remove that fails leaves the links as they were", %{
       branch: branch,
       herds: herds,
-      bruno: bruno
+      ana: ana
     } do
-      assert {:ok, {:error, error}} =
+      assert {:ok, {:error, _}} =
                Ramal.run(branch, fn ->
-                 Ash.update(herds.r7, %{vet_ids: [bruno.id]},
+                 Ash.update(herds.r7, %{vet_ids: [Ecto.UUID.generate()]},
                    action: :set_vets,
                    authorize?: false
                  )
                end)
 
-      assert %Error{reason: :bulk_unsupported, details: %{resource: HerdVet}} = Error.find(error)
       assert {:ok, []} = Ramal.diff(branch)
+      assert inside(branch, &links/0) == [{herds.r7.id, ana.id}]
     end
   end
 
-  # Known limit, DESIGN section 4.1 point 7. `manage_relationship` decides what to create and remove from the
-  # many_to_many load, which does not see the links of the branch, so it cannot remove a link the branch created.
+  # `manage_relationship` decides what to create and remove from the many_to_many load, which now sees the links of
+  # the branch (ADR 0017).
   describe "manage_relationship after the branch changed the links" do
-    test "cannot remove a link the branch created", %{branch: branch, herds: herds, bruno: bruno} do
-      assert {:ok, {:error, error}} =
-               Ramal.run(branch, fn ->
-                 add_vets(herds.r8, [bruno])
+    test "removes a link the branch created", %{branch: branch, herds: herds, bruno: bruno} do
+      inside(branch, fn ->
+        add_vets(herds.r8, [bruno])
+        drop_vets(herds.r8, [bruno])
+        assert vets_of(herds.r8) == []
+      end)
 
-                 Ash.update(herds.r8, %{vet_ids: [bruno.id]},
-                   action: :drop_vets,
-                   authorize?: false
-                 )
-               end)
+      assert {:ok, []} = Ramal.diff(branch)
+    end
 
-      assert Exception.message(error) =~ "not found"
+    test "appends a vet the branch already linked once", %{
+      branch: branch,
+      herds: herds,
+      bruno: bruno
+    } do
+      inside(branch, fn ->
+        add_vets(herds.r8, [bruno])
+        add_vets(herds.r8, [bruno])
+        assert vets_of(herds.r8) == ["Bruno"]
+      end)
+
+      assert {:ok, %Result{stale: []}} = Ramal.merge(branch, authorize?: false)
+      assert vets_of(herds.r8) == ["Bruno"]
+    end
+
+    test "appends a vet the base already linked without creating the link again", %{
+      branch: branch,
+      herds: herds,
+      ana: ana
+    } do
+      inside(branch, fn -> add_vets(herds.r7, [ana]) end)
+
+      assert {:ok, []} = Ramal.diff(branch)
     end
   end
 
