@@ -37,8 +37,8 @@ input of every captured write; and a malformed `state` column crashed the caller
 
 ## Consequences
 
-- Every existing `ramal_inspector` call without `:actor` stops compiling until it names one. This is the only breaking
-  change here and ships in the first release after 0.2.0.
+- A `ramal_inspector` call without `:actor` stops compiling until it names one. The inspector first ships in 0.2.0, so
+  no released version is affected.
 - A host that turns on a limit must handle `:limit_reached` from `Ramal.branch/2` and `Ramal.fork/2`; the inspector
   already shows any error from a fork on the page.
 - An `:actor` function that legitimately returns `nil` for a service account must return a value for it instead.

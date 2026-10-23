@@ -4,16 +4,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-### Changed
-
-- **Breaking, `ramal_live`:** the `:actor` option of `ramal_inspector/2` is required. A router without it fails to compile with a message that says what to pass, and a route whose actor function does not exist raises when the page opens. Before, a missing `:actor` meant the page merged every branch as the actors the writes were captured with and recorded no decider. Add `actor: {MyAppWeb.Inspector, :actor}`; a tool with no users can return a constant (ADR 0016).
-
-### Added
-
-- `Ramal.Supervisor` options `:max_active_branches` and `:branch_rate`: optional per-domain limits on the open and proposed branches, and on the branches and forks created per window. `Ramal.branch/2` and `Ramal.fork/2` return `{:error, %Ramal.Error{reason: :limit_reached}}` past either, with the limit in `details`, and emit `[:ramal, :limit, :reached]`. Both are off by default, so nothing changes until a host sets them (ADR 0016, `SECURITY.md`).
-- `c:Ramal.Storage.count/3`, an optional callback that counts a domain's branches by status without loading them. `Ramal.Storage.ETS` and `Ramal.Storage.Postgres` define it; a backend without it is counted with `list/3`.
-
-## [0.2.0] - 2026-10-22
+## [0.2.0] - 2026-10-23
 
 Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspector, a benchmark, and a security pass. No breaking change to the public API of 0.1.0: a branch stored by 0.1.0 loads unchanged, and the public functions of 0.1.0 behave as before.
 
@@ -29,9 +20,12 @@ Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspec
 - `ramal_live` is versioned with Ramal (0.2.0) and builds as a Hex package: `RAMAL_LIVE_HEX=1` makes its `mix.exs` depend on the published `ramal ~> 0.2.0` instead of the checkout next to it, and the package ships its `LICENSE` and builds its docs with ExDoc.
 - Community files for the public launch: `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), `SECURITY.md`, bug and feature issue templates, a pull request template that mirrors the rules in `CLAUDE.md`, and Dependabot for the root Mix project, `bench/` and GitHub Actions.
 - A "Security model and defaults" section in `SECURITY.md`, and ADR 0016: what Ramal enforces and what it leaves to the host, how stored state is treated, and how to mount the inspector in production. CI runs `mix hex.audit` for the library, `bench/` and `ramal_live/`.
+- `Ramal.Supervisor` options `:max_active_branches` and `:branch_rate`: optional per-domain limits on the open and proposed branches, and on the branches and forks created per window. `Ramal.branch/2` and `Ramal.fork/2` return `{:error, %Ramal.Error{reason: :limit_reached}}` past either, with the limit in `details`, and emit `[:ramal, :limit, :reached]`. Both are off by default, so nothing changes until a host sets them (ADR 0016, `SECURITY.md`).
+- `c:Ramal.Storage.count/3`, an optional callback that counts a domain's branches by status without loading them. `Ramal.Storage.ETS` and `Ramal.Storage.Postgres` define it; a backend without it is counted with `list/3`.
 
 ### Security
 
+- `ramal_live`: the `:actor` option of `ramal_inspector/2` is required. A router without it fails to compile with a message that says what to pass, and a route whose actor function does not exist raises when the page opens. A page with no actor would merge every branch as the actors the writes were captured with and record no decider; a tool with no users passes a function that returns a constant (ADR 0016).
 - `ramal_live`: attributes marked `sensitive?: true` show as `[redacted]` in a branch's diff. The page printed every value, so a password hash or token written in a branch was visible to everyone who could open the inspector.
 - `ramal_live`: when the `:actor` function returns `nil` the page refuses fork, merge, discard, approve and reject. Before, a session without a user merged as the recorded actors with no decider.
 - `inspect/1` of a `Ramal.Branch` prints only its id, name, domain, status and creation time. The log holds the raw input of every captured write, which Ash does not redact, and a crash report prints the state of a branch process.
