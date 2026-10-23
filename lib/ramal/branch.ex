@@ -272,11 +272,13 @@ defmodule Ramal.Branch do
       iex> branch.base
       %{{MyApp.Herd, 1} => %{fingerprint: 7, snapshot: nil}}
   """
-  @spec put_fingerprints(t, %{optional(ref) => non_neg_integer}) :: t
+  @spec put_fingerprints(t, %{optional(ref) => non_neg_integer} | [{ref, non_neg_integer}]) :: t
   def put_fingerprints(%__MODULE__{} = branch, fingerprints) do
     base =
       Enum.reduce(fingerprints, branch.base, fn {ref, fingerprint}, base ->
-        Map.put_new(base, ref, %{fingerprint: fingerprint, snapshot: nil})
+        if is_map_key(base, ref),
+          do: base,
+          else: Map.put(base, ref, %{fingerprint: fingerprint, snapshot: nil})
       end)
 
     %{branch | base: base}

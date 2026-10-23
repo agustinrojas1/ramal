@@ -183,13 +183,11 @@ defmodule Ramal.Preparation do
   # Staleness at merge time is measured from the first time the branch saw a row, so every base row a read returns is
   # fingerprinted before it is patched. Rows with an attribute that was not selected cannot be compared and are skipped.
   defp record_fingerprints(resource, results, id) do
-    fingerprints =
-      for row <- results,
-          fingerprint = Resource.fingerprint(row),
-          into: %{},
-          do: {{resource, Resource.key(resource, row)}, fingerprint}
+    case Resource.fingerprints(resource, results) do
+      [] -> :ok
+      fingerprints -> Server.fingerprints(id, fingerprints)
+    end
 
-    if fingerprints != %{}, do: Server.fingerprints(id, fingerprints)
     :ok
   end
 

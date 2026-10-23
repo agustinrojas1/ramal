@@ -158,12 +158,10 @@ defmodule Ramal.Resource do
       "r7"
   """
   @spec key(module, map) :: term
-  def key(resource, record) do
-    case Ash.Resource.Info.primary_key(resource) do
-      [field] -> Map.fetch!(record, field)
-      fields -> fields |> Enum.map(&Map.fetch!(record, &1)) |> List.to_tuple()
-    end
-  end
+  def key(resource, record), do: key_of(record, Ash.Resource.Info.primary_key(resource))
+
+  defp key_of(record, [field]), do: Map.fetch!(record, field)
+  defp key_of(record, fields), do: fields |> Enum.map(&Map.fetch!(record, &1)) |> List.to_tuple()
 
   @doc """
   The attribute values of an Ash record as a plain map, leaving out relationships, calculations, aggregates and any
@@ -198,11 +196,40 @@ defmodule Ramal.Resource do
       false
   """
   @spec fingerprint(struct) :: non_neg_integer | nil
-  def fingerprint(%resource{} = record) do
-    attributes = attributes(record)
+  def fingerprint(%resource{} = record), do: fingerprint(record, attribute_names(resource))
 
-    if map_size(attributes) == length(attribute_names(resource)) do
-      :erlang.phash2(attributes)
+  @doc false
+  # The `{{resource, key}, fingerprint}` pairs of the rows a read returned, skipping rows with an attribute that was not
+  # loaded. The attribute names and the primary key are looked up once for the whole list, not once per row, which is
+  # most of what fingerprinting a wide read used to cost. Same fingerprints as `fingerprint/1`.
+  @spec fingerprints(module, [struct]) :: [{{module, term}, non_neg_integer}]
+  def fingerprints(resource, rows) do
+    names = attribute_names(resource)
+    primary_key = Ash.Resource.Info.primary_key(resource)
+
+    for row <- rows, fingerprint = fingerprint(row, names) do
+      {{resource, key_of(row, primary_key)}, fingerprint}
+    end
+  end
+
+  # The hash is of the map of attribute values, exactly what `attributes/1` returns when every attribute is loaded, so a
+  # fingerprint stored by an earlier version still compares equal. A single pass collects the values and gives up at the
+  # first one that is not loaded.
+  defp fingerprint(record, names) do
+    case loaded_attributes(record, names, []) do
+      :error -> nil
+      pairs -> pairs |> :maps.from_list() |> :erlang.phash2()
+    end
+  end
+
+  defp loaded_attributes(_record, [], pairs), do: pairs
+
+  defp loaded_attributes(record, [name | names], pairs) do
+    case record do
+      %{^name => %Ash.NotLoaded{}} -> :error
+      %{^name => %Ash.ForbiddenField{}} -> :error
+      %{^name => value} -> loaded_attributes(record, names, [{name, value} | pairs])
+      _missing -> :error
     end
   end
 
