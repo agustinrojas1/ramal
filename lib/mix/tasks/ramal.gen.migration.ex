@@ -8,11 +8,13 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
         $ mix ramal.gen.migration
         $ mix ramal.gen.migration -r MyApp.Repo
 
-    Two migrations make the table: `create_ramal_branches`, and `add_ramal_branch_owner`, which adds the `owner` column
-    Postgres generates from `state -> 'owner'` and its index (ADR 0021). A new install gets both. A host that installed
-    0.3.0 or earlier already has the first and gets only the second; it is safe to run on a table that has the column,
-    and it rewrites the table once, which is small. The task writes whichever of the two is missing and refuses when
-    neither is.
+    Three migrations make the table: `create_ramal_branches`; `add_ramal_branch_owner`, which adds the `owner` column
+    Postgres generates from `state -> 'owner'` and its index (ADR 0021); and `add_ramal_branch_epoch`, which adds the
+    `epoch` column a cluster fences writes with (ADR 0044). A new install gets all three. A host that installed
+    0.3.0 or earlier already has the first and gets the other two; it is safe to run on a table that has the columns.
+    Adding `owner` rewrites the table once, which is small; adding `epoch` does not rewrite it. The task writes whichever
+    of the three are missing and refuses when none is. The epoch is only read with `cluster: true`, so a host that does not
+    run a cluster can skip that migration.
 
     The files go where `mix ecto.gen.migration` would put them: `priv/<repo>/migrations`, or the directory given with
     `--migrations-path`.
@@ -28,6 +30,7 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
         $ mix ramal.gen.migration -r MyApp.Repo
         * creating priv/repo/migrations/20261022120000_create_ramal_branches.exs
         * creating priv/repo/migrations/20261022120001_add_ramal_branch_owner.exs
+        * creating priv/repo/migrations/20261022120002_add_ramal_branch_epoch.exs
     """
 
     use Mix.Task
@@ -44,6 +47,7 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
     ]
     @create "create_ramal_branches"
     @owner "add_ramal_branch_owner"
+    @epoch "add_ramal_branch_epoch"
 
     @impl true
     def run(args) do
@@ -54,9 +58,13 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
         ensure_repo(repo, args)
         path = opts[:migrations_path] || Path.join(source_repo_priv(repo), "migrations")
 
-        # The second timestamp is one second later, so that the owner column is added to a table that exists.
+        # Each timestamp is one second after the one before, so that a column is added to a table that exists.
         missing =
-          [{@create, &create_template/1}, {@owner, &owner_template/1}]
+          [
+            {@create, &create_template/1},
+            {@owner, &owner_template/1},
+            {@epoch, &epoch_template/1}
+          ]
           |> Enum.reject(fn {name, _template} ->
             Path.wildcard(Path.join(path, "*_#{name}.exs")) != []
           end)
@@ -104,6 +112,25 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
           end
 
           create index(:ramal_branches, [:domain, :status])
+        end
+      end
+      """
+    end
+
+    # A constant default is stored in the catalog, not written to every row (Postgres 11), so this does not rewrite the
+    # table. bigint, because the epoch counts every load of a branch for as long as the row lives.
+    defp epoch_template(repo) do
+      """
+      defmodule #{inspect(repo)}.Migrations.AddRamalBranchEpoch do
+        use Ecto.Migration
+
+        # Created by `mix ramal.gen.migration`. Only a Ramal.Supervisor with `cluster: true` reads it.
+        def up do
+          execute "ALTER TABLE ramal_branches ADD COLUMN IF NOT EXISTS epoch bigint NOT NULL DEFAULT 0"
+        end
+
+        def down do
+          execute "ALTER TABLE ramal_branches DROP COLUMN IF EXISTS epoch"
         end
       end
       """

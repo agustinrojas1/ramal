@@ -17,6 +17,8 @@ defmodule Ramal.Branch do
     interprets it: `Ramal.list/2` can filter by it (ADR 0018) and nothing else reads it
   * `tenant` - the one tenant the branch works in, `nil` unless given at `branch/2` (ADR 0034). A fork keeps it
   * `proposal` - `nil` until `Ramal.propose/2`; then `t:proposal/0`
+  * `epoch` - the fencing token of a branch held by a process of a cluster (ADR 0044): the storage's epoch for the branch
+    when the process loaded it, `nil` otherwise. Storage never writes it into `state`, and a fork starts without one
   * `parent` - `nil`, or for a nested fork (`Ramal.fork(parent, nested: true)`, ADR 0043) `%{id: parent_id, log_length:
     n}`: the branch it merges into and how many of its own log entries the fork inherited
   * `parent_seen` - for a nested fork, `ref => view`: what the parent held for each row the fork read or wrote, the
@@ -106,6 +108,7 @@ defmodule Ramal.Branch do
           owner: term,
           tenant: term,
           proposal: proposal | nil,
+          epoch: non_neg_integer | nil,
           parent: %{id: String.t(), log_length: non_neg_integer} | nil,
           parent_seen: %{optional(ref) => view},
           merged_children: [String.t()],
@@ -131,6 +134,7 @@ defmodule Ramal.Branch do
     owner: nil,
     tenant: nil,
     proposal: nil,
+    epoch: nil,
     parent: nil,
     parent_seen: %{},
     merged_children: [],
@@ -537,6 +541,7 @@ defmodule Ramal.Branch do
         inserted_at: DateTime.utc_now(),
         metadata: metadata,
         owner: Keyword.get(opts, :owner, parent.owner),
+        epoch: nil,
         parent: link,
         parent_seen: %{},
         merged_children: []

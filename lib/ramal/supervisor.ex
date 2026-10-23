@@ -10,6 +10,8 @@ defmodule Ramal.Supervisor do
   It starts a `Registry` keyed by branch id, a `DynamicSupervisor` for the branch processes, and owns the ETS
   tables the library needs. There is one instance per node; its configuration lives in `:persistent_term`.
 
+  A branch lives on one node. To let every node of a cluster use the same branches, see `:cluster` below.
+
   ## Options
 
     * `:storage` - a `Ramal.Storage` module, default `Ramal.Storage.ETS`
@@ -21,12 +23,35 @@ defmodule Ramal.Supervisor do
     * `:branch_rate` - `{count, milliseconds}`: the most branches (created or forked) one domain may get in a window,
       default `nil`. Fixed windows, counted in memory on this node, and shared by `branch/2` and `fork/2`. Nodes do not
       add up: a cluster allows the rate on each node.
+    * `:cluster` - `true` to run branches in a cluster, default `false` (ADR 0044). Branch processes are then named with
+      `:global`, so one process serves a branch for every node, and the storage fences a process that lost the branch
+      (see "Running in a cluster" below). The storage must define `c:Ramal.Storage.claim/2`: `Ramal.Storage.Postgres`
+      does, with the `epoch` column `mix ramal.gen.migration` adds.
     * `:max_heap_size` - the heap limit of each branch process in words, default 25 million (200 MB on a 64-bit
       machine). A branch exceeding it is killed and its last persisted state remains.
     * any other option is the storage config, for example `:repo` for the Postgres backend
 
   Both limits are off by default, so adding them is the only change; see ADR 0016 for why they exist (a client that can
   reach `Ramal.fork/2`, such as the inspector, can otherwise start a process and a stored row per call).
+
+  ## Running in a cluster
+
+  With `cluster: true` the supervisor on each node starts the processes that load a branch on that node, and `:global`
+  makes sure only one runs. Every node needs the same code, because a node sends closures to the node that holds the
+  branch (the write and capture calls of the branch process), which a release does anyway. Every node must use the same
+  storage, a shared database: `Ramal.Storage.ETS` is a table per node, so it only serves a cluster of one.
+
+  When the network splits, each side can load the same branch, one process per side. Every load bumps the branch's
+  epoch in the storage, and every write of a process is conditional on the epoch it loaded. The process that lost is
+  refused at its next save, emits `[:ramal, :branch, :fenced]` and stops: what it held since its last save is lost, and
+  nothing it holds overwrites the newer state. A merge it was running is refused too, inside the merge transaction.
+  When the nodes find each other again `:global` keeps the process with the higher epoch and stops the other.
+
+  These stay on the node: the telemetry events (attach handlers on every node), the `:branch_rate` window, and the
+  marks of a process killed for its heap, which the other nodes do not see (they load the last saved state, as they
+  would after the node crashed). Writes since the last save are lost when the node of the process crashes, as on one
+  node. `ramal_live`'s inspector shows the events of its own node unless its broadcaster runs on every node over a
+  clustered `Phoenix.PubSub`.
 
   `idle_timeout` and `max_heap_size` belong to the supervisor, not to a branch, because a per-branch value would be
   forgotten when the branch is unloaded and loaded again.
@@ -51,6 +76,7 @@ defmodule Ramal.Supervisor do
 
   @type config :: %{
           storage: module,
+          cluster: boolean,
           storage_config: keyword,
           idle_timeout: timeout,
           max_heap_size: pos_integer,
@@ -67,7 +93,9 @@ defmodule Ramal.Supervisor do
     # init/1 runs in the supervisor process, so the tables are owned by it and live exactly as long as it does.
     create_table(Ramal.Storage.ETS)
     create_table(__MODULE__)
-    :persistent_term.put(@config_key, build_config(opts))
+    config = build_config(opts)
+    check_cluster!(config)
+    :persistent_term.put(@config_key, config)
 
     children = [
       {Registry, keys: :unique, name: @registry},
@@ -76,6 +104,18 @@ defmodule Ramal.Supervisor do
 
     Supervisor.init(children, strategy: :one_for_all)
   end
+
+  # A cluster without fencing would let two nodes overwrite each other, so refuse to start rather than run unsafely.
+  defp check_cluster!(%{cluster: true, storage: storage}) do
+    unless Code.ensure_loaded?(storage) and function_exported?(storage, :claim, 2) do
+      raise ArgumentError,
+            "Ramal.Supervisor with `cluster: true` needs a storage that fences writes with an epoch " <>
+              "(Ramal.Storage `claim/2`), and #{inspect(storage)} does not define it; " <>
+              "use Ramal.Storage.Postgres after `mix ramal.gen.migration`"
+    end
+  end
+
+  defp check_cluster!(_config), do: :ok
 
   defp create_table(name) do
     if :ets.whereis(name) == :undefined do
@@ -96,6 +136,7 @@ defmodule Ramal.Supervisor do
     {known, storage_config} =
       Keyword.split(opts, [
         :storage,
+        :cluster,
         :idle_timeout,
         :max_heap_size,
         :max_active_branches,
@@ -104,6 +145,7 @@ defmodule Ramal.Supervisor do
 
     %{
       storage: Keyword.get(known, :storage, Ramal.Storage.ETS),
+      cluster: Keyword.get(known, :cluster, false) == true,
       storage_config: storage_config,
       idle_timeout: Keyword.get(known, :idle_timeout, @default_idle_timeout),
       max_heap_size: Keyword.get(known, :max_heap_size, @default_max_heap_size),
@@ -138,15 +180,33 @@ defmodule Ramal.Supervisor do
   def dynamic_supervisor, do: @dynamic
 
   @doc false
-  def via(id), do: {:via, Registry, {@registry, id}}
+  def via(id, %{cluster: true}), do: {:via, Ramal.Cluster, id}
+  def via(id, _config), do: {:via, Registry, {@registry, id}}
 
   @doc false
   @spec whereis(String.t()) :: pid | nil
   def whereis(id) do
+    case :persistent_term.get(@config_key, nil) do
+      %{cluster: true} -> cluster_whereis(id)
+      _local -> local_whereis(id)
+    end
+  end
+
+  defp local_whereis(id) do
     case Registry.lookup(@registry, id) do
       # The Registry drops the entry of a dead process a moment late, so check that the pid is still alive.
       [{pid, _}] -> if Process.alive?(pid), do: pid
       [] -> nil
+    end
+  end
+
+  # `:global` drops the name of a process that died on this node when it sees the exit, which is also a moment late. A
+  # pid on another node cannot be checked from here: a call to it that finds it gone is retried like a local one.
+  defp cluster_whereis(id) do
+    case Ramal.Cluster.whereis_name(id) do
+      :undefined -> nil
+      pid when node(pid) == node() -> if Process.alive?(pid), do: pid
+      pid -> pid
     end
   end
 

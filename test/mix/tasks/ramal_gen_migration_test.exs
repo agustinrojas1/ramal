@@ -17,14 +17,16 @@ defmodule Mix.Tasks.Ramal.Gen.MigrationTest do
 
   defp create_files(dir, name), do: Path.wildcard(Path.join(dir, "*_#{name}.exs"))
 
-  test "a new install gets the table and the owner column, in that order, into the given directory",
+  test "a new install gets the table, the owner column and the epoch column, in that order, into the given directory",
        %{dir: dir} do
-    assert [create, owner] = Migration.run(@args ++ ["--migrations-path", dir])
+    assert [create, owner, epoch] = Migration.run(@args ++ ["--migrations-path", dir])
 
     assert Path.dirname(create) == dir
     assert Path.basename(create) =~ ~r/^\d{14}_create_ramal_branches\.exs$/
     assert Path.basename(owner) =~ ~r/^\d{14}_add_ramal_branch_owner\.exs$/
+    assert Path.basename(epoch) =~ ~r/^\d{14}_add_ramal_branch_epoch\.exs$/
     assert Path.basename(create) < Path.basename(owner)
+    assert Path.basename(owner) < Path.basename(epoch)
     body = File.read!(create)
     assert body =~ "defmodule Ramal.TestRepo.Migrations.CreateRamalBranches do"
     assert body =~ "create table(:ramal_branches, primary_key: false)"
@@ -32,11 +34,14 @@ defmodule Mix.Tasks.Ramal.Gen.MigrationTest do
 
     assert File.read!(owner) =~
              "GENERATED ALWAYS AS (NULLIF(state -> 'owner', 'null'::jsonb)) STORED"
+
+    assert File.read!(epoch) =~ "ADD COLUMN IF NOT EXISTS epoch bigint NOT NULL DEFAULT 0"
   end
 
   @migration_modules [
     Ramal.TestRepo.Migrations.CreateRamalBranches,
-    Ramal.TestRepo.Migrations.AddRamalBranchOwner
+    Ramal.TestRepo.Migrations.AddRamalBranchOwner,
+    Ramal.TestRepo.Migrations.AddRamalBranchEpoch
   ]
 
   defp unload_migrations do
@@ -55,7 +60,8 @@ defmodule Mix.Tasks.Ramal.Gen.MigrationTest do
 
     assert modules == [
              Ramal.TestRepo.Migrations.CreateRamalBranches,
-             Ramal.TestRepo.Migrations.AddRamalBranchOwner
+             Ramal.TestRepo.Migrations.AddRamalBranchOwner,
+             Ramal.TestRepo.Migrations.AddRamalBranchEpoch
            ]
 
     assert function_exported?(Ramal.TestRepo.Migrations.CreateRamalBranches, :change, 0)
@@ -66,33 +72,36 @@ defmodule Mix.Tasks.Ramal.Gen.MigrationTest do
   end
 
   test "the migrations the test suite runs are what the generator writes", %{dir: dir} do
-    [create, owner] = Migration.run(@args ++ ["--migrations-path", dir])
+    [create, owner, epoch] = Migration.run(@args ++ ["--migrations-path", dir])
     [installed_create] = Path.wildcard("priv/test_repo/migrations/*_create_ramal_branches.exs")
     [installed_owner] = Path.wildcard("priv/test_repo/migrations/*_add_ramal_branch_owner.exs")
+    [installed_epoch] = Path.wildcard("priv/test_repo/migrations/*_add_ramal_branch_epoch.exs")
 
     assert File.read!(create) == File.read!(installed_create)
     assert File.read!(owner) == File.read!(installed_owner)
+    assert File.read!(epoch) == File.read!(installed_epoch)
   end
 
-  test "a host that installed 0.3.0 gets only the owner migration", %{dir: dir} do
+  test "a host that installed 0.3.0 gets the owner and the epoch migrations", %{dir: dir} do
     File.mkdir_p!(dir)
     old = Path.join(dir, "20260101000000_create_ramal_branches.exs")
     File.write!(old, "# written by 0.3.0\n")
 
-    assert [owner] = Migration.run(@args ++ ["--migrations-path", dir])
+    assert [owner, epoch] = Migration.run(@args ++ ["--migrations-path", dir])
 
     assert Path.basename(owner) =~ ~r/^\d{14}_add_ramal_branch_owner\.exs$/
+    assert Path.basename(epoch) =~ ~r/^\d{14}_add_ramal_branch_epoch\.exs$/
     assert File.read!(old) == "# written by 0.3.0\n"
     assert create_files(dir, "create_ramal_branches") == [old]
   end
 
   test "refuses to write a second copy", %{dir: dir} do
-    [_create, _owner] = Migration.run(@args ++ ["--migrations-path", dir])
+    [_create, _owner, _epoch] = Migration.run(@args ++ ["--migrations-path", dir])
 
     assert_raise Mix.Error, ~r/already exist/, fn ->
       Migration.run(@args ++ ["--migrations-path", dir])
     end
 
-    assert dir |> File.ls!() |> length() == 2
+    assert dir |> File.ls!() |> length() == 3
   end
 end

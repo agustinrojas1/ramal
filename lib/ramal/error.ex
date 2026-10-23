@@ -35,6 +35,7 @@ defmodule Ramal.Error do
   | `:not_started` | `Ramal.Supervisor` is not running |
   | `:collation_failed` | the query that asks the database how it orders text failed, so a sort or a `:min`/`:max` of a string in a branch could not follow it (`details.error`) |
   | `:storage` | the storage backend failed |
+  | `:fenced` | a process of a cluster tried to write a branch that another process loaded after it did (`details.epoch`, ADR 0044); what it held since its last save is lost |
   | `:timeout` | the branch process did not answer in time (`details.timeout` in ms); the request may still be carried out |
 
   ## Example
@@ -72,6 +73,7 @@ defmodule Ramal.Error do
           | :collation_failed
           | :not_started
           | :storage
+          | :fenced
           | :timeout
 
   @type t :: %__MODULE__{reason: reason, message: String.t(), details: map}
