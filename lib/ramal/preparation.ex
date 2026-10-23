@@ -23,9 +23,8 @@ defmodule Ramal.Preparation do
       from the branch. A distinct on an attribute compares the attribute. A distinct on a calculation is evaluated in
       memory on the patched rows by `Ash.Query.apply_to/3` (documented in Ash 3.37; it loads the calculation with
       `reuse_values?: true`, so a row the branch changed is judged by its new values, and one the branch created has a
-      value at all). That needs every attribute the calculation reads, so it is done only when the query selects all of
-      them. A distinct on an aggregate, a calculation in a query that selects some attributes, or any distinct on a
-      many_to_many read keeps the data layer's.
+      value at all). That needs every attribute the calculation reads, so a query that selects some attributes is widened to
+      all of them. A distinct on an aggregate, or any distinct on a many_to_many read, keeps the data layer's.
     * A filter or sort that reaches a relationship whose resource the branch changed (`paddock.name == "L07"` after the
       branch renamed the paddock) cannot be left to the data layer, which joins the base's rows. a helper in lib/ramal/preparation/related.ex
       takes the conjuncts that reach it out of the data-layer query, and `check_base_rows/3` evaluates them in Elixir on
@@ -197,9 +196,10 @@ defmodule Ramal.Preparation do
   # `distinct` is applied by the data layer to the base rows, where a row the branch changed or destroyed still
   # stands for its group and a row the branch created is not in any group. When the overlay touches the resource the
   # preparation takes it over: the base query returns every row, and the patch keeps the first row of each group in
-  # the order of `distinct_sort` (or `sort`), as DISTINCT ON does. Attributes and calculations are handled (a
-  # calculation only in a query that selects every attribute, which evaluating it in memory needs); an
-  # aggregate, or a many_to_many read, keeps the data layer's distinct.
+  # the order of `distinct_sort` (or `sort`), as DISTINCT ON does. Attributes and calculations are handled; an
+  # aggregate, or a many_to_many read, keeps the data layer's distinct. Evaluating a calculation in memory needs every
+  # attribute it reads, so a query that selects some attributes is widened to all of them, as one that distinct on an
+  # attribute is widened to that attribute.
   defp take_over_distinct(query, links) do
     pick = if query.distinct_sort in [nil, []], do: query.sort, else: query.distinct_sort
 
@@ -220,7 +220,13 @@ defmodule Ramal.Preparation do
       distinct_kind(query) == :calculations ->
         distinct = Ash.Query.new(query.resource)
         distinct = %{distinct | distinct: query.distinct, distinct_sort: pick}
-        {Ash.Query.unset(query, [:distinct, :distinct_sort]), %{query: distinct}}
+
+        query =
+          query
+          |> Ash.Query.unset([:distinct, :distinct_sort])
+          |> Ash.Query.ensure_selected(Enum.map(Info.attributes(query.resource), & &1.name))
+
+        {query, %{query: distinct}}
 
       true ->
         {query, nil}
@@ -228,7 +234,7 @@ defmodule Ramal.Preparation do
   end
 
   # `:attributes` when every field is an attribute, `:calculations` when at least one is a calculation and the rest are
-  # attributes and the query selects all of them, `nil` otherwise.
+  # attributes, `nil` otherwise.
   defp distinct_kind(%{distinct: [_ | _] = distinct} = query) do
     kinds =
       Enum.map(distinct, fn
@@ -244,19 +250,12 @@ defmodule Ramal.Preparation do
 
     cond do
       :other in kinds -> nil
-      :calculation in kinds and selects_all?(query) -> :calculations
-      :calculation in kinds -> nil
+      :calculation in kinds -> :calculations
       true -> :attributes
     end
   end
 
   defp distinct_kind(_query), do: nil
-
-  # By the time the hook runs Ash has filled `select` with every attribute of a query that did not narrow it.
-  defp selects_all?(%{select: nil}), do: true
-
-  defp selects_all?(%{select: select, resource: resource}),
-    do: Enum.all?(Info.attributes(resource), &(&1.name in select))
 
   defp after_data_layer(query, results, id) do
     %{overlay?: overlay?, limit: limit, offset: offset} = query.context.ramal

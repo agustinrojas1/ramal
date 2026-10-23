@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- **`distinct` on a calculation inside a branch now also works in a query that selects only some attributes.** It kept the data layer's distinct, which does not see the branch. The query is widened to every attribute, which evaluating the calculation in memory needs, so the rows carry attributes beyond the `select`. A distinct on an aggregate still keeps the data layer's.
 - **A calculation with its own module and an `expression/2` is now evaluated on the rows a branch created or changed** (it came back `Ash.NotLoaded`, and a filter or sort on it judged the database's values). Calculations with only `calculate/3` already ran on the patched rows.
 - **A query prepared outside `Ramal.run/2` and read inside it is now patched with the branch** (it read base data before). The preparation adds a `before_transaction` hook to every query; it installs the read hooks only when a branch is current when the query runs, so an atomic bulk update of a prepared query outside a branch still runs in the database. ADR 0028.
 
