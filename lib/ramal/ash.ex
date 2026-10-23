@@ -21,38 +21,66 @@ defmodule Ramal.Ash do
   only when the newest-3.x leg is green on a new minor, so every version in it has passed the suite. A version outside it
   may still work, and may also break a branch silently.
 
-  ## Ash internals Ramal relies on
+  ## Core contract
 
   Ramal hooks into Ash above the data layer, and some of what it needs there is internal to Ash or undocumented. Each
-  assumption has a tripwire, a test in `test/ramal/ash_contract_test.exs` named `"assumption: ..."` that checks it
-  against Ash alone, so a change in Ash fails CI with the assumption's name instead of writing a wrong row.
+  assumption below has a tripwire, a test in `test/ramal/ash_contract_test.exs` named `"assumption: ..."` that checks it
+  against Ash alone, so a change in Ash fails CI with the assumption's name instead of writing a wrong row. The same
+  assumptions are also checked on the host's own Ash: one check per id, run by `mix ramal.doctor`, and at boot outside
+  the tested range (`Ramal.Supervisor`). The checks are internal, and each id below is the name it reports under.
 
-    * A result set with `Ash.Changeset.set_result/2` in the last `before_action` hook skips the data layer on create,
-      update and destroy (`Ramal.Capture`).
-    * A bulk action runs a changeset with an `around_action` hook one record at a time (`Ramal.Capture`).
-    * `change/3` sees an upsert in `context.private` (`upsert?`, `upsert_identity`, `upsert_fields`,
-      `upsert_condition`), and a resource's global changes run after the action's own (`Ramal.Capture`).
-    * A change that answers `{:not_atomic, _}` from `atomic/3` sends an update or destroy with `require_atomic? false`
-      down the path that runs `change/3` and the hooks (`Ramal.Capture`, the resource transformer).
-    * `Ash.Query.set_result/2` in the last `before_action` hook of a read and `full_count` in its context become the
-      page and its count (`Ramal.Preparation`).
-    * A relationship load paged per source carries `context.data_layer.lateral_join_source` as `{records, path}` and
-      tags rows with `__lateral_join_source__` (`Ramal.Preparation` and its lateral and many-to-many readers).
-    * `Ash.load/3` reselects a record's source attribute without running read preparations, which is why
-      `Ramal.load/3` exists.
-    * An atomic bulk update of a query with a `before_action` hook is refused, and a streamed one runs the query's
-      `before_transaction` hook and the `before_action` hooks it adds (`Ramal.Preparation`).
-    * The context markers `accessing_from`, `query_for`, `private.actor` and `private.authorize?` are where Ramal reads
-      them, and `Ash.Query` has the hook fields Ramal rebuilds a query with.
-    * The internal functions exist with the arity Ramal calls: Ash.Actions.Read.unpaginated_read/3,
-      Ash.Actions.Sort.sorting_on_identity?/1, Ash.Actions.Read.Relationships.has_parent_expr?/1,
-      Ash.Filter.list_refs/4, Ash.Filter.map/2, Ash.Filter.hydrate_refs/2, Ash.Query.do_filter/2 and
-      Ash.Filter.Runtime.filter_matches/4. They are written without code quotes because Ash hides them from its docs.
+  A broken core assumption refuses every read and write inside a branch with `:ash_incompatible`. Outside a branch
+  nothing changes.
+
+    * `set_result_create`, `set_result_update`, `set_result_destroy`: a result set with `Ash.Changeset.set_result/2` in a
+      `before_action` hook skips the data layer on create, update and destroy (`Ramal.Capture`).
+    * `global_change_after_action`: a global change declared on the resource runs after the action's own change
+      (`Ramal.Capture`).
+    * `not_atomic_update`, `not_atomic_destroy`: a change that answers `{:not_atomic, _}` from `atomic/3` runs its
+      `change/3` and hooks when `require_atomic?` is false (`Ramal.Capture`, the resource transformer).
+    * `set_result_page`: a result set in the last `before_action` of a paginated read becomes the page, and `full_count`
+      its count (`Ramal.Preparation`).
+    * `atomic_bulk_refused`: an atomic bulk update of a query with a `before_action` hook is refused, so the streamed
+      strategy is the one that runs (`Ramal.Capture`).
+    * `stream_bulk_before_transaction`: a streamed bulk update runs the query's `before_transaction` hook and the
+      `before_action` hooks it adds (`Ramal.Preparation`).
+    * `accessing_from`: a relationship read's query names its source and relationship in `context.accessing_from`
+      (lateral loads, see `Ramal.Preparation`).
+    * `private_actor`: a changeset's `context.private.actor` is the actor the action was given (`Ramal.Capture`).
+    * `private_authorize`: a query run with `authorize?: false` has `context.private.authorize?` false
+      (aggregate reads, see `Ramal.Preparation`).
+    * `query_fields`: `Ash.Query` has the hook and page fields `Ramal.Preparation` rebuilds a query with.
+    * `unpaginated_read`: Ash.Actions.Read.unpaginated_read/3 returns every row when the read's `default_limit` is lower
+      (`Ramal.Resource`).
+    * `export_runtime_sort`, `export_sorting_on_identity`, `export_list_refs`, `export_filter_map`,
+      `export_hydrate_refs`, `export_do_filter`, `export_filter_matches`: the internal functions Ramal calls exist with the
+      arity it calls them with (text sorts, reads and writes, see `Ramal.Preparation` and `Ramal.Capture`). They are
+      written without code quotes because Ash hides them from its docs.
+
+  ## Extended contract
+
+  An extended assumption is needed only by the feature it names. A broken one refuses that feature inside a branch and
+  leaves everything else working.
+
+    * `:bulk`: `bulk_create_around`, `bulk_update_around`, `bulk_destroy_around`: an `around_action` hook runs once per
+      record of a bulk create, a streamed bulk update and a streamed bulk destroy (`Ramal.Capture`).
+      `bulk_update_query_for`, `bulk_destroy_query_for`: a bulk update or destroy of a query reads with `context.query_for`
+      set to `:bulk_update` or `:bulk_destroy` (`Ramal.Preparation`). `bulk_context_markers`: a bulk changeset's context
+      carries `bulk_create`, `bulk_update` or `bulk_destroy` (the bulk seam bulk?/1 in this module).
+    * `:upsert`: `upsert_flag`, `upsert_plain_create`, `upsert_for_create_option`: `change/3` sees `context.private.upsert?`
+      for an upsert, not for a plain create, and for the `upsert?: true` option of `Ash.Changeset.for_create/4`.
+      `upsert_identity_fields`: `change/3` sees the upsert identity and fields in `context.private`. `upsert_condition`:
+      it sees the upsert condition there (`Ramal.Capture`).
+    * `:relationship_pages`: `lateral_join_source`: a has_many load with a limit reaches the destination read with its
+      source records in `context.data_layer.lateral_join_source`, and tags its rows with `__lateral_join_source__`
+      (`Ramal.Preparation`). `export_has_parent_expr`: the function that tells a relationship's parent expression is
+      exported (the lateral and many-to-many loads of `Ramal.Preparation`).
 
   Every touch of an Ash internal goes through this module. The seam functions below the version checks are the only
   place Ramal calls an Ash internal or reads an internal context key: each names the tripwire that guards it. The seam
   test (`test/ramal/ash_seam_test.exs`) fails when any other module under `lib/` does it, so a new internal needs a seam
-  here, with its tripwire, and never a direct call.
+  here, with its tripwire, and never a direct call. The exception is the contract itself, under `lib/ramal/ash/`: its
+  checks name the internals on purpose, since each one is the runtime half of a tripwire (ADR 0049).
 
   ## Example
 
@@ -203,6 +231,14 @@ defmodule Ramal.Ash do
   @doc false
   @spec bulk_read_for(Ash.Query.t()) :: atom | nil
   def bulk_read_for(query), do: query.context[:query_for]
+
+  # Tripwire: "assumption: a bulk changeset's context carries bulk_create, bulk_update or bulk_destroy in change/3".
+  # Ash: deps/ash/lib/ash/actions/create/bulk.ex (put_context :bulk_create, ~l.894), destroy/bulk.ex (:bulk_destroy, ~l.1879)
+  # and update/bulk.ex (context_key, ~l.2313). Ramal.Capture refuses a bulk changeset in a branch when it is not wrapped.
+  @doc false
+  @spec bulk?(Ash.Changeset.t()) :: boolean
+  def bulk?(changeset),
+    do: Enum.any?([:bulk_create, :bulk_update, :bulk_destroy], &(changeset.context[&1] != nil))
 
   # No tripwire yet. Ash sets context.private.bypass_max_page_size? to true on the pages of a stream in
   # deps/ash/lib/ash/actions/read/stream.ex, and reads it in deps/ash/lib/ash/actions/read/read.ex (max page size).

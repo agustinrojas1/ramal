@@ -1,7 +1,8 @@
 defmodule Ramal.AshSeamTest do
   # Ramal.Ash is the only module under lib/ that calls an Ash internal or reads an Ash internal context key: the seam
   # functions there each name the tripwire that guards them (test/ramal/ash_contract_test.exs). This test reads the source
-  # of every other file under lib/ and fails when one of them still does it directly.
+  # of every other file under lib/ and fails when one of them still does it directly, except the contract under
+  # lib/ramal/ash/, whose checks are the runtime half of those tripwires (ADR 0049).
   #
   # Lines that are not code are skipped: comments (a line whose first non-blank character is `#`) and the text of
   # `@moduledoc`, `@doc` and `@typedoc` heredocs, which describe Ash in prose and are never run. Everything else counts.
@@ -9,6 +10,7 @@ defmodule Ramal.AshSeamTest do
 
   @root Path.expand("../..", __DIR__)
   @seam Path.join(@root, "lib/ramal/ash.ex")
+  @contract_dir Path.join(@root, "lib/ramal/ash") <> "/"
   @heredoc_end "\"\"\""
   @heredoc_starts [~s(@moduledoc """), ~s(@doc """), ~s(@typedoc """)]
 
@@ -65,11 +67,13 @@ defmodule Ramal.AshSeamTest do
     end
   end
 
+  # lib/ramal/ash/ is the Ash contract (ADR 0049): its checks name the internals on purpose, one per tripwire, and the
+  # probes exercise them. Nothing else under lib/ may do it.
   defp lib_files do
     @root
     |> Path.join("lib/**/*.ex")
     |> Path.wildcard()
-    |> Enum.reject(&(&1 == @seam))
+    |> Enum.reject(&(&1 == @seam or String.starts_with?(&1, @contract_dir)))
   end
 
   # The lines of `source` that are code, as `{line, line_number}`.

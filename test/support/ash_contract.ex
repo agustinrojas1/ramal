@@ -63,6 +63,21 @@ defmodule Ramal.AshContract.Mark do
   end
 end
 
+defmodule Ramal.AshContract.Markers do
+  @moduledoc false
+  # Reports which bulk markers (`bulk_create`, `bulk_update`, `bulk_destroy`) the changeset's context carries in
+  # change/3.
+  use Ash.Resource.Change
+
+  @markers [:bulk_create, :bulk_update, :bulk_destroy]
+
+  @impl true
+  def change(changeset, _opts, _context) do
+    Report.tell({:markers, Enum.filter(@markers, &Map.has_key?(changeset.context, &1))})
+    changeset
+  end
+end
+
 defmodule Ramal.AshContract.Around do
   @moduledoc false
   # An around_action hook that reports each time Ash runs it.
@@ -211,6 +226,22 @@ defmodule Ramal.AshContract.Note do
     destroy :not_atomic_destroy do
       require_atomic?(false)
       change({Ramal.AshContract.NotAtomic, tag: :destroy})
+    end
+
+    create :markers do
+      accept([:title])
+      change(Ramal.AshContract.Markers)
+    end
+
+    update :markers_update do
+      require_atomic?(false)
+      accept([:title])
+      change(Ramal.AshContract.Markers)
+    end
+
+    destroy :markers_destroy do
+      require_atomic?(false)
+      change(Ramal.AshContract.Markers)
     end
   end
 

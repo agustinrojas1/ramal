@@ -20,7 +20,4 @@ config :ramal,
 
 config :ash, :sat_solver, {SimpleSat, []}
 config :ash, :missed_notifications, :ignore
-# Required since Ash 3.37; codepoints is the value Ash recommends and matches how Postgres counts.
-config :ash, default_string_length_count: :codepoints
-
 config :logger, level: :warning

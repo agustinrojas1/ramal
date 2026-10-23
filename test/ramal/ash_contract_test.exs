@@ -134,6 +134,39 @@ defmodule Ramal.AshContractTest do
     assert count_received(:around_action) == 3
   end
 
+  # Ramal: lib/ramal/ash.ex bulk?/1 (the marker of a bulk changeset, which Ramal.Capture refuses in a branch when a bulk
+  # contract assumption is broken). Ash: deps/ash/lib/ash/actions/create/bulk.ex (put_context :bulk_create, ~l.894),
+  # deps/ash/lib/ash/actions/destroy/bulk.ex (:bulk_destroy, ~l.1879), deps/ash/lib/ash/actions/update/bulk.ex (~l.2313).
+  test "assumption: a bulk changeset's context carries bulk_create, bulk_update or bulk_destroy in change/3" do
+    Ash.bulk_create([%{title: "marked"}], Note, :markers,
+      authorize?: false,
+      return_errors?: true
+    )
+
+    assert_received {:markers, [:bulk_create]}
+
+    row = Ash.create!(Note, %{title: "to update"}, authorize?: false)
+
+    Ash.bulk_update([row], :markers_update, %{title: "updated"},
+      strategy: [:stream],
+      authorize?: false,
+      return_errors?: true
+    )
+
+    assert_received {:markers, [:bulk_update]}
+
+    Ash.bulk_destroy([row], :markers_destroy, %{},
+      strategy: [:stream],
+      authorize?: false,
+      return_errors?: true
+    )
+
+    assert_received {:markers, [:bulk_destroy]}
+
+    Ash.create!(Note, %{title: "single"}, action: :markers, authorize?: false)
+    assert_received {:markers, []}
+  end
+
   # 3. the upsert flags that change/3 reads
 
   # Ramal: lib/ramal/capture.ex upsert?/1 (read in change/3). Ash: deps/ash/lib/ash/changeset/changeset.ex for_create (set_context private).
