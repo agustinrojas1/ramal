@@ -136,7 +136,8 @@ Two differences from `Ramal.run/2` to know about:
 
 - **Notifications are not held back.** Inside `run/2` the notifications of a write are dropped unless the resource sets
   `notify_in_branch? true`. With `context:` the notifier fires, so a "herd moved" email would go out for a what-if.
-  Prefer `run/2` where you can wrap the call.
+  Ash has no per-call way to hold notifications back, so make the notifier skip them:
+  `unless Ramal.in_branch?(notification), do: send_the_email(notification)`. Prefer `run/2` where you can wrap the call.
 - **A bad branch fails the action, not the plug.** An unknown or frozen branch makes the tool call return
   `not_found` / `not_open`. The plug above does not look the branch up; add `Ramal.get/1` if you want a 4xx.
 

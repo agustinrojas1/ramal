@@ -68,5 +68,15 @@ defmodule Ramal.ContextTest do
       Ash.create!(Silent, %{text: "by context"}, context: Ramal.context(branch))
       assert_receive {:notified, Silent, :create}
     end
+
+    test "in_branch?/1 tells a notifier the write came through the context", %{capture: branch} do
+      Ash.create!(Silent, %{text: "by context"}, context: Ramal.context(branch))
+      assert_receive {:notified_struct, notification}
+      assert Ramal.in_branch?(notification)
+
+      Ash.create!(Silent, %{text: "in the base"})
+      assert_receive {:notified_struct, base_notification}
+      refute Ramal.in_branch?(base_notification)
+    end
   end
 end
