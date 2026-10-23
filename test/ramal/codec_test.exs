@@ -733,5 +733,34 @@ defmodule Ramal.Storage.CodecTest do
         refute message =~ "hunter2"
       end
     end
+
+    test "a stored state that is not an object with a version is an error, not a crash" do
+      branch = Branch.new(Farm)
+      {:ok, state} = Codec.encode_state(branch)
+
+      for hostile <- [
+            nil,
+            [],
+            "hunter2",
+            %{},
+            Map.delete(state, "version"),
+            Map.put(state, "version", %{"hunter2" => 1}),
+            Map.put(state, "version", ["hunter2"])
+          ] do
+        assert {:error, %Error{reason: :storage, message: message}} =
+                 Codec.decode_state(columns(branch), hostile)
+
+        refute message =~ "hunter2"
+      end
+    end
+
+    test "a stored write that is not an object with a version is an error, not a crash" do
+      for hostile <- [nil, [], "hunter2", %{}, %{"version" => %{"hunter2" => 1}}] do
+        assert {:error, %Error{reason: :storage, message: message}} =
+                 Codec.decode_delta("b1", hostile)
+
+        refute message =~ "hunter2"
+      end
+    end
   end
 end

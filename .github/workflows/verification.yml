@@ -18,11 +18,15 @@ on:
       - "lib/ramal/storage/**"
       - ".github/workflows/verification.yml"
 
+# Nothing in CI writes to the repository, so the token can only read it.
+permissions:
+  contents: read
+
 jobs:
   tla:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The runner image ships a JDK, which is all TLC needs.
       - name: Install TLC 1.8.0
         run: |
@@ -38,7 +42,7 @@ jobs:
     env:
       BEND_NO_TELEMETRY: "1"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Bend 2.0.38
         run: |
           name=bend-2.0.38-linux-x64.tar.gz
