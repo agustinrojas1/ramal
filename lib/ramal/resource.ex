@@ -175,10 +175,15 @@ defmodule Ramal.Resource do
   """
   @spec attributes(struct) :: %{optional(atom) => term}
   def attributes(%resource{} = record) do
-    record
-    |> Map.take(attribute_names(resource))
-    |> Map.reject(fn {_name, value} ->
-      match?(%Ash.NotLoaded{}, value) or match?(%Ash.ForbiddenField{}, value)
+    # One pass over the few attribute names, not `Map.take/2` then `Map.reject/2` over the result: the diff of a branch
+    # calls this twice per updated row.
+    Enum.reduce(attribute_names(resource), %{}, fn name, attributes ->
+      case record do
+        %{^name => %Ash.NotLoaded{}} -> attributes
+        %{^name => %Ash.ForbiddenField{}} -> attributes
+        %{^name => value} -> Map.put(attributes, name, value)
+        %{} -> attributes
+      end
     end)
   end
 
@@ -246,7 +251,7 @@ defmodule Ramal.Resource do
   end
 
   defp attribute_names(resource),
-    do: resource |> Ash.Resource.Info.attribute_names() |> Enum.to_list()
+    do: resource |> Ash.Resource.Info.attribute_names() |> MapSet.to_list()
 
   defp extended?(resource) do
     Code.ensure_loaded?(resource) and function_exported?(resource, :spark_is, 0) and
