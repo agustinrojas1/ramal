@@ -8,7 +8,7 @@
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ramal.svg)](https://hex.pm/packages/ramal) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal-blue.svg)](https://hexdocs.pm/ramal)
 
-> **Status: 0.2, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, exact aggregates and the LiveView inspector work and are tested on Postgres. The API may still change before 1.0.
+> **Status: 0.3, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, exact aggregates, the LiveView inspector and the tools for AI agents work and are tested on Postgres. The API may still change before 1.0.
 
 ## What it does
 
@@ -98,7 +98,7 @@ Ramal is on [Hex](https://hex.pm/packages/ramal), with docs on [HexDocs](https:/
 
 ```elixir
 def deps do
-  [{:ramal, "~> 0.2.0"}]
+  [{:ramal, "~> 0.3.0"}]
 end
 ```
 

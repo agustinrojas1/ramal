@@ -1,6 +1,6 @@
 # Roadmap
 
-Milestones are GitHub milestones with the same names. Each one ships when its exit criteria hold, not on a date.
+Each milestone ships when its exit criteria hold, not on a date. Milestones are named for what they deliver, not for a version; [Releases](#releases) says which version carried which.
 
 ## 0.1 Core
 
@@ -32,18 +32,18 @@ README runs as written; every **[confirm]** mark in `docs/DESIGN.md` is resolved
 - Several domains per branch if a real host needs it.
 - Publish 0.2 to Hex. Done: `ramal` and `ramal_live` 0.2.0 are on Hex and the install snippets in the docs point at them.
 
-## 0.3 Inspector
+## Inspector
 
-Done; ships with 0.2 in the `ramal_live` package.
+Done; released with 0.2.0 in the `ramal_live` package.
 
 - `ramal_live`, a separate package: a LiveView component showing open branches as columns, the diff per branch filling
   in live from telemetry, buttons to fork, merge, discard. This is the demo GIF. The page is done in `ramal_live/`
   (a router macro the host mounts in its own `live_session`, ADR 0015), with approve and reject for proposals. The demo
   app to record the GIF from is `ramal_live/examples/farm_demo.exs`; the recording itself is not in the repository.
 
-## 0.4 Benchmark
+## Benchmark
 
-Done; ships with 0.2 (`bench/` is not published to Hex).
+Done; released with 0.2.0 (`bench/` is not published to Hex).
 
 - `bench/`: an agentic workload modelled on the one the
   [DAPLab article](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html)
@@ -55,13 +55,19 @@ Done; ships with 0.2 (`bench/` is not published to Hex).
 
 ## Agent tooling
 
-Done; unreleased.
+Done; released in 0.3.0.
 
 - `usage-rules.md` and a skill (`usage-rules/skills/ramal/`) that teach a coding agent to use Ramal, in the format of the
   `usage_rules` package.
 - `Ramal.context/1` and `Ramal.Tools`: the branch calls as tools for any LLM tool loop or MCP server, without merge or
   approve (ADR 0019), and `docs/agents.md` with the wiring for a tool loop and for `AshAi`.
 - Not done: an `ash_ai` extension, which would add a dependency on a fast-moving package.
+
+## Releases
+
+- 0.1.0: Core.
+- 0.2.0: Proposals and hardening, the Inspector and the Benchmark.
+- 0.3.0: Agent tooling, branch owners, the faster read, merge, aggregate and codec paths ([ADR 0020](adr/0020-read-selects-overlay.md)), and the fixes listed in `CHANGELOG.md`.
 
 ## 1.0
 
