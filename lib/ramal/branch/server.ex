@@ -16,6 +16,9 @@ defmodule Ramal.Branch.Server do
 
   @max_attempts 6
 
+  # How long a process started for a handed-over branch waits for it (see start_forked/2).
+  @handoff_timeout 5_000
+
   # -- client side --------------------------------------------------------------------------------------------------
 
   @doc false
@@ -24,6 +27,10 @@ defmodule Ramal.Branch.Server do
   end
 
   @doc false
+  def start_link({:handoff, id, _ref, _config} = arg) do
+    GenServer.start_link(__MODULE__, arg, name: Supervisor.via(id))
+  end
+
   def start_link({branch, config}) do
     GenServer.start_link(__MODULE__, {branch, config}, name: Supervisor.via(branch.id))
   end
@@ -33,13 +40,29 @@ defmodule Ramal.Branch.Server do
   Returns the pid of the process that holds the branch, which is an already running one if another caller won the race.
   """
   @spec start(Branch.t(), Supervisor.config()) :: {:ok, pid} | {:error, Error.t()}
-  def start(branch, config) do
-    case DynamicSupervisor.start_child(
-           Supervisor.dynamic_supervisor(),
-           {__MODULE__, {branch, config}}
-         ) do
+  def start(branch, config), do: start_child({branch, config}, & &1)
+
+  @doc """
+  Like `start/2`, for a branch the caller holds that is large: the process starts empty and the caller sends it the
+  branch in one message. `start/2` puts the branch in the child specification, so it is copied into the dynamic
+  supervisor and again into the new process; here it is copied once, which is what a fork of a large branch costs
+  least. The process takes no call before it has the branch (it waits for it in `handle_continue/2`, which runs before
+  the first call), and stops if the branch does not arrive.
+  """
+  @spec start_forked(Branch.t(), Supervisor.config()) :: {:ok, pid} | {:error, Error.t()}
+  def start_forked(branch, config) do
+    ref = make_ref()
+
+    start_child({:handoff, branch.id, ref, config}, fn pid ->
+      send(pid, {:handoff, ref, branch})
+      pid
+    end)
+  end
+
+  defp start_child(arg, started) do
+    case DynamicSupervisor.start_child(Supervisor.dynamic_supervisor(), {__MODULE__, arg}) do
       {:ok, pid} ->
-        {:ok, pid}
+        {:ok, started.(pid)}
 
       {:error, {:already_started, pid}} ->
         {:ok, pid}
@@ -134,6 +157,14 @@ defmodule Ramal.Branch.Server do
   """
   @spec status(String.t()) :: {:ok, Branch.status()} | {:error, Error.t()}
   def status(id), do: call(id, :status)
+
+  @doc """
+  The changes of the branch (`Ramal.Branch.diff/2`), computed inside the process. Only the changes cross the process
+  boundary, not the overlay, the log and the base `get/1` copies, which is most of what a diff of a large branch cost.
+  Like `get/1` it answers whatever the status of the branch is, so a rejected or proposed branch can still be reviewed.
+  """
+  @spec diff(String.t(), keyword) :: {:ok, [Ramal.Change.t()]} | {:error, Error.t()}
+  def diff(id, opts), do: call(id, {:diff, opts})
 
   @doc """
   The overlay slice of one resource, for read patching. Only that slice crosses the process boundary, not the whole
@@ -264,22 +295,46 @@ defmodule Ramal.Branch.Server do
   # -- server side --------------------------------------------------------------------------------------------------
 
   @impl true
-  def init({branch, config}) do
-    # Trapping exits makes the supervisor's shutdown call terminate/2, which persists the branch.
-    Process.flag(:trap_exit, true)
-    Process.flag(:max_heap_size, %{size: config.max_heap_size, kill: true, error_logger: false})
+  def init({:handoff, _id, ref, config}) do
+    flags(config)
+    {:ok, process_state(nil, config), {:continue, {:handoff, ref}}}
+  end
 
+  def init({branch, config}) do
+    flags(config)
     watch(branch)
     Telemetry.branch(:load, branch)
 
-    {:ok, %{branch: branch, config: config, stop: nil, merging: nil, persisted: false},
-     config.idle_timeout}
+    {:ok, process_state(branch, config), config.idle_timeout}
+  end
+
+  defp flags(config) do
+    # Trapping exits makes the supervisor's shutdown call terminate/2, which persists the branch.
+    Process.flag(:trap_exit, true)
+    Process.flag(:max_heap_size, %{size: config.max_heap_size, kill: true, error_logger: false})
+  end
+
+  defp process_state(branch, config),
+    do: %{branch: branch, config: config, stop: nil, merging: nil, persisted: false}
+
+  @impl true
+  def handle_continue({:handoff, ref}, %{config: config} = state) do
+    receive do
+      {:handoff, ^ref, branch} ->
+        watch(branch)
+        Telemetry.branch(:load, branch)
+        {:noreply, %{state | branch: branch}, config.idle_timeout}
+    after
+      @handoff_timeout -> {:stop, :normal, %{state | stop: :unclaimed}}
+    end
   end
 
   @impl true
   def handle_call(:get, _from, state), do: reply(state, {:ok, state.branch})
 
   def handle_call(:status, _from, state), do: reply(state, {:ok, state.branch.status})
+
+  def handle_call({:diff, opts}, _from, state), do: reply(state, Branch.diff(state.branch, opts))
 
   def handle_call({:slice, resource}, _from, state) do
     if usable?(state) do
@@ -438,6 +493,8 @@ defmodule Ramal.Branch.Server do
   def handle_info(_message, state), do: {:noreply, state, timeout(state)}
 
   @impl true
+  # A process that never received its branch has nothing to persist; storage already holds the fork.
+  def terminate(_reason, %{branch: nil}), do: :ok
   def terminate(_reason, %{stop: stop}) when stop in [:discarded, :merged, :rejected], do: :ok
 
   def terminate(_reason, %{branch: branch, config: config, stop: stop, persisted: persisted}) do

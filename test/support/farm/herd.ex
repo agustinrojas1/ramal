@@ -96,6 +96,11 @@ defmodule Ramal.Test.Farm.Herd do
     update_timestamp(:updated_at)
   end
 
+  calculations do
+    # An expression calculation: the data layer computes it in SQL, and Ash can evaluate it on a record in memory.
+    calculate(:size, :string, expr(if head >= 30, do: "large", else: "small"), public?: true)
+  end
+
   relationships do
     belongs_to(:paddock, Ramal.Test.Farm.Paddock, public?: true, attribute_writable?: true)
     has_many(:moves, Ramal.Test.Farm.Move, public?: true)

@@ -11,12 +11,22 @@ defmodule RamalLive.Column do
   @max_changes 100
   @max_value_length 80
 
-  @type row :: %{attribute: String.t(), before: String.t(), after: String.t()}
+  @uuid ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
+
+  @typedoc "`before_id?` and `after_id?` say that the cell holds a UUID, which the page keeps on one line (see `id?/1`)."
+  @type row :: %{
+          attribute: String.t(),
+          before: String.t(),
+          after: String.t(),
+          before_id?: boolean,
+          after_id?: boolean
+        }
   @type change :: %{
           kind: Change.kind(),
           resource: String.t(),
           resource_title: String.t(),
           key: String.t(),
+          key_id?: boolean,
           rows: [row]
         }
   @typedoc "The outcome of the last action the person took on the column; it stays until the next action."
@@ -106,6 +116,14 @@ defmodule RamalLive.Column do
   def change_count(%__MODULE__{changes: changes, hidden_changes: hidden}),
     do: length(changes) + hidden
 
+  @doc """
+  Whether a displayed value is a UUID. The page gives such a value one line cut short with an ellipsis and the whole
+  value as its tooltip, because a column is too narrow for 36 characters and wrapping them anywhere cuts the id in
+  the middle of a group.
+  """
+  @spec id?(term) :: boolean
+  def id?(value), do: is_binary(value) and Regex.match?(@uuid, value)
+
   @doc "The first eight characters of an id, enough to tell branches apart on screen."
   @spec short_id(String.t()) :: String.t()
   def short_id(id), do: String.slice(id, 0, 8)
@@ -151,6 +169,7 @@ defmodule RamalLive.Column do
       resource: change.resource |> Module.split() |> List.last(),
       resource_title: inspect(change.resource),
       key: format_value(change.key),
+      key_id?: id?(change.key),
       rows:
         change.changes
         |> Enum.sort_by(fn {attribute, _} -> attribute end)
@@ -171,7 +190,13 @@ defmodule RamalLive.Column do
         do: {@redacted, @redacted},
         else: {format_value(before), format_value(after_value)}
 
-    %{attribute: Atom.to_string(attribute), before: before, after: after_value}
+    %{
+      attribute: Atom.to_string(attribute),
+      before: before,
+      after: after_value,
+      before_id?: id?(before),
+      after_id?: id?(after_value)
+    }
   end
 
   defp sensitive?(resource, attribute) do

@@ -271,7 +271,7 @@ defmodule Ramal do
          :ok <- Limits.check(parent.domain, :fork, config),
          fork = Branch.fork(parent, opts),
          :ok <- config.storage.put(fork, config.storage_config),
-         {:ok, _pid} <- Server.start(fork, config) do
+         {:ok, _pid} <- Server.start_forked(fork, config) do
       Telemetry.branch(:fork, fork, %{parent_id: parent.id})
       {:ok, fork}
     end
@@ -293,9 +293,7 @@ defmodule Ramal do
   """
   @spec diff(branch_or_id) :: {:ok, [Ramal.Change.t()]} | {:error, Error.t()}
   def diff(branch_or_id) do
-    with {:ok, branch} <- branch_or_id |> id_of() |> Server.get() do
-      Branch.diff(branch, attributes: &Resource.attributes/1)
-    end
+    branch_or_id |> id_of() |> Server.diff(attributes: &Resource.attributes/1)
   end
 
   @doc """

@@ -23,7 +23,7 @@ defmodule Bench do
     }
   }
 
-  @cases [:fork, :read, :write, :merge, :fingerprint, :tree_search]
+  @cases [:fork, :diff, :read, :aggregate, :write, :merge, :fingerprint, :tree_search]
 
   @spec run(:full | :quick, keyword) :: [map]
   def run(profile_name, opts \\ []) do

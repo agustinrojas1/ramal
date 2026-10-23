@@ -207,6 +207,14 @@ defmodule Ramal.OverlayTest do
       assert Overlay.diff(overlay, %{@herd => row(1)}) == {:ok, []}
     end
 
+    test "treats an attribute only one side has as nil on the other, and leaves out one that is nil" do
+      overlay = %{@herd => {:updated, %{id: 1, added: 5, also_nil: nil}}}
+      base = %{@herd => %{id: 1, removed: 7}}
+
+      assert {:ok, [change]} = Overlay.diff(overlay, base)
+      assert change.changes == %{added: {nil, 5}, removed: {7, nil}}
+    end
+
     test "describes a deleted row with every attribute going from its base value to nil" do
       assert {:ok, [change]} = Overlay.diff(%{@herd => :deleted}, %{@herd => row(1)})
 

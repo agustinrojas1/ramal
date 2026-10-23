@@ -26,6 +26,18 @@ defmodule Ramal.FingerprintTest do
     assert Resource.fingerprint(record) == :erlang.phash2(Resource.attributes(record))
   end
 
+  test "attributes/1 holds the loaded attributes and nothing else" do
+    record = loaded(head: %Ash.NotLoaded{type: :attribute, field: :head}, name: "R8")
+
+    assert Resource.attributes(record) |> Map.keys() |> Enum.sort() ==
+             Enum.sort([:id, :inserted_at, :name, :paddock_id, :updated_at])
+
+    assert Resource.attributes(record).name == "R8"
+
+    forbidden = loaded(head: %Ash.ForbiddenField{field: :head, type: :attribute})
+    refute Map.has_key?(Resource.attributes(forbidden), :head)
+  end
+
   test "a record with an attribute that is not loaded has no fingerprint" do
     assert Resource.fingerprint(loaded(head: %Ash.NotLoaded{type: :attribute, field: :head})) ==
              nil

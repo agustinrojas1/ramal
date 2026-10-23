@@ -1,6 +1,6 @@
 # 0018. An optional owner on a branch, and an owner filter for `list/2`
 
-Status: accepted, 2026-10-23. Follow-up to ADR 0016 (security defaults), which left per-user scoping to the host.
+Status: accepted, 2026-10-23. The "no index" consequence is replaced by [ADR 0021](0021-owner-column.md). Follow-up to ADR 0016 (security defaults), which left per-user scoping to the host.
 
 ## Context
 
@@ -32,6 +32,6 @@ host says a branch belongs to and filter by it.
   `==`. `Ramal.Branch` still prints only its identity, so the owner does not reach crash reports.
 - Filtering by a term that is not a scalar compares its JSON form in Postgres, and the decoded owner again in Elixir; a
   map owner whose JSON form is not canonical can miss, never leak.
-- No index: the filter is a scan of the domain's rows in `ramal_branches`, like the status filter. A column and an index
+- No index (replaced by ADR 0021): the filter is a scan of the domain's rows in `ramal_branches`, like the status filter. A column and an index
   are a migration for a host that lists often and has many branches, and can come later without changing this API.
 - A host that wants enforcement checks `branch.owner` itself before `merge/2` or `discard/1`.

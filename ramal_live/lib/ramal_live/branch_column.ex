@@ -42,7 +42,7 @@ defmodule RamalLive.BranchColumn do
           <div class="rl-change-head">
             <span class="rl-kind" data-kind={change.kind}>{change.kind}</span>
             <span title={change.resource_title}>{change.resource}</span>
-            <code>{change.key}</code>
+            <code class={change.key_id? && "rl-id"} title={change.key_id? && change.key}>{change.key}</code>
           </div>
           <table class="rl-rows rl-data">
             <thead>
@@ -55,8 +55,15 @@ defmodule RamalLive.BranchColumn do
             <tbody>
               <tr :for={row <- change.rows}>
                 <th scope="row">{row.attribute}</th>
-                <td class="rl-before">{row.before}</td>
-                <td class="rl-after">{row.after}</td>
+                <td
+                  class={["rl-before", row.before_id? && "rl-id"]}
+                  title={row.before_id? && row.before}
+                >
+                  {row.before}
+                </td>
+                <td class={["rl-after", row.after_id? && "rl-id"]} title={row.after_id? && row.after}>
+                  {row.after}
+                </td>
               </tr>
             </tbody>
           </table>

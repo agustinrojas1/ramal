@@ -17,10 +17,15 @@ defmodule Ramal.Preparation do
     * A relationship load runs a read on the related resource through its own preparation, in a task that does not
       inherit the process dictionary. The branch id therefore also travels in the query's `shared` context, which
       Ash copies into related queries (`lib/ash/actions/read/relationships.ex`).
-    * `distinct` on attributes is applied after the patch, not by the data layer: while the overlay touches the
-      resource the base query is read without it and the patch keeps the first row of each group in the order of
-      `distinct_sort` (or `sort`). Otherwise a group whose database pick was destroyed in the branch vanished and a
-      group got a second row from the branch. A distinct on a calculation or aggregate keeps the data layer's.
+    * `distinct` is applied after the patch, not by the data layer: while the overlay touches the resource the base
+      query is read without it and the patch keeps the first row of each group in the order of `distinct_sort` (or
+      `sort`). Otherwise a group whose database pick was destroyed in the branch vanished and a group got a second row
+      from the branch. A distinct on an attribute compares the attribute. A distinct on a calculation is evaluated in
+      memory on the patched rows by `Ash.Query.apply_to/3` (documented in Ash 3.37; it loads the calculation with
+      `reuse_values?: true`, so a row the branch changed is judged by its new values, and one the branch created has a
+      value at all). That needs every attribute the calculation reads, so it is done only when the query selects all of
+      them. A distinct on an aggregate, a calculation in a query that selects some attributes, or any distinct on a
+      many_to_many read keeps the data layer's.
     * Filters are evaluated on overlay records with `Ash.Filter.Runtime.filter_matches/4` and sorting uses
       Ash.Actions.Sort.runtime_sort/3.
 
@@ -115,32 +120,66 @@ defmodule Ramal.Preparation do
   # `distinct` is applied by the data layer to the base rows, where a row the branch changed or destroyed still
   # stands for its group and a row the branch created is not in any group. When the overlay touches the resource the
   # preparation takes it over: the base query returns every row, and the patch keeps the first row of each group in
-  # the order of `distinct_sort` (or `sort`), as DISTINCT ON does. Only distinct attributes are handled; a calculation,
-  # an aggregate or a many_to_many read keeps the data layer's distinct.
+  # the order of `distinct_sort` (or `sort`), as DISTINCT ON does. Attributes and calculations are handled (a
+  # calculation only in a query that selects every attribute, which evaluating it in memory needs); an
+  # aggregate, or a many_to_many read, keeps the data layer's distinct.
   defp take_over_distinct(query, links) do
-    if links == nil and distinct_attributes?(query) do
-      fields = for {field, _direction} <- query.distinct, do: field
-      pick = if query.distinct_sort in [nil, []], do: query.sort, else: query.distinct_sort
+    pick = if query.distinct_sort in [nil, []], do: query.sort, else: query.distinct_sort
 
-      query =
-        query
-        |> Ash.Query.unset([:distinct, :distinct_sort])
-        |> Ash.Query.ensure_selected(fields)
+    cond do
+      links != nil ->
+        {query, nil}
 
-      {query, %{fields: fields, sort: pick}}
-    else
-      {query, nil}
+      distinct_kind(query) == :attributes ->
+        fields = for {field, _direction} <- query.distinct, do: field
+
+        query =
+          query
+          |> Ash.Query.unset([:distinct, :distinct_sort])
+          |> Ash.Query.ensure_selected(fields)
+
+        {query, %{fields: fields, sort: pick}}
+
+      distinct_kind(query) == :calculations ->
+        distinct = Ash.Query.new(query.resource)
+        distinct = %{distinct | distinct: query.distinct, distinct_sort: pick}
+        {Ash.Query.unset(query, [:distinct, :distinct_sort]), %{query: distinct}}
+
+      true ->
+        {query, nil}
     end
   end
 
-  defp distinct_attributes?(%{distinct: [_ | _] = distinct, resource: resource}) do
-    Enum.all?(distinct, fn
-      {field, _direction} when is_atom(field) -> Info.attribute(resource, field) != nil
-      _other -> false
-    end)
+  # `:attributes` when every field is an attribute, `:calculations` when at least one is a calculation and the rest are
+  # attributes and the query selects all of them, `nil` otherwise.
+  defp distinct_kind(%{distinct: [_ | _] = distinct} = query) do
+    kinds =
+      Enum.map(distinct, fn
+        {field, _direction} when is_atom(field) ->
+          if Info.attribute(query.resource, field), do: :attribute, else: :other
+
+        {%Ash.Query.Calculation{}, _direction} ->
+          :calculation
+
+        _other ->
+          :other
+      end)
+
+    cond do
+      :other in kinds -> nil
+      :calculation in kinds and selects_all?(query) -> :calculations
+      :calculation in kinds -> nil
+      true -> :attributes
+    end
   end
 
-  defp distinct_attributes?(_query), do: false
+  defp distinct_kind(_query), do: nil
+
+  # By the time the hook runs Ash has filled `select` with every attribute of a query that did not narrow it.
+  defp selects_all?(%{select: nil}), do: true
+
+  defp selects_all?(%{select: select, resource: resource}),
+    do: Enum.all?(Info.attributes(resource), &(&1.name in select))
 
   defp after_data_layer(query, results, id) do
     %{overlay?: overlay?, limit: limit, offset: offset} = query.context.ramal
@@ -200,14 +239,16 @@ defmodule Ramal.Preparation do
 
     with {:ok, slice, overlay_rows} <-
            Server.select(id, resource, base_keys, Prefilter.compile(query.filter)),
-         {:ok, matching} <- matching_keys(query, slice) do
+         {:ok, matching} <- matching_keys(query, slice),
+         {:ok, distinct} <-
+           results
+           |> Overlay.patch(slice, &MapSet.member?(matching, Resource.key(resource, &1)),
+             key: &Resource.key(resource, &1),
+             replace: &carry_lateral_source/2
+           )
+           |> distinct(query) do
       patched =
-        results
-        |> Overlay.patch(slice, &MapSet.member?(matching, Resource.key(resource, &1)),
-          key: &Resource.key(resource, &1),
-          replace: &carry_lateral_source/2
-        )
-        |> distinct(query)
+        distinct
         |> sort(query)
         |> Enum.drop(offset || 0)
         |> take(limit)
@@ -265,12 +306,19 @@ defmodule Ramal.Preparation do
   defp apply_select(record, _query, _slice), do: record
 
   defp distinct(rows, %{context: %{ramal: %{distinct: %{fields: fields, sort: pick}}}} = query) do
-    rows
-    |> sort_by(pick, query)
-    |> Enum.uniq_by(fn row -> Enum.map(fields, &Map.get(row, &1)) end)
+    {:ok,
+     rows
+     |> sort_by(pick, query)
+     |> Enum.uniq_by(fn row -> Enum.map(fields, &Map.get(row, &1)) end)}
   end
 
-  defp distinct(rows, _query), do: rows
+  # The query that `apply_to/3` runs has only the distinct fields and their pick order: the filter and the sort are
+  # applied by this preparation, and `apply_to/3` would run the filter a second time on rows Postgres already filtered.
+  defp distinct(rows, %{context: %{ramal: %{distinct: %{query: distinct}}}} = query) do
+    Ash.Query.apply_to(distinct, rows, domain: query.domain)
+  end
+
+  defp distinct(rows, _query), do: {:ok, rows}
 
   defp sort_by(rows, pick, _query) when pick in [nil, []], do: rows
 

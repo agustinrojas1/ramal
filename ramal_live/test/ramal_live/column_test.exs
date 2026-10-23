@@ -48,9 +48,27 @@ defmodule RamalLive.ColumnTest do
       assert shown.key == "R7"
 
       assert shown.rows == [
-               %{attribute: "head", before: "30", after: "31"},
-               %{attribute: "name", before: "R7", after: "R7b"},
-               %{attribute: "paddock_id", before: "nil", after: "L18"}
+               %{
+                 attribute: "head",
+                 before: "30",
+                 after: "31",
+                 before_id?: false,
+                 after_id?: false
+               },
+               %{
+                 attribute: "name",
+                 before: "R7",
+                 after: "R7b",
+                 before_id?: false,
+                 after_id?: false
+               },
+               %{
+                 attribute: "paddock_id",
+                 before: "nil",
+                 after: "L18",
+                 before_id?: false,
+                 after_id?: false
+               }
              ]
     end
 
@@ -67,8 +85,20 @@ defmodule RamalLive.ColumnTest do
       assert %{changes: [shown]} = Column.build(branch(), [change])
 
       assert shown.rows == [
-               %{attribute: "head", before: "30", after: "31"},
-               %{attribute: "vet_pin", before: "[redacted]", after: "[redacted]"}
+               %{
+                 attribute: "head",
+                 before: "30",
+                 after: "31",
+                 before_id?: false,
+                 after_id?: false
+               },
+               %{
+                 attribute: "vet_pin",
+                 before: "[redacted]",
+                 after: "[redacted]",
+                 before_id?: false,
+                 after_id?: false
+               }
              ]
     end
 
@@ -179,6 +209,35 @@ defmodule RamalLive.ColumnTest do
     test "a large collection is abbreviated" do
       assert Column.format_value(Enum.to_list(1..100)) =~ "..."
     end
+  end
+
+  describe "id?/1" do
+    test "is true for a UUID in either case" do
+      assert Column.id?("dfac6113-e2de-485c-819f-8ac2ee688cb5")
+      assert Column.id?("DFAC6113-E2DE-485C-819F-8AC2EE688CB5")
+    end
+
+    test "is false for anything else" do
+      refute Column.id?("R7")
+      refute Column.id?("dfac6113-e2de-485c-819f-8ac2ee688cb5 and more")
+      refute Column.id?("nil")
+      refute Column.id?(nil)
+    end
+  end
+
+  test "a change flags the UUIDs of its key and cells, so the page can keep them on one line" do
+    id = "dfac6113-e2de-485c-819f-8ac2ee688cb5"
+
+    change = %Change{
+      resource: MyApp.Farm.Herd,
+      key: id,
+      kind: :updated,
+      changes: %{paddock_id: {id, "L18"}}
+    }
+
+    assert %{changes: [shown]} = Column.build(branch(), [change])
+    assert shown.key_id?
+    assert [%{before_id?: true, after_id?: false}] = shown.rows
   end
 
   test "short_id keeps eight characters" do

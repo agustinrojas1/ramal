@@ -25,14 +25,13 @@ Open an issue first. If we agree, the PR adds an ADR under `docs/adr/` and updat
 
 ## Releasing
 
-A maintainer with a Hex account does this; CI has no Hex key.
+A release is a pull request; the rest is `.github/workflows/release.yml`.
 
-1. A PR bumps `@version` in `mix.exs` and in `ramal_live/mix.exs` (the two packages share a version) and turns `Unreleased` in `CHANGELOG.md` into the version with its date.
-2. After it merges, tag the merge commit `vX.Y.Z` (the docs link to source at that tag).
-3. Check `mix hex.build` and `mix docs`, read the file list and dependencies `hex.build` prints, then `mix hex.publish`. The package ships `lib`,
-   `mix.exs`, the README, the license, the changelog and the logo; nothing under `priv/` or `test/`.
-4. Publish `ramal_live` after `ramal`, since it depends on it: Hex refuses a path dependency, so run it with `RAMAL_LIVE_HEX=1` (`RAMAL_LIVE_HEX=1 mix deps.get`, `mix hex.build`, `mix hex.publish`, all inside `ramal_live/`). Do not commit the `mix.lock` change that makes.
-5. Only after both packages are on Hex, and as a separate docs PR, make the install snippets point at the new version: `{:ramal, "~> X.Y.0"}` in the README install section, and `{:ramal, ...}` and `{:ramal_live, ...}` in `ramal_live/README.md` and `RamalLive`'s module doc. Do this after publishing, never before, so the docs on `main` never tell people to install a version that does not exist. 0.2.0 is done; 0.3.0's snippets moved in its release PR, on the maintainer's call.
+1. A PR bumps `@version` in `mix.exs` and in `ramal_live/mix.exs` (the two packages share a version), turns `Unreleased` in `CHANGELOG.md` into the version with its date, and updates the install snippets: `{:ramal, "~> X.Y.0"}` in the README install section, and `{:ramal, ...}` and `{:ramal_live, ...}` in `ramal_live/README.md` and `RamalLive`'s module doc. Run `mix hex.build` and `mix docs` and read the file list and dependencies `hex.build` prints. The package ships `lib`, `mix.exs`, the README, the license, the changelog, the logo and the agent rules; nothing under `priv/` or `test/`.
+2. When it merges, the Release workflow sees a version in `mix.exs` with no GitHub release. It creates the tag `vX.Y.Z` on that commit (the docs link to source at that tag) and a GitHub release whose notes are the changelog section, then publishes `ramal` to Hex, then `ramal_live` once Hex lists `ramal` (it runs with `RAMAL_LIVE_HEX=1`, which makes it depend on the published `ramal`; the `mix.lock` change that makes is never committed). Every step first checks what already exists, so a push that does not bump the version does nothing, and a run that failed half way is finished by running the workflow again from the Actions tab.
+3. The publish steps need a repository secret `HEX_API_KEY`: a Hex API key with write access to both packages (`mix hex.user key generate`, or Hex's dashboard), added under Settings > Secrets and variables > Actions. Without it the workflow still tags and releases, skips the Hex steps with a warning, and publishes when it is run again after the secret exists.
+
+By hand, with a Hex account: tag the merge commit, then `mix hex.publish` inside the repository and `RAMAL_LIVE_HEX=1 mix deps.get`, `mix hex.build`, `mix hex.publish` inside `ramal_live/` after `ramal` is on Hex. 0.2.0 was published this way. The install snippets moved into the release PR from 0.3.0 on, so that they are right the moment the packages are on Hex.
 
 ## Code of conduct
 

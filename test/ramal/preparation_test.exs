@@ -340,6 +340,126 @@ defmodule Ramal.PreparationTest do
              ) == ["R7", "R9"]
     end
 
+    test "distinct on a calculation judges the branch's rows by their new values", %{
+      branch: branch,
+      herds: h
+    } do
+      # size is "large" from 30 head. R7 and R8 are the database's large herds; here one shrinks, one is destroyed, and
+      # a small one is created, so the branch has a single group.
+      put(branch, :updated, %{h.r7 | head: 5})
+      put(branch, :deleted, h.r8)
+      put(branch, :created, new_herd(name: "N1", head: 8))
+
+      distinct = fn ->
+        inside(branch, fn ->
+          Herd
+          |> Ash.Query.distinct(:size)
+          |> Ash.Query.distinct_sort(name: :asc)
+          |> Ash.Query.sort(:name)
+          |> Ash.read!(authorize?: false)
+        end)
+      end
+
+      assert names(distinct.()) == ["N1"]
+
+      # Outside the branch the database answers.
+      assert names(
+               Herd
+               |> Ash.Query.distinct(:size)
+               |> Ash.Query.distinct_sort(name: :asc)
+               |> Ash.Query.sort(:name)
+               |> Ash.read!(authorize?: false)
+             ) == ["R7", "R9"]
+    end
+
+    test "distinct on a calculation gives a group the branch created its row", %{
+      branch: branch,
+      herds: h
+    } do
+      put(branch, :deleted, h.r7)
+      put(branch, :deleted, h.r8)
+      put(branch, :created, new_herd(name: "N1", head: 50))
+      put(branch, :created, new_herd(name: "N2", head: 8))
+
+      herds =
+        inside(branch, fn ->
+          Herd
+          |> Ash.Query.distinct(:size)
+          |> Ash.Query.distinct_sort(head: :desc)
+          |> Ash.Query.sort(:name)
+          |> Ash.read!(authorize?: false)
+        end)
+
+      # R9 is bigger than N2 and N1 is the only large herd left.
+      assert names(herds) == ["N1", "R9"]
+    end
+
+    test "distinct on a calculation and an attribute, with a limit and an offset", %{
+      branch: branch,
+      herds: h,
+      paddocks: p
+    } do
+      put(branch, :created, new_herd(name: "N1", head: 50, paddock_id: p.l18.id))
+      put(branch, :created, new_herd(name: "N2", head: 1, paddock_id: p.l18.id))
+      put(branch, :updated, %{h.r8 | head: 5})
+
+      read = fn ->
+        inside(branch, fn ->
+          Herd
+          |> Ash.Query.distinct([:size, :paddock_id])
+          |> Ash.Query.distinct_sort(name: :desc)
+          |> Ash.Query.sort(:name)
+          |> Ash.Query.offset(1)
+          |> Ash.Query.limit(2)
+          |> Ash.read!(authorize?: false)
+        end)
+      end
+
+      # L07: R7 large, R8 small. L18: N1 large, and R9 beats N2 (the later name) for small. Four groups, by name:
+      # N1, R7, R8, R9.
+      assert names(read.()) == ["R7", "R8"]
+    end
+
+    test "distinct on a calculation is transparent when the overlay does not touch the resource",
+         %{
+           branch: branch
+         } do
+      put(branch, :created, %Paddock{id: Ash.UUID.generate(), name: "L99", capacity_head: 1})
+
+      herds =
+        inside(branch, fn ->
+          Herd
+          |> Ash.Query.distinct(:size)
+          |> Ash.Query.distinct_sort(name: :asc)
+          |> Ash.Query.sort(:name)
+          |> Ash.read!(authorize?: false)
+        end)
+
+      assert names(herds) == ["R7", "R9"]
+    end
+
+    # Documents a limit: evaluating the calculation in memory needs every attribute it reads, so a query that selects
+    # some of them keeps the data layer's distinct, which does not see the branch.
+    test "distinct on a calculation in a query that selects some attributes is the database's", %{
+      branch: branch,
+      herds: h
+    } do
+      put(branch, :updated, %{h.r7 | head: 5})
+
+      herds =
+        inside(branch, fn ->
+          Herd
+          |> Ash.Query.select([:name])
+          |> Ash.Query.distinct(:size)
+          |> Ash.Query.distinct_sort(name: :asc)
+          |> Ash.Query.sort(:name)
+          |> Ash.read!(authorize?: false)
+        end)
+
+      # The database picked R7 for "large" and R9 for "small", and the branch's R7 replaced its base row.
+      assert names(herds) == ["R7", "R9"]
+    end
+
     test "Ash.load on records read outside the branch is patched, lazily or not", %{
       branch: branch,
       herds: h,
