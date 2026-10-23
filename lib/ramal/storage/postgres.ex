@@ -323,7 +323,27 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
                "SELECT #{@columns} FROM #{@table} WHERE #{where} ORDER BY inserted_at, id",
                params
              ) do
-        result.rows |> Enum.map(&(&1 |> row_to_map() |> decode())) |> collect()
+        {:ok, result.rows |> Enum.flat_map(&decode_listed(&1, domain))}
+      end
+    end
+
+    # One row that cannot be read (written by a newer Ramal, or damaged) must not hide every other branch of the
+    # domain from `Ramal.list/2` and the inspector. It is skipped and announced; `get/1` of its id still returns the error.
+    defp decode_listed(row, domain) do
+      {columns, _state} = mapped = row_to_map(row)
+
+      case decode(mapped) do
+        {:ok, branch} ->
+          [branch]
+
+        {:error, error} ->
+          Ramal.Telemetry.storage(:unreadable, %{
+            branch_id: columns.id,
+            domain: domain,
+            message: error.message
+          })
+
+          []
       end
     end
 

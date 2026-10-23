@@ -22,6 +22,7 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :branch, :reject]` | a proposed branch was rejected |
   | `[:ramal, :branch, :too_large]` | a branch process was killed for exceeding `max_heap_size` |
   | `[:ramal, :limit, :reached]` | `branch/2` or `fork/2` was refused by a limit of `Ramal.Supervisor` (metadata: `domain`, `operation`, `limit`) |
+  | `[:ramal, :storage, :unreadable]` | `Ramal.list/2` skipped a stored branch it could not decode (metadata: `branch_id`, `domain`, `message`, which never holds stored values); `Ramal.get/1` of that id still returns the `:storage` error |
   | `[:ramal, :merge, :start \| :stop \| :exception]` | a span around `Ramal.merge/2`; `stop` adds `result` (`:ok` or `:error`) and `replayed`, or `reason` |
   | `[:ramal, :read, :patch]` | a read inside a branch was patched with the overlay (measurements: `base_rows`, `overlay_rows`, `result_rows`, `duration`) |
   | `[:ramal, :read, :unpatched_aggregate]` | a read inside a branch selected an aggregate Ramal cannot compute over the overlay (`custom`, a join filter, a custom read action, ...), so it has the database's value |
@@ -113,6 +114,19 @@ defmodule Ramal.Telemetry do
       %{broken: length(broken)},
       %{broken: broken, ash: ash, ash_postgres: ash_postgres}
     )
+  end
+
+  @doc """
+  Emits `[:ramal, :storage, :unreadable]` with `metadata` (`branch_id`, `domain`, `message`).
+
+  ## Example
+
+      iex> Ramal.Telemetry.storage(:unreadable, %{branch_id: "b1", domain: MyApp.Farm, message: "malformed"})
+      :ok
+  """
+  @spec storage(atom, map) :: :ok
+  def storage(step, metadata) do
+    :telemetry.execute([:ramal, :storage, step], %{system_time: System.system_time()}, metadata)
   end
 
   @doc """
