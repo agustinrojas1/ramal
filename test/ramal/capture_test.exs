@@ -135,6 +135,50 @@ defmodule Ramal.CaptureTest do
       assert Ash.get!(Herd, herds.r7.id, authorize?: false).head == 30
     end
 
+    test "an update through a select-only struct stores the whole row and fingerprints it", %{
+      branch: branch,
+      paddocks: p
+    } do
+      inside(branch, fn ->
+        partial =
+          Herd
+          |> Ash.Query.select([:id, :name])
+          |> Ash.Query.filter(name == "R7")
+          |> Ash.read_one!(authorize?: false)
+
+        assert %Ash.NotLoaded{} = partial.head
+        Ash.update!(partial, %{name: "R7z"}, authorize?: false)
+
+        assert [row] = Herd |> Ash.Query.filter(name == "R7z") |> Ash.read!(authorize?: false)
+        assert {row.head, row.paddock_id} == {30, p.l07.id}
+      end)
+
+      assert Enum.map(Map.values(state(branch).base), & &1.fingerprint)
+             |> Enum.all?(&is_integer/1)
+
+      assert {:ok, [change]} = Ramal.diff(branch)
+      assert %{name: {"R7", "R7z"}} = change.changes
+    end
+
+    test "a destroy through a select-only struct stores the whole row and fingerprints it", %{
+      branch: branch
+    } do
+      inside(branch, fn ->
+        partial =
+          Herd
+          |> Ash.Query.select([:id])
+          |> Ash.Query.filter(name == "R7")
+          |> Ash.read_one!(authorize?: false)
+
+        Ash.destroy!(partial, authorize?: false)
+      end)
+
+      assert Enum.map(Map.values(state(branch).base), & &1.fingerprint)
+             |> Enum.all?(&is_integer/1)
+
+      assert {:ok, [%{kind: :deleted}]} = Ramal.diff(branch)
+    end
+
     test "two updates through the same struct both land, as two UPDATEs would", %{
       branch: branch,
       herds: herds
