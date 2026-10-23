@@ -44,7 +44,7 @@ When you are done: `docker compose -f demo/docker-compose.yml down -v`.
 
 ## Run it in Livebook
 
-[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fhexdocs.pm%2Framal%2Framal_tour.livemd)
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fagustinrojas1%2Framal%2Fmain%2Fdemo%2Framal_tour.livemd)
 
 [`ramal_tour.livemd`](ramal_tour.livemd) is the same story as a [Livebook](https://livebook.dev) notebook: one section per
 chapter, with the explanation next to the cell that runs it, and cells you can edit and run again. It is one

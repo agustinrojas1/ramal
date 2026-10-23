@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="https://hexdocs.pm/ramal/assets/logo/ramal-mark-dark.svg" width="120" alt="Ramal">
+  <img src="https://raw.githubusercontent.com/agustinrojas1/ramal/main/assets/logo/ramal-mark-dark.svg" width="120" alt="Ramal">
 </p>
 
 <h1 align="center">Ramal</h1>
 
 <p align="center"><b>Git-style branches for your Ash application's data, as BEAM processes.</b><br>Fork it, change it, diff it, merge it back, or throw it away. Nothing touches your database until you say so.</p>
 
-[![Hex.pm](https://img.shields.io/hexpm/v/ramal.svg)](https://hex.pm/packages/ramal) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal-blue.svg)](https://hexdocs.pm/ramal) [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fhexdocs.pm%2Framal%2Framal_tour.livemd)
+[![Hex.pm](https://img.shields.io/hexpm/v/ramal.svg)](https://hex.pm/packages/ramal) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal-blue.svg)](https://hexdocs.pm/ramal) [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fagustinrojas1%2Framal%2Fmain%2Fdemo%2Framal_tour.livemd)
 
 > **Status: 0.4, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, exact aggregates, the LiveView inspector and the tools for AI agents work and are tested on Postgres. The API may still change before 1.0.
 
@@ -286,7 +286,7 @@ pipeline. Ramal itself never depends on it.
 ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: {MyAppWeb.Inspector, :actor}
 ```
 
-![The Ramal inspector with four open branches, each moving herd R7 to a different paddock, shown as columns of before and after rows](https://hexdocs.pm/ramal/assets/inspector.png)
+![The Ramal inspector with four open branches, each moving herd R7 to a different paddock, shown as columns of before and after rows](https://raw.githubusercontent.com/agustinrojas1/ramal/main/assets/inspector.png)
 
 To see it move before wiring it into an app, run the demo from a clone of the repository: `docker compose up -d db`, then
 `elixir ramal_live/examples/farm_demo.exs`. It starts a seeded farm where one button opens four branches that each move
