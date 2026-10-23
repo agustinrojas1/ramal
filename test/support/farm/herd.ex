@@ -16,6 +16,11 @@ defmodule Ramal.Test.Farm.Herd do
   actions do
     defaults([:read, :destroy, create: :*, update: :*])
 
+    # An action that loads a calculation in its own preparation, which runs after the one Ramal installs.
+    read :with_size do
+      prepare(build(load: [:size]))
+    end
+
     update :move do
       description(
         "Moves the herd to another paddock, refusing when the destination would exceed its capacity."

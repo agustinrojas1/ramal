@@ -136,6 +136,25 @@ defmodule Ramal.PreparationTest do
       assert sizes == %{"N1" => "large", "R7" => "small", "R8" => "large", "R9" => "small"}
     end
 
+    test "a calculation loaded by the read action's own preparation is evaluated on the branch's rows",
+         %{
+           branch: branch,
+           herds: h
+         } do
+      put(branch, :updated, %{h.r7 | head: 5})
+      put(branch, :created, new_herd(name: "N1", head: 50))
+
+      sizes =
+        inside(branch, fn ->
+          Herd
+          |> Ash.Query.for_read(:with_size, %{}, authorize?: false)
+          |> Ash.read!(authorize?: false)
+        end)
+        |> Map.new(&{&1.name, &1.size})
+
+      assert sizes == %{"N1" => "large", "R7" => "small", "R8" => "large", "R9" => "small"}
+    end
+
     test "a calculation requested through read options, get or a calculation filter is also evaluated",
          %{
            branch: branch,

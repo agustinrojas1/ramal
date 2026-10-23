@@ -20,6 +20,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `Ramal.merge/2` and `Ramal.approve/2` no longer return an error for a merge that committed when the storage refuses the `:merged` write. Before, the rows were in the database while the caller was told the merge failed, the branch stayed open and a second merge failed as `:stale` or on duplicate keys. Now the result is `{:ok, result}` with the storage error in the new `persist_failed` field of `Ramal.Merge.Result`; the branch is merged in its process, which refuses a second merge, emits `[:ramal, :branch, :persist_failed]` with `reason: :merged` and writes the branch again at its idle timeout ([ADR 0023](docs/adr/0023-merge-commit-is-final.md)).
 - Calls to a branch process have explicit timeouts: 5 seconds for reads and writes and 60 for the calls that persist the whole branch (merge, propose, reject, discard). A timeout is `{:error, %Ramal.Error{reason: :timeout}}`, a new reason, and a captured write that timed out is taken back instead of being applied late.
 - `Ramal.fork/2` is refused with `:not_open` while a merge holds the branch. Before, a fork of a log that was about to be replayed could be merged again and write the same rows twice.
+- A calculation that a read action loads in its own `prepare` is now evaluated on the rows the branch created or changed; before, those rows came back `NotLoaded` for it (#116).
 
 ## [0.4.2] - 2026-10-23
 
