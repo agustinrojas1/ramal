@@ -238,7 +238,7 @@ defmodule Ramal.Branch.Server do
 
   @doc """
   The tenant the branch works in (`nil` for none). Read when a query or changeset on a multitenant resource carries a
-  tenant, to check it is the branch's (ADR 0033).
+  tenant, to check it is the branch's (ADR 0034).
   """
   @spec tenant(String.t()) :: {:ok, term} | {:error, Error.t()}
   def tenant(id), do: call(id, :tenant)

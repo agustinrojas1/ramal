@@ -37,7 +37,7 @@ defmodule Ramal.Merge do
   resources in `details.not_rolled_back`. `Ash.transact/3` runs the function as it is for such a data layer and returns
   its `{:error, _}` inside `{:ok, _}`, which the merge unwraps.
 
-  Known limits, documented in `docs/adr/0007-merge.md`: a branch works in one tenant (ADR 0033) and the staleness check reads with it, a top-level action
+  Known limits, documented in `docs/adr/0007-merge.md`: a branch works in one tenant (ADR 0034) and the staleness check reads with it, a top-level action
   that targets a row created by a hook cannot be replayed, and changes made with `Ash.Changeset.change_attribute/3`
   outside the action's own inputs are not in the log.
 

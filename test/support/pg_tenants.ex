@@ -1,7 +1,7 @@
 defmodule Ramal.Test.PgTenants do
   @moduledoc false
   # Multitenant resources on Postgres, one for each strategy, to prove a branch works in one tenant against the real
-  # data layer (ADR 0033): Note keeps every tenant in one table (attribute), Plot gives each tenant a schema (context).
+  # data layer (ADR 0034): Note keeps every tenant in one table (attribute), Plot gives each tenant a schema (context).
   use Ash.Domain, otp_app: :ramal, validate_config_inclusion?: false
 
   resources do
