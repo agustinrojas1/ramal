@@ -8,7 +8,7 @@
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ramal.svg)](https://hex.pm/packages/ramal) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal-blue.svg)](https://hexdocs.pm/ramal) [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fagustinrojas1%2Framal%2Fmain%2Fdemo%2Framal_tour.livemd)
 
-> **Status: 0.4, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, exact aggregates, the LiveView inspector and the tools for AI agents work and are tested on Postgres. The API may still change before 1.0.
+> **Status: 0.6, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, reads that agree with the branch (pages, aggregates, calculations), one tenant per branch, the LiveView inspector and the tools for AI agents work and are tested on Postgres. The branch lifecycle is [model-checked and its data rules are proved](#formally-verified). The API may still change before 1.0.
 
 ## What it does
 
@@ -91,6 +91,24 @@ That combination is the whole library.
 
 Both hooks do nothing when no branch is active, and a test per hook proves it. The full design is in
 [docs/DESIGN.md](https://github.com/agustinrojas1/ramal/blob/main/docs/DESIGN.md).
+
+## Formally verified
+
+Merging is the step that must never be wrong, so the rules behind it are checked by machine, not only by tests.
+[`verification/`](https://github.com/agustinrojas1/ramal/tree/main/verification) holds two models:
+
+- **A TLA+ model of the branch lifecycle**, checked with TLC over about 5.5 million states: writes, reads, fork, propose,
+  approve, discard, merge, idle unload, killed processes and node restarts, interleaved the way the BEAM interleaves them.
+  It proves that a merge commits at most once, that a merge never takes the write of an action that failed, and that what
+  reads see is what the merge writes.
+- **Proofs in Bend 2** (rechecked by a Lean-proved kernel) that a read in a branch is the base plus the overlay, that a
+  merge loses no edit made outside the branch, and that an overlay entry never lies about the base.
+
+The model found three real bugs that tests had missed, now fixed and covered by tests that failed before:
+writes of a still-running action taken by a merge or fork ([ADR 0033](https://github.com/agustinrojas1/ramal/blob/main/docs/adr/0033-running-actions-hold-their-writes.md)),
+and a branch merged twice when the merging process died after the commit ([ADR 0035](https://github.com/agustinrojas1/ramal/blob/main/docs/adr/0035-merged-status-in-the-merge-transaction.md)).
+A conformance test ties the Bend model to `Ramal.Overlay`, and CI runs both checks. The
+[verification README](https://github.com/agustinrojas1/ramal/blob/main/verification/README.md) says what is proved, what is assumed and what is not covered (filters and sorts of a patched read, for one, are covered by property tests instead).
 
 ## Quickstart
 
@@ -210,6 +228,12 @@ end)
 
 It supports `:count`, `:exists`, `:sum`, `:min`, `:max` and `:avg`.
 
+### Per-tenant branches
+
+A branch of a multitenant application works in one tenant: `Ramal.branch(MyApp.Farm, tenant: "acme")`. Reads and writes
+inside it must carry that tenant (`:tenant_mismatch` otherwise), other tenants' rows never enter its overlay, and the
+merge checks and replays in the tenant. Both the attribute and the schema-per-tenant strategies work.
+
 ### Per-user branches
 
 Pass `owner:` to `Ramal.branch/2` and `Ramal.list(domain, owner: user_id)` shows each user their own. It is a filter, not
@@ -245,7 +269,10 @@ and what is and is not tested.
 - **Fork, diff, merge, discard** as ordinary function calls, plus **proposals** with a recorded proposer and decider.
 - **Persistent.** With `Ramal.Storage.Postgres` a branch is saved when it is created, proposed, discarded, unloaded or when the supervisor shuts down, so it survives restarts; idle branches unload from memory and come back on demand.
 - **Staleness detection** at merge, with a choice of what to do about it.
-- **Exact aggregates** for a branch without scanning the table.
+- **Exact aggregates** for a branch without scanning the table, and loaded, filtered and sorted aggregates that agree with the branch.
+- **Pages, prepared queries and module calculations** that see the branch.
+- **One tenant per branch**, on both multitenancy strategies.
+- **Formally verified lifecycle and data rules** ([above](#formally-verified)).
 - **Many-to-many** links changed in a branch are seen by `many_to_many` loads and by `manage_relationship`.
 - **Telemetry** for every branch lifecycle step, every patched read and every captured write.
 - **Safety valves.** Optional per-domain limits on open branches and on the rate of new ones, a heap limit on each branch
@@ -258,7 +285,7 @@ and what is and is not tested.
 
 Ramal is deliberately small, and it says what it does not do:
 
-- **Not a database branch.** No schema changes inside a branch, no branch-local indexes, and a branch lives on one node.
+- **Not a database branch.** No schema changes inside a branch, no branch-local indexes, and a branch lives on one node. `Ramal.run/2` cannot be nested.
 - **Aggregates loaded inside a branch are recomputed from the branch's rows,** which reads the related rows of each
   returned row where the database would sum them in one query. `first`, `list` and `custom` aggregates, `uniq?`, and
   an aggregate query with a limit keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
@@ -276,7 +303,9 @@ Ramal is deliberately small, and it says what it does not do:
   write actions and neither uses `Ramal.Resource` nor sets `branchable? false`; a resource that opts out is written for
   real, from a branch too. Only the branch's domain is checked: a resource of another domain works in the branch if it uses `Ramal.Resource`, and is written for real if it does not. Build a changeset in the same `Ramal.run/2` that runs it. A query prepared outside a branch and read inside it is patched.
 - **Bulk actions and upserts are refused** inside a branch, resources whose primary key the database generates cannot be
-  created in one (use UUIDs), a branch works in one tenant (`Ramal.branch(domain, tenant: tenant)`), and notifications are dropped unless a resource opts in with `notify_in_branch? true`.
+  created in one (use UUIDs), and notifications are dropped unless a resource opts in with `notify_in_branch? true`.
+- **`authorize_results` checks do not run on rows the branch added.** A read action's policy filters do; the checks Ash runs on results after the read cannot see overlay rows.
+- **A branch works in one tenant,** given at `Ramal.branch/2`.
 - **Reads fetch candidate rows and patch them in memory.** That is cheap for the rows a session touches and wrong for an
   analytics table: Ramal is meant for OLTP-sized working sets.
 - **Merge is slower than a SQL statement,** because it replays each change through your action. That is the price of

@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- Docs: the README, design document, roadmap, verification README and security policy describe 0.6 (the verification is now a section of the README, the limits list matches what is left, and a branch in one tenant is documented). The ADR index lists every decision. `Ramal.Error` documents `:not_started`.
+
 ## [0.6.0] - 2026-10-23
 
 A branch can work in one tenant, and Ramal has a formal model: a TLA+ model of the branch lifecycle checked with TLC and Bend 2 proofs of the overlay and merge rules, which found the three bugs fixed here. Read **Upgrading from 0.5** first.

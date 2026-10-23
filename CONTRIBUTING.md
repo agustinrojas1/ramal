@@ -1,6 +1,6 @@
 # Contributing to Ramal
 
-Thanks for looking. Ramal is pre-alpha, so the most useful contributions right now are design review, tests that break the overlay, and reports of Ash features the hooks do not handle. Read [docs/DESIGN.md](docs/DESIGN.md) first; the section "How reads are patched" is the one that decides whether a change is correct.
+Thanks for looking. Ramal is pre-1.0, so the most useful contributions right now are design review, tests that break the overlay, and reports of Ash features the hooks do not handle. Read [docs/DESIGN.md](docs/DESIGN.md) first; the section "How reads are patched" is the one that decides whether a change is correct.
 
 ## Setup
 
