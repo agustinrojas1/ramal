@@ -19,7 +19,7 @@ discard them. A branch must cost roughly what a process and a map cost, so thous
 - Schema changes inside a branch.
 - Branch-local indexes, or any promise about query plans.
 - Data-layer aggregates and calculations that Ramal cannot recompute over a branch (`first`, `list`, `custom`, `uniq?`, and aggregate queries with a limit keep the database's value, with a telemetry event; section 4.1 point 4 says what is recomputed).
-- Bulk actions, upserts and database-generated keys inside a branch, and nested branches.
+- Database-generated keys inside a branch, and nested branches.
 - Multi-node branches. A branch lives on one node; persistence makes it movable, not distributed.
 - A UI. The inspector is a separate package (`ramal_live/`, section 12).
 
@@ -239,8 +239,13 @@ This is the section that decides correctness. In a read action's preparation, wh
 - **Atomic updates** (`atomic_update`) are evaluated in Elixir against the row with the action's attribute changes
   applied, with `Ash.Expr.eval/2` as `Ash.DataLayer.Ets` does. An expression that needs the database fails the action
   with `:atomic_unsupported`.
-- **Bulk actions and upserts** are refused: `:bulk_unsupported` for every `Ash.bulk_*`, `:upsert_unsupported` for an
-  action with `upsert? true`. The call-time option `upsert?: true` cannot be seen by a hook and acts as a create.
+- **Bulk actions** are refused: `:bulk_unsupported` for every `Ash.bulk_*`.
+- **Upserts** are decided in the branch's view ([ADR 0038](adr/0038-upserts-in-the-branch-view.md)): the capture reads
+  `upsert?` in `change/3`, where it is the action's own (Ash's `do_run` sets it for every create before the hooks), looks
+  the row up by the upsert identity with a patched read, and logs a found row as an update and a missing one as a create.
+  The log entry carries `upsert: {identity, fields, found?}` and the merge replays it with `upsert?: true`.
+  `upsert_condition` is refused with `:upsert_unsupported`. The call-time option `upsert?: true` cannot be seen by a hook
+  and acts as a create.
 - Errors added by the hook are `Ramal.Error` structs (a Splode error), found in an Ash error with
   `Ramal.Error.find/1`.
 - Transactions: an action that opens a data-layer transaction inside a branch still opens one (cheap, empty). Nothing
@@ -498,7 +503,7 @@ action (ADR 0016).
 | 8 | The current branch id lives in the process dictionary and in Ash's shared context | Ash has no ambient context, and it runs some loads in tasks that lose the process dictionary. [ADR 0002](adr/0002-current-branch-carrier.md) |
 | 9 | Idle timeout and heap limit belong to the supervisor; discard keeps the record; storage takes config last | A per-branch value is lost on unload, and a kept record gives `:not_open` a meaning. [ADR 0003](adr/0003-branch-process-lifecycle.md) |
 | 10 | Reads are patched in `before_action`/`after_action` hooks; nothing is stripped when the overlay has no entry for the resource; the preparation sorts and pages the list itself | The hooks are where Ash allows changing the data-layer query and seeing its rows; `runtime_sort` takes a list, not a comparator. [ADR 0004](adr/0004-read-patching-hooks.md) |
-| 11 | Writes are captured by a last `before_action` that sets the result; atomic updates fall back through `atomic/3` and `require_atomic? false`; every bulk action and upsert action is refused; notifications are dropped unless the resource opts in; a failed action undoes its writes; `Ramal.Error` is a Splode error | `around_action` cannot skip the data layer by itself, the atomic path never reaches a hook, and Ash flattens other exceptions to strings. [ADR 0005](adr/0005-write-capture.md) |
+| 11 | Writes are captured by a last `before_action` that sets the result; atomic updates fall back through `atomic/3` and `require_atomic? false`; every bulk action is refused, and an upsert is decided in the branch view (ADR 0038); notifications are dropped unless the resource opts in; a failed action undoes its writes; `Ramal.Error` is a Splode error | `around_action` cannot skip the data layer by itself, the atomic path never reaches a hook, and Ash flattens other exceptions to strings. [ADR 0005](adr/0005-write-capture.md) |
 | 12 | `base` holds `%{fingerprint, snapshot}` per touched row; every read fingerprints the base rows it returns, except when it selects some attributes; a fork copies everything and records `forked_from` | Staleness needs the state at first read, diff needs the state at first write, and a partial row has no comparable hash. [ADR 0006](adr/0006-fingerprints-and-fork.md) |
 | 13 | Merge claims the branch first, checks staleness inside the replay transaction with row locks where possible, and forces created rows to keep their branch primary keys; entries logged by hooks are not replayed | Writes between check and replay would be lost, a check outside the transaction races, and later log entries name rows by key. [ADR 0007](adr/0007-merge.md) |
 | 14 | Branches are stored through `Ramal.Storage.Codec`: attributes through the Ash embedded dump and cast, everything else as tagged terms, atoms never created, actors stored as the term; `list/3` can fail | A round trip must be `==`, the Ash `cast_stored` is the data layer's form, not JSON's, and a database can fail. [ADR 0008](adr/0008-postgres-storage.md) |

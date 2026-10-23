@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **Upserts work inside a branch.** An upsert action (`upsert? true`, or `upsert?: true` given to `Ash.Changeset.for_create/4`) looks its row up by the upsert identity in the branch's view: a row of the base or one the branch created is updated (with the action's `upsert_fields`, or the attributes the call set, and the update defaults), and with none found the row is created. The merge replays the entry as an upsert with the identity and fields it had, so a row that appeared in the base meanwhile is updated rather than duplicated. An `upsert_condition` is still refused with `:upsert_unsupported`, and `upsert?: true` passed only to `Ash.create/2` at call time still acts as a create. ADR 0038.
+
 ### Changed
 
 - Docs: `bench/README.md` and the README's benchmark figures come from a rerun of the full benchmark and `bench.memory` on 0.6.1, with the noise between two runs stated; the raw samples are in `bench/results/published/`.

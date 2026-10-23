@@ -12,6 +12,32 @@ defmodule Ramal.Test.Farm.Paddock do
 
   actions do
     defaults([:read, :destroy, create: :*, update: :*])
+
+    # An upsert on the name; `upsert_fields` limits what an existing row takes from the input.
+    create :upsert do
+      accept([:name, :hectares, :capacity_head])
+      upsert?(true)
+      upsert_identity(:unique_name)
+    end
+
+    create :upsert_capacity do
+      accept([:name, :hectares, :capacity_head])
+      upsert?(true)
+      upsert_identity(:unique_name)
+      upsert_fields([:capacity_head])
+    end
+
+    # A condition is a filter the database evaluates against the existing row.
+    create :upsert_if_larger do
+      accept([:name, :capacity_head])
+      upsert?(true)
+      upsert_identity(:unique_name)
+      upsert_condition(expr(capacity_head < upsert_conflict(:capacity_head)))
+    end
+  end
+
+  identities do
+    identity(:unique_name, [:name])
   end
 
   attributes do
