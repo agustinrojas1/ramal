@@ -243,7 +243,8 @@ defmodule Ramal.Branch.Server do
     watch(branch)
     Telemetry.branch(:load, branch)
 
-    {:ok, %{branch: branch, config: config, stop: nil, merging: nil}, config.idle_timeout}
+    {:ok, %{branch: branch, config: config, stop: nil, merging: nil, persisted: false},
+     config.idle_timeout}
   end
 
   @impl true
@@ -358,7 +359,19 @@ defmodule Ramal.Branch.Server do
   def handle_call(:discard, _from, state), do: reply(state, {:error, unavailable(state)})
 
   @impl true
-  def handle_info(:timeout, state), do: {:stop, :normal, %{state | stop: :idle}}
+  # An idle branch unloads only once its state is safe in storage. If the write fails, stopping would lose the overlay
+  # and the log (terminate/2 cannot report the failure to anyone), so the process stays up and tries again at the next
+  # idle timeout.
+  def handle_info(:timeout, %{branch: branch, config: config} = state) do
+    case persist(branch, config) do
+      :ok ->
+        {:stop, :normal, %{state | stop: :idle, persisted: true}}
+
+      {:error, error} ->
+        Telemetry.branch(:persist_failed, branch, %{reason: :idle, error: error})
+        {:noreply, state, timeout(state)}
+    end
+  end
 
   # The merging process died without finishing: release the claim so the branch can be merged again.
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{merging: ref} = state) do
@@ -371,10 +384,15 @@ defmodule Ramal.Branch.Server do
   @impl true
   def terminate(_reason, %{stop: stop}) when stop in [:discarded, :merged, :rejected], do: :ok
 
-  def terminate(_reason, %{branch: branch, config: config, stop: stop}) do
-    # Persist before announcing the unload, so an observer who sees the event can already rehydrate the branch.
-    persist(branch, config)
-    Telemetry.branch(:unload, branch, %{reason: stop || :shutdown})
+  def terminate(_reason, %{branch: branch, config: config, stop: stop, persisted: persisted}) do
+    # Persist before announcing the unload, so an observer who sees the event can already rehydrate the branch. On a
+    # shutdown there is no process left to keep, so a failed write is reported instead of announced as an unload.
+    with false <- persisted,
+         {:error, error} <- persist(branch, config) do
+      Telemetry.branch(:persist_failed, branch, %{reason: stop || :shutdown, error: error})
+    else
+      _persisted -> Telemetry.branch(:unload, branch, %{reason: stop || :shutdown})
+    end
   end
 
   defp reply(state, reply), do: {:reply, reply, state, timeout(state)}

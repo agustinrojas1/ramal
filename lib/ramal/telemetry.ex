@@ -11,6 +11,7 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :branch, :fork]` | a branch was forked from another (extra metadata: `parent_id`) |
   | `[:ramal, :branch, :load]` | a branch process started from storage, or right after creation |
   | `[:ramal, :branch, :unload]` | a branch process stopped after persisting (`reason`: `:idle` or `:shutdown`) |
+  | `[:ramal, :branch, :persist_failed]` | storage refused the write of a branch (`reason`: `:idle` or `:shutdown`, `error`): an idle branch stays loaded and tries again; on a shutdown its last persisted state is what remains |
   | `[:ramal, :branch, :discard]` | a branch was discarded |
   | `[:ramal, :branch, :propose]` | a branch was proposed for a decision |
   | `[:ramal, :branch, :approve]` | a proposed branch was approved and merged (after the `[:ramal, :merge]` span) |
@@ -46,6 +47,7 @@ defmodule Ramal.Telemetry do
           :fork,
           :load,
           :unload,
+          :persist_failed,
           :discard,
           :too_large,
           :propose,
