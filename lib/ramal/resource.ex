@@ -64,6 +64,7 @@ defmodule Ramal.Resource do
     transformers: [Ramal.Resource.Transformer]
 
   alias Ash.Actions.Read
+  alias Ramal.Branch.Server
   alias Spark.Dsl.Extension
 
   @doc """
@@ -146,36 +147,65 @@ defmodule Ramal.Resource do
   end
 
   @doc """
-  Refuses a tenant: `{:error, %Ramal.Error{reason: :multitenancy_unsupported}}` when `resource` uses multitenancy and
-  `tenant` is set, `:ok` otherwise.
+  Checks that `tenant`, the one a query or changeset on `resource` carries, is the tenant of branch `id` (ADR 0033).
 
-  The overlay is keyed by `{resource, primary key}`, so two tenants' rows would share one entry, and the staleness read
-  of `Ramal.merge/2` has no tenant to read with (`docs/adr/0009-multitenancy-refused.md`). A resource that is
-  multitenant but `global? true` can still be used without a tenant.
+  `:ok` when `tenant` is `nil`, when `resource` is not multitenant, or when it is the branch's tenant (compared as the
+  data layer sees it, `Ash.ToTenant`). Otherwise `{:error, %Ramal.Error{reason: :tenant_mismatch}}` for a branch
+  with a tenant, and `:multitenancy_unsupported` for a branch without one: the overlay is keyed by `{resource, primary
+  key}`, so a branch can hold the rows of one tenant only.
 
   ## Example
 
-      iex> Ramal.Resource.ensure_untenanted(Ramal.Test.Farm.Herd, "acme")
+      iex> Ramal.Resource.ensure_tenant(Ramal.Test.Farm.Herd, "acme", "no-such-branch")
       :ok
-      iex> {:error, error} = Ramal.Resource.ensure_untenanted(Ramal.Test.Tenanted.Task, "acme")
-      iex> error.reason
-      :multitenancy_unsupported
   """
-  @spec ensure_untenanted(module, term) :: :ok | {:error, Ramal.Error.t()}
-  def ensure_untenanted(_resource, nil), do: :ok
+  @spec ensure_tenant(module, term, String.t()) :: :ok | {:error, Ramal.Error.t()}
+  def ensure_tenant(_resource, nil, _id), do: :ok
 
-  def ensure_untenanted(resource, tenant) do
+  def ensure_tenant(resource, tenant, id) do
     if Ash.Resource.Info.multitenancy_strategy(resource) do
-      {:error,
-       Ramal.Error.new(
-         :multitenancy_unsupported,
-         "#{inspect(resource)} is multitenant and was used with a tenant inside a branch; a branch does not partition " <>
-           "its overlay by tenant, so use the resource without a tenant or outside Ramal.run/2",
-         %{resource: resource, tenant: tenant}
-       )}
+      with {:ok, branch_tenant} <- Server.tenant(id) do
+        check_tenant(resource, tenant, branch_tenant)
+      end
     else
       :ok
     end
+  end
+
+  defp check_tenant(resource, tenant, nil) do
+    {:error,
+     Ramal.Error.new(
+       :multitenancy_unsupported,
+       "#{inspect(resource)} is multitenant and was used with a tenant inside a branch that has none; a branch holds " <>
+         "the rows of one tenant, so create it with `Ramal.branch(domain, tenant: tenant)`",
+       %{resource: resource, tenant: tenant}
+     )}
+  end
+
+  defp check_tenant(resource, tenant, branch_tenant) do
+    if Ash.ToTenant.to_tenant(tenant, resource) == Ash.ToTenant.to_tenant(branch_tenant, resource) do
+      :ok
+    else
+      {:error,
+       Ramal.Error.new(
+         :tenant_mismatch,
+         "#{inspect(resource)} was used with tenant #{inspect(tenant)} inside a branch that works in tenant " <>
+           "#{inspect(branch_tenant)}; a branch holds the rows of one tenant, so use another branch for another tenant",
+         %{resource: resource, tenant: tenant, branch_tenant: branch_tenant}
+       )}
+    end
+  end
+
+  @doc false
+  # The tenant a read of `resource` made for `branch_tenant` carries: the staleness read of a merge fingerprints the
+  # rows a tenanted resource holds for the branch's tenant only. A `global?` resource is read without one, since rows
+  # written without a tenant belong to no tenant.
+  @spec read_tenant(module, term) :: term
+  def read_tenant(resource, tenant) do
+    if Ash.Resource.Info.multitenancy_strategy(resource) &&
+         !Ash.Resource.Info.multitenancy_global?(resource),
+       do: tenant,
+       else: nil
   end
 
   @doc """

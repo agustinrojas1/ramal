@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **A branch can work in one tenant**: `Ramal.branch(domain, tenant: tenant)`. Reads and writes of multitenant resources inside it must carry that tenant (`:tenant_mismatch` otherwise), the other tenants' rows never enter its overlay, the merge staleness check reads with the tenant, and a fork keeps it. A branch without a tenant still refuses multitenant resources used with one (`:multitenancy_unsupported`), now with a message that says to create it with `tenant:`. The internal check `ensure_untenanted/2` became `ensure_tenant/3`. Tested on Postgres with both strategies, attribute and schema-per-tenant (context), merge into the tenant's schema included. ADR 0033.
+
 ## [0.5.0] - 2026-10-23
 
 Branch reads now agree with the branch in more places: pagination, aggregates (loaded, filtered and sorted), prepared queries and module calculations. Read **Upgrading from 0.4** first.
@@ -205,7 +209,7 @@ Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspec
 - `Ramal.merge/2`: checks that the base rows the branch saw are unchanged (`on_stale: :error | :ignore | fun`), then replays the branch log through the real actions in one transaction, so validations and policies run again. Failures return `:stale` or `:merge_failed` and leave the base untouched; a merged branch cannot be merged again. Telemetry span `[:ramal, :merge]`.
 - `Ramal.Storage.Postgres` and `mix ramal.gen.migration`: branches persist in a `ramal_branches` table and load back equal in a fresh VM. `Ramal.Storage.Codec` serializes a branch through the Ash embedded types without creating atoms. `c:Ramal.Storage.list/3` now returns `{:ok, branches} | {:error, error}`.
 - Documentation pass for 0.1: the README example runs as a test (`test/readme_test.exs`), a test checks that every public module has an example and every public function a `@doc` and `@spec`, `mix docs` builds without warnings and includes the ADRs, and every **[confirm]** mark in the design is resolved.
-- A multitenant resource used with a tenant inside a branch is refused with `:multitenancy_unsupported` (`Ramal.Resource.ensure_untenanted/2`), instead of mixing tenants in one overlay or failing at merge.
+- A multitenant resource used with a tenant inside a branch is refused with `:multitenancy_unsupported` (the `ensure_untenanted/2` check), instead of mixing tenants in one overlay or failing at merge.
 - Stored branches no longer hold the `sensitive?` attributes of an actor that is an Ash record (they are stored as `nil`); other actors are stored as before.
 
 [Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.5.0...HEAD

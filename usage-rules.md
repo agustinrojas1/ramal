@@ -73,7 +73,7 @@ test decides whether it happens.
   pass `on_stale: :ignore` when you know better. A fork shares its parent's base, so merging one makes its siblings stale.
 - **Bulk actions and upserts are refused** inside a branch (`:bulk_unsupported`, `:upsert_unsupported`). Loop over
   single-row actions instead.
-- **Multitenancy is refused** inside a branch.
+- **A branch works in one tenant**: `Ramal.branch(domain, tenant: tenant)`. A multitenant resource used with another tenant is refused, and so is any tenant in a branch that has none.
 - **`type: :append_and_remove` with a link to remove** in `manage_relationship` is refused as a bulk action. Use
   `:append` and `:remove` in two calls.
 - **A data layer that cannot roll back** (`Ash.DataLayer.Ets`) keeps the writes of a replay that failed halfway: the

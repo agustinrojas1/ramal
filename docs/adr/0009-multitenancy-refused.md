@@ -1,6 +1,6 @@
 # 0009. Multitenancy is refused inside a branch
 
-Status: accepted, 2026-10-22. Follow-up to ADR 0007 (open question 6 in the design).
+Status: accepted, 2026-10-22; for a branch that has a tenant superseded by ADR 0033. Follow-up to ADR 0007 (open question 6 in the design).
 
 ## Context
 
@@ -17,7 +17,7 @@ is a change to the data model, not a patch, and no host needs it yet.
 
 - **0.1 refuses a tenant instead of half supporting it.** Inside `Ramal.run/2`, a read or a write of a resource with a
   multitenancy strategy that carries a tenant returns `{:error, %Ramal.Error{reason: :multitenancy_unsupported}}`
-  (`Ramal.Resource.ensure_untenanted/2`, called by `Ramal.Preparation` and `Ramal.Capture`). The message says to use
+  (the `ensure_untenanted/2` check, called by `Ramal.Preparation` and `Ramal.Capture`). The message says to use
   the resource without a tenant or outside the branch.
 - A multitenant resource marked `global? true` still works without a tenant. Nothing changes outside a branch.
 - The log still records `tenant` per entry, and merge still passes it to the replayed action; with the refusal the value

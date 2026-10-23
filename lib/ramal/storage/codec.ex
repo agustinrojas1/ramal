@@ -62,7 +62,7 @@ defmodule Ramal.Storage.Codec do
   @opt_names %{"key" => :key, "tenant" => :tenant, "nested?" => :nested?}
 
   @doc """
-  The JSON-safe state of `branch`: overlay, base, log, metadata, owner and `inserted_at`.
+  The JSON-safe state of `branch`: overlay, base, log, metadata, owner, tenant and `inserted_at`.
 
   ## Example
 
@@ -80,6 +80,7 @@ defmodule Ramal.Storage.Codec do
        "log" => Enum.map(branch.log, &log_entry/1),
        "metadata" => term(branch.metadata, ["metadata"]),
        "owner" => term(branch.owner, ["owner"]),
+       "tenant" => term(branch.tenant, ["tenant"]),
        "inserted_at" => term(branch.inserted_at, ["inserted_at"]),
        "proposal" => proposal(branch.proposal)
      })}
@@ -135,6 +136,7 @@ defmodule Ramal.Storage.Codec do
        inserted_at: unterm(state["inserted_at"]),
        metadata: unterm(state["metadata"]),
        owner: unterm(state["owner"]),
+       tenant: unterm(state["tenant"]),
        overlay: overlay,
        base: Map.new(state["base"], &decode_base_entry(&1, overlay)),
        log: Enum.map(state["log"], &decode_log_entry/1),

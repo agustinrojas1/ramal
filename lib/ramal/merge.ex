@@ -37,7 +37,7 @@ defmodule Ramal.Merge do
   resources in `details.not_rolled_back`. `Ash.transact/3` runs the function as it is for such a data layer and returns
   its `{:error, _}` inside `{:ok, _}`, which the merge unwraps.
 
-  Known limits, documented in `docs/adr/0007-merge.md`: tenants are refused inside a branch (ADR 0009), so the staleness check has none, a top-level action
+  Known limits, documented in `docs/adr/0007-merge.md`: a branch works in one tenant (ADR 0033) and the staleness check reads with it, a top-level action
   that targets a row created by a hook cannot be replayed, and changes made with `Ash.Changeset.change_attribute/3`
   outside the action's own inputs are not in the log.
 
@@ -238,7 +238,7 @@ defmodule Ramal.Merge do
         {key, row.fingerprint}
       end)
       |> Enum.map_reduce(%{}, fn {resource, expected}, fetched ->
-        {stale, rows} = stale_in(resource, Map.new(expected))
+        {stale, rows} = stale_in(resource, Map.new(expected), branch.tenant)
 
         {stale,
          Enum.reduce(rows, fetched, &Map.put(&2, {resource, Resource.key(resource, &1)}, &1))}
@@ -247,10 +247,11 @@ defmodule Ramal.Merge do
     {stale |> Enum.concat() |> Enum.sort_by(&{inspect(&1.resource), &1.key}), fetched}
   end
 
-  defp stale_in(resource, expected) do
+  defp stale_in(resource, expected, tenant) do
     rows =
       resource
       |> Ash.Query.new()
+      |> Ash.Query.set_tenant(Resource.read_tenant(resource, tenant))
       |> filter_keys(resource, Map.keys(expected))
       |> lock()
       |> Resource.read_all(authorize?: false)
