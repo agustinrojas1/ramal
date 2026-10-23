@@ -59,7 +59,7 @@ defmodule Ramal.Preparation do
     * `Ash.load/3` onto a record the branch changed reselects the relationship's source attribute (for example
       `paddock_id`) from the data layer, and that reselect runs none of the read hooks (`reselect_and_load/6` in
       `lib/ash/actions/read/read.ex`), so a foreign key the branch changed is not seen and the load follows the
-      database's. Use `Ramal.load/3` (ADR 0030), pass `reuse_values?: true`, which skips the reselect, or load through a
+      database's. Use `Ramal.load/3` (ADR 0031), pass `reuse_values?: true`, which skips the reselect, or load through a
       read (`Ash.Query.load/2`), which goes through this preparation;
     * a sort on text uses byte order once the overlay touches the resource, where Postgres uses its collation, so mixed-case
       text can come out in another order than outside the branch (ADR 0024);
@@ -319,7 +319,7 @@ defmodule Ramal.Preparation do
     end
   end
 
-  # A paginated read of a resource the overlay touches (ADR 0028). Ash would page the base in the database and the
+  # A paginated read of a resource the overlay touches (ADR 0030). Ash would page the base in the database and the
   # patch would add every overlay record to every page, so the page is cut here, from the whole patched list, and
   # handed to Ash as the result of the data layer. The list is read by the same action, as a read of its own that
   # keeps this preparation's `after_action` hook, the query as the hooks left it and none of their hooks; the loads
