@@ -82,6 +82,7 @@ defmodule Ramal.MixProject do
           "docs/DESIGN.md",
           "docs/ROADMAP.md",
           "docs/agents.md",
+          "docs/STABILITY.md",
           "usage-rules.md",
           "CONTRIBUTING.md",
           "CHANGELOG.md"

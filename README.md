@@ -8,7 +8,7 @@
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ramal.svg)](https://hex.pm/packages/ramal) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal-blue.svg)](https://hexdocs.pm/ramal) [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fagustinrojas1%2Framal%2Fmain%2Fdemo%2Framal_tour.livemd)
 
-> **Status: 0.7, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, reads that agree with the branch (pages, aggregates, calculations), bulk actions and upserts, one tenant per branch, nested, durable and clustered branches, the LiveView inspector and the tools for AI agents work and are tested on Postgres. The branch lifecycle is [model-checked and its data rules are proved](#formally-verified). The API may still change before 1.0.
+> **Status: 0.7, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, reads that agree with the branch (pages, aggregates, calculations), bulk actions and upserts, one tenant per branch, nested, durable and clustered branches, the LiveView inspector and the tools for AI agents work and are tested on Postgres. The branch lifecycle is [model-checked and its data rules are proved](#formally-verified). What is stable before 1.0 is on the [stability page](https://github.com/agustinrojas1/ramal/blob/main/docs/STABILITY.md).
 
 ## What it does
 
@@ -124,7 +124,7 @@ def deps do
 end
 ```
 
-Requires Elixir 1.18+ and Ash 3.x. AshPostgres is optional and only needed for the Postgres storage backend.
+Requires Elixir 1.18+ and Ash 3.36 or later. AshPostgres is optional and only needed for the Postgres storage backend.
 
 **1. Add the extension to each resource a branch should see.**
 
@@ -352,6 +352,14 @@ Ramal is deliberately small, and it says what it does not do:
 
 The complete list, with the reasons, is in the [design document](https://github.com/agustinrojas1/ramal/blob/main/docs/DESIGN.md)
 and the [ADRs](https://github.com/agustinrojas1/ramal/tree/main/docs/adr).
+
+## Stability
+
+From 0.8.0, the calls `branch/2`, `run/2`, `fork/2`, `diff/2`, `merge/2`, `propose/2`, `approve/2`, `reject/2` and
+`discard/1` keep their names, required arguments and return shapes through 0.x and into 1.0. A change to one of them
+comes with a deprecation warning for at least one minor release first. Everything else may change in a minor release
+before 1.0, and the changelog says when it does. The [stability page](https://github.com/agustinrojas1/ramal/blob/main/docs/STABILITY.md)
+lists what is stable, what is extended, and when releases come.
 
 ## Inspector
 
