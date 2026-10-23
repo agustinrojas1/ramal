@@ -51,6 +51,9 @@ defmodule Ramal.Test.Farm.Paddock do
 
   relationships do
     has_many(:herds, Ramal.Test.Farm.Herd, public?: true)
+
+    # One herd per paddock in the narrowing tests (ADR 0047); the seeds' L07 has two, so they do not read it.
+    has_one(:first_herd, Ramal.Test.Farm.Herd, public?: true)
   end
 
   aggregates do

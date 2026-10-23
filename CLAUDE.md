@@ -18,7 +18,7 @@ lib/ramal/resource.ex        Spark extension: adds the read preparation and the 
 lib/ramal/resource/transformer.ex  the extension's transformer (Spark needs a module for it)
 lib/ramal/preparation.ex     read side: strip limit/offset, patch results
 lib/ramal/preparation/aggregates.ex  aggregates a read loads, recomputed from the branch's rows after the patch (ADR 0029)
-lib/ramal/preparation/related.ex  filters and sorts through a relationship the branch changed: split out of the data-layer query (ADR 0025)
+lib/ramal/preparation/related.ex  filters and sorts through a relationship the branch changed: split out of the data-layer query (ADR 0025), narrowed for to-one paths (ADR 0047)
 lib/ramal/preparation/paged.ex   what page a query asks for and the cut of it from the patched list, so a paginated read in a branch is paged after the patch (ADR 0030)
 lib/ramal/prefilter.ex       cheap test that rules overlay records out of a read filter before the Ash runtime does
 lib/ramal/change.ex          the Change struct that diff returns
