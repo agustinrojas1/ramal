@@ -39,9 +39,10 @@ defmodule Ramal.Ash do
       `before_transaction` hook and the `before_action` hooks it adds (`Ramal.Preparation`).
     * The context markers `accessing_from`, `query_for`, `private.actor` and `private.authorize?` are where Ramal reads
       them, and `Ash.Query` has the hook fields Ramal rebuilds a query with.
-    * The internal functions `Ash.Actions.Read.unpaginated_read/3`, `Ash.Actions.Sort.runtime_sort/3` and
-      `sorting_on_identity?/1`, `Ash.Actions.Read.Relationships.has_parent_expr?/1`, `Ash.Filter.list_refs/4`,
-      `Ash.Filter.map/2` and `Ash.Filter.Runtime.filter_matches/4` exist with the arity Ramal calls.
+    * The internal functions exist with the arity Ramal calls: Ash.Actions.Read.unpaginated_read/3,
+      Ash.Actions.Sort.runtime_sort/3 and sorting_on_identity?/1, Ash.Actions.Read.Relationships.has_parent_expr?/1,
+      Ash.Filter.list_refs/4, Ash.Filter.map/2 and Ash.Filter.Runtime.filter_matches/4. They are written without
+      code quotes because Ash hides them from its docs.
 
   ## Example
 
