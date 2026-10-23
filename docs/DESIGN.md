@@ -166,8 +166,8 @@ This is the section that decides correctness. In a read action's preparation, wh
    patched list: a keyset filter is judged by `Ash.Filter.Runtime` on the patched rows, so the cursor of a row the
    branch deleted still finds its place. `Ash.stream!/2` pages the same way. The cost is a read of every row the filter
    matches for each page, as for an unpaged read; when the overlay has no entry for the resource the database pages as
-   usual. A paged relationship load keeps being paged by the database and patched afterwards
-   ([ADR 0030](adr/0030-pages-cut-from-the-patched-list.md)).
+   usual. A paged relationship load is cut the same way, per source record
+   ([ADR 0030](adr/0030-pages-cut-from-the-patched-list.md), [ADR 0040](adr/0040-relationship-pages-cut-per-source.md)).
 6. **Policies:** the query's filter, including one a policy added, is applied to overlay records. Checks that act on
    results (`authorize_results`) are taken off the query once the overlay touches the resource and run on the patched
    rows in the `after_action` hook ([ADR 0037](adr/0037-result-checks-run-on-the-patched-rows.md)).
@@ -178,8 +178,11 @@ This is the section that decides correctness. In a read action's preparation, wh
    many_to_many with one SQL query that joins the join table in the database (`lateral_join?/4` in
    `lib/ash/actions/read/relationships.ex`), so when the branch holds entries for the join resource the destination's
    read preparation drops that join, reads the patched join rows instead and tags each destination row with its source
-   ([ADR 0017](adr/0017-many-to-many-links-in-a-branch.md)). A paged relationship load and a `through` path of several
-   hops keep seeing the base links. Because `manage_relationship` decides from that load, `:remove` finds a link the
+   ([ADR 0017](adr/0017-many-to-many-links-in-a-branch.md)). A relationship loaded with a page, a limit or an offset is one
+   lateral join that limits per source record; when the branch changed its destination (or the join resource) the same
+   hook reads the rows of all the sources whole and pages each source on its own, so the page, its `more?` and its
+   count see the branch ([ADR 0040](adr/0040-relationship-pages-cut-per-source.md)). A `through` path of several hops
+   keeps seeing the base rows of its intermediate resources. Because `manage_relationship` decides from that load, `:remove` finds a link the
    branch created and `:append` does not link a vet twice. One limit remains: `type: :append_and_remove` is refused
    with `:bulk_unsupported` when it has a link to remove (Ash unrelates with `Ash.bulk_destroy/4`,
    `bulk_delete_unused_unrelate/8` in `lib/ash/actions/managed_relationships.ex`, which bypasses the capture hook). Set
@@ -441,7 +444,7 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 2. Should `run/2` be reentrant (a branch inside a branch)? 0.1: no, `{:error, %Ramal.Error{reason: :nested_branch}}`; `merge/2` refuses the same way.
 3. ~~Where do many-to-many join resources sit in the overlay?~~ Answered: they are resources, so they get overlay
    entries like any other, keyed by the join resource's primary key (section 4.1 point 7, ADR 0014). A many_to_many
-   load and `manage_relationship` see links the branch changed (ADR 0017); a paged relationship load and a `through` path of several hops see the base links, and `append_and_remove` with a link to remove is refused.
+   load and `manage_relationship` see links the branch changed (ADR 0017); a `through` path of several hops sees the base links, and `append_and_remove` with a link to remove is refused.
 4. ~~Does the read preparation need to handle `Ash.Query.select`?~~ Answered: Ash always selects the primary key, and
    the preparation trims overlay records to the select (section 4.1).
 5. Should fingerprints cover rows read through relationship loads? 0.1: yes, because they are reads like any other
