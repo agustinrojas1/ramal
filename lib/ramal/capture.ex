@@ -130,31 +130,45 @@ defmodule Ramal.Capture do
   end
 
   defp write(changeset, id, nested?) do
-    case written(changeset) do
-      {:ok, kind, record, base_row} ->
-        resource = changeset.resource
-        key = Resource.key(resource, record)
-        entry = log_entry(changeset, key, nested?)
+    with {:ok, held} <- held_record(changeset, id),
+         {:ok, kind, record, base_row} <- written(changeset, held) do
+      resource = changeset.resource
+      key = Resource.key(resource, record)
+      entry = log_entry(changeset, key, nested?)
 
-        put = &put_write(&1, kind, {resource, key}, record, base_row, entry)
+      put = &put_write(&1, kind, {resource, key}, record, base_row, entry)
 
-        case Server.write(id, put) do
-          {:ok, {:ok, undo}, summary} ->
-            remember(undo)
-            emit(summary, changeset, nested?)
-            Ash.Changeset.set_result(changeset, {:ok, result_record(kind, record, resource)})
+      case Server.write(id, put) do
+        {:ok, {:ok, undo}, summary} ->
+          remember(undo)
+          emit(summary, changeset, nested?)
+          Ash.Changeset.set_result(changeset, {:ok, result_record(kind, record, resource)})
 
-          {:ok, {:error, :destroyed}, _summary} ->
-            Ash.Changeset.add_error(changeset, stale_error(changeset, key))
+        {:ok, {:error, :destroyed}, _summary} ->
+          Ash.Changeset.add_error(changeset, stale_error(changeset, key))
 
-          {:error, %Error{} = error} ->
-            Ash.Changeset.add_error(changeset, error)
-        end
-
-      {:error, %Error{} = error} ->
-        Ash.Changeset.add_error(changeset, error)
+        {:error, %Error{} = error} ->
+          Ash.Changeset.add_error(changeset, error)
+      end
+    else
+      {:error, %Error{} = error} -> Ash.Changeset.add_error(changeset, error)
     end
   end
+
+  # The row as the branch holds it, for an update. The record an update is called with is often older than the branch's
+  # copy (a struct read before an earlier update in the same branch), and the data layer would write only the changed
+  # attributes onto the row that is there, so the changes go onto the branch's copy and not onto the stale struct.
+  defp held_record(%{action_type: :update} = changeset, id) do
+    ref = {changeset.resource, Resource.key(changeset.resource, changeset.data)}
+
+    case Server.write(id, fn branch -> {Map.get(branch.overlay, ref), branch} end) do
+      {:ok, {_kind, record}, _summary} -> {:ok, record}
+      {:ok, _none_or_deleted, _summary} -> {:ok, nil}
+      {:error, %Error{}} = error -> error
+    end
+  end
+
+  defp held_record(_changeset, _id), do: {:ok, nil}
 
   # Updating or destroying a row the branch already destroyed is what the data layer refuses on the real base:
   # AshPostgres answers `StaleRecord` when its UPDATE or DELETE touches no row (`update/2` and `destroy/2` in
@@ -169,7 +183,7 @@ defmodule Ramal.Capture do
     end
   end
 
-  defp written(%{action_type: :create} = changeset) do
+  defp written(%{action_type: :create} = changeset, _held) do
     {:ok, record} = Ash.Changeset.apply_attributes(changeset)
 
     if Enum.all?(Info.primary_key(changeset.resource), &(Map.get(record, &1) != nil)) do
@@ -182,7 +196,10 @@ defmodule Ramal.Capture do
   # An update that changes no attribute is still logged: its hooks and managed relationships can write other rows, and
   # those writes are logged as nested, so only replaying this action brings them back. The overlay keeps the row as it
   # was (Ash does not write it either, so `updated_at` stays) and `Ramal.diff/1` leaves it out.
-  defp written(%{action_type: :update} = changeset) do
+  defp written(%{action_type: :update} = changeset, held) do
+    original = changeset.data
+    changeset = if held, do: %{changeset | data: held}, else: changeset
+
     record =
       if Ash.Changeset.changing_attributes?(changeset) do
         {:ok, record} = Ash.Changeset.apply_attributes(changeset)
@@ -192,11 +209,11 @@ defmodule Ramal.Capture do
       end
 
     with {:ok, record} <- apply_atomics(changeset, record) do
-      {:ok, :updated, record, base_row(changeset.data)}
+      {:ok, :updated, record, base_row(original)}
     end
   end
 
-  defp written(%{action_type: :destroy} = changeset) do
+  defp written(%{action_type: :destroy} = changeset, _held) do
     {:ok, :deleted, changeset.data, base_row(changeset.data)}
   end
 

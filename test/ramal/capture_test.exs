@@ -135,6 +135,53 @@ defmodule Ramal.CaptureTest do
       assert Ash.get!(Herd, herds.r7.id, authorize?: false).head == 30
     end
 
+    test "two updates through the same struct both land, as two UPDATEs would", %{
+      branch: branch,
+      herds: herds
+    } do
+      inside(branch, fn ->
+        Ash.update!(herds.r7, %{head: 31}, authorize?: false)
+        second = Ash.update!(herds.r7, %{name: "R7x"}, authorize?: false)
+
+        # The data layer returns the row it holds, not the stale struct with one change on it.
+        assert {second.name, second.head} == {"R7x", 31}
+
+        r7 = Ash.get!(Herd, herds.r7.id, authorize?: false)
+        assert {r7.name, r7.head} == {"R7x", 31}
+      end)
+
+      assert {:ok, [change]} = Ramal.diff(branch)
+      assert %{head: {30, 31}, name: {"R7", "R7x"}} = change.changes
+
+      assert {:ok, _} = Ramal.merge(branch, authorize?: false)
+      db = Ash.get!(Herd, herds.r7.id, authorize?: false)
+      assert {db.name, db.head} == {"R7x", 31}
+    end
+
+    test "a no-op update through a stale struct keeps an earlier update", %{
+      branch: branch,
+      herds: herds
+    } do
+      inside(branch, fn ->
+        Ash.update!(herds.r7, %{head: 31}, authorize?: false)
+        Ash.update!(herds.r7, %{}, authorize?: false)
+        assert Ash.get!(Herd, herds.r7.id, authorize?: false).head == 31
+      end)
+    end
+
+    test "a row the branch created can be updated through the struct it was created as", %{
+      branch: branch
+    } do
+      inside(branch, fn ->
+        created = Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false)
+        Ash.update!(created, %{head: 6}, authorize?: false)
+        Ash.update!(created, %{name: "R10b"}, authorize?: false)
+
+        herd = Ash.get!(Herd, created.id, authorize?: false)
+        assert {herd.name, herd.head} == {"R10b", 6}
+      end)
+    end
+
     test "a read inside a branch sees the updated row", %{branch: branch, herds: herds} do
       inside(branch, fn ->
         Ash.update!(herds.r7, %{head: 31}, authorize?: false)
@@ -504,6 +551,20 @@ defmodule Ramal.CaptureTest do
       end)
 
       assert Ash.get!(Counter, counter.id).n == 5
+    end
+
+    test "an atomic expression is evaluated against the branch's row, not a stale struct", %{
+      branch: branch,
+      counter: counter
+    } do
+      inside(branch, fn ->
+        Ash.update!(counter, %{}, action: :bump)
+        again = Ash.update!(counter, %{}, action: :bump)
+        assert again.n == 7
+      end)
+
+      assert {:ok, _} = Ramal.merge(branch, authorize?: false)
+      assert Ash.get!(Counter, counter.id).n == 7
     end
 
     test "the diff and the merge agree with what the branch showed", %{
