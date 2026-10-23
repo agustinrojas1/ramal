@@ -140,9 +140,41 @@ end
 Every `AshAi` tool of that request now reads and writes the branch. When the agent is done, the orchestrator calls
 `Ramal.diff/1` and `Ramal.propose/2` (or hands the agent `Ramal.Tools` over another channel).
 
-What is tested and what is not: Ramal's tests cover that an Ash call with `context: Ramal.context(branch)` sees and writes
-the branch. That `AshAi` 1.4 passes the context of the conn's Ash context to the action is read from its source
-(`AshAi.Mcp.Server.handle_post/4` and `AshAi.Tool.Execution`), not tested here, so check it against the version you run.
+What is tested: [`examples/ash_ai`](https://github.com/agustinrojas1/ramal/tree/main/examples/ash_ai) is a Mix project
+that runs in CI against `ash_ai` **1.4.0** (pinned). It exposes a read tool and a write tool of a small domain, drives
+them through `AshAi.Tools.execute/4` and through `AshAi.Mcp.Router` with `Plug.Test` behind the plug above, and checks that
+the data layer is untouched, that `Ramal.diff/1` is exactly what the tools wrote, that `Ramal.propose/2` freezes it, that a
+caller who names a branch it does not own gets a 404 and that `Ramal.Tools` and the AshAi tools work in one loop. The
+claims above about the context (AshAi reads the conn's Ash context in `AshAi.Mcp.Server.handle_post/4` and hands `context[:context]` to the action
+in `AshAi.Tool.Execution`) are therefore checked against that version, not only read.
+
+**An AshAi `update` or `destroy` tool does not work in a branch.** AshAi 1.4.0 runs them with `Ash.bulk_update!/4` and
+`Ash.bulk_destroy!/4` on a query with `limit(1)` (`AshAi.Tool.Execution.run_update/7`), and a branch refuses every bulk
+action (`:bulk_unsupported`, ADR 0005): the stream strategy writes through the data layer without calling the capture hook.
+Read and create tools are fine. For a write that updates or destroys, expose a generic action that does the single-record
+call itself and make it the tool; the example's `move_herd` is one, and passes the branch on with
+`Ash.Scope.to_opts(context)`:
+
+```elixir
+action :move_herd, :struct do
+  constraints instance_of: __MODULE__
+  argument :id, :uuid, allow_nil?: false
+  argument :paddock, :string, allow_nil?: false
+
+  run fn input, context ->
+    opts = Ash.Scope.to_opts(context)
+
+    __MODULE__
+    |> Ash.get!(input.arguments.id, opts)
+    |> Ash.Changeset.for_update(:move, %{paddock: input.arguments.paddock}, opts)
+    |> Ash.update(opts)
+  end
+end
+```
+
+`Ramal.Tools` and the AshAi tools go in one tool list: the model opens a branch with `ramal_open_branch`, the host runs each
+AshAi tool call with `context: Ramal.context(id)` for the id it got from that call (owned by the caller), and the model
+proposes with `ramal_propose_branch`. The example's second test does exactly that.
 
 Two differences from `Ramal.run/2` to know about:
 
@@ -160,6 +192,6 @@ an unattended agent:
 
 - It merges when it should propose. Do not give it `Ramal.merge/2`.
 - It forks a branch and merges both. The second merge is `:stale`; that is the guard working.
-- It uses a bulk action. Bulk actions and upserts are refused inside a branch; it must loop over single-row actions.
+- It uses a bulk action. Bulk actions and upserts are refused inside a branch; it must loop over single-row actions. An AshAi `update` or `destroy` tool is a bulk action (see above).
 - It forgets branches. Set `max_active_branches` and `branch_rate` on `Ramal.Supervisor` when an agent can open branches.
 - It filters or sorts on an aggregate declared on the resource (`filter head_count > 10`). That is judged on the base rows; an aggregate it only loads is computed from the branch, and `Ramal.aggregate/4` gives one total.

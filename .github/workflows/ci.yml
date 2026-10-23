@@ -81,6 +81,31 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix bench --quick --no-json
 
+  # The AshAi example is its own Mix project and pins one ash_ai version. It runs on the ETS data layer.
+  ash-ai-example:
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+    defaults:
+      run:
+        working-directory: examples/ash_ai
+    steps:
+      - uses: actions/checkout@v7
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28.5"
+          elixir-version: "1.19.6"
+      - uses: actions/cache@v6
+        with:
+          path: |
+            examples/ash_ai/deps
+            examples/ash_ai/_build
+          key: ${{ runner.os }}-ash-ai-example-${{ hashFiles('examples/ash_ai/mix.lock', 'mix.lock') }}
+          restore-keys: ${{ runner.os }}-ash-ai-example-
+      - run: mix deps.get
+      - run: mix hex.audit
+      - run: mix ci
+
   # The inspector is its own Mix project. Its suite runs on the ETS data layer, so it needs no database.
   ramal-live:
     runs-on: ubuntu-latest

@@ -19,6 +19,10 @@ ramal_live-*.tar
 /ramal_live/deps/
 /ramal_live/doc/
 
+# The AshAi example is its own Mix project
+/examples/ash_ai/_build/
+/examples/ash_ai/deps/
+
 # The benchmark is its own Mix project
 /bench/_build/
 /bench/deps/
