@@ -6,6 +6,7 @@ defmodule Ramal.Storage.PostgresTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Ramal.{Branch, Error}
+  alias Ramal.Storage.Codec
   alias Ramal.Storage.Postgres
 
   doctest Ramal.Storage.Postgres
@@ -120,6 +121,107 @@ defmodule Ramal.Storage.PostgresTest do
 
       assert {:error, %Error{reason: :storage}} = Postgres.put(bad, @config)
       assert {:error, %Error{reason: :not_found}} = Postgres.fetch(bad.id, @config)
+    end
+  end
+
+  describe "the owner column" do
+    alias Ecto.Adapters.SQL
+
+    defp owner_column(id) do
+      {:ok, uuid} = Ecto.UUID.dump(id)
+
+      %{rows: [[owner]]} =
+        SQL.query!(TestRepo, "SELECT owner FROM ramal_branches WHERE id = $1", [uuid])
+
+      owner
+    end
+
+    test "Postgres fills it from the owner in the state, and it is NULL for an unowned branch" do
+      for owner <- ["ana", 7, {:user, 7}, %{"id" => 1}] do
+        branch = branch(owner: owner)
+        :ok = Postgres.put(branch, @config)
+
+        assert {:ok, json} = Codec.encode_owner(owner)
+        assert owner_column(branch.id) == json
+      end
+
+      unowned = branch()
+      :ok = Postgres.put(unowned, @config)
+      assert owner_column(unowned.id) == nil
+    end
+
+    test "the column follows the state when the branch is put again" do
+      branch = branch(owner: "ana")
+      :ok = Postgres.put(branch, @config)
+      :ok = Postgres.put(%{branch | owner: "luis"}, @config)
+
+      assert owner_column(branch.id) == "luis"
+      assert {:ok, []} = Postgres.list(Farm, [owner: "ana"], @config)
+      assert {:ok, [%Branch{owner: "luis"}]} = Postgres.list(Farm, [owner: "luis"], @config)
+    end
+
+    test "a row written without the column, as 0.3.0 wrote it, is found by owner" do
+      owned = branch(owner: "ana")
+      unowned = branch()
+      pre_owner = branch()
+
+      for b <- [owned, unowned, pre_owner], do: :ok = Postgres.put(b, @config)
+
+      {:ok, id} = Ecto.UUID.dump(pre_owner.id)
+
+      # The state of a branch stored before owners existed has no "owner" key at all.
+      SQL.query!(TestRepo, "UPDATE ramal_branches SET state = state - 'owner' WHERE id = $1", [id])
+
+      assert owner_column(pre_owner.id) == nil
+      assert {:ok, [^owned]} = Postgres.list(Farm, [owner: "ana"], @config)
+
+      assert {:ok, listed} = Postgres.list(Farm, [owner: nil], @config)
+      assert Enum.sort(Enum.map(listed, & &1.id)) == Enum.sort([unowned.id, pre_owner.id])
+    end
+
+    test "the filter does not decode the rows of other owners" do
+      mine = branch(owner: "ana")
+      theirs = branch(owner: "luis")
+      for b <- [mine, theirs], do: :ok = Postgres.put(b, @config)
+
+      # A state that cannot be decoded, with the owner kept so that the column keeps its value.
+      {:ok, id} = Ecto.UUID.dump(theirs.id)
+
+      SQL.query!(TestRepo, "UPDATE ramal_branches SET state = $2 WHERE id = $1", [
+        id,
+        %{"owner" => "luis", "broken" => true}
+      ])
+
+      assert Postgres.list(Farm, [owner: "ana"], @config) == {:ok, [mine]}
+    end
+
+    test "the index serves a lookup by owner" do
+      :ok = Postgres.put(branch(owner: "ana"), @config)
+
+      SQL.query!(TestRepo, "SET LOCAL enable_seqscan = off")
+
+      %{rows: plan} =
+        SQL.query!(
+          TestRepo,
+          "EXPLAIN SELECT id FROM ramal_branches WHERE domain = $1 AND owner = $2::jsonb",
+          ["Elixir.Ramal.Test.Farm", "\"ana\""]
+        )
+
+      assert plan |> List.flatten() |> Enum.join("\n") =~ "ramal_branches_owner_index"
+    end
+
+    test "a table without the column still stores and fetches, and only the owner filter fails" do
+      SQL.query!(TestRepo, "ALTER TABLE ramal_branches DROP COLUMN owner")
+      branch = branch(owner: "ana")
+
+      assert Postgres.put(branch, @config) == :ok
+      assert Postgres.fetch(branch.id, @config) == {:ok, branch}
+      assert {:ok, [^branch]} = Postgres.list(Farm, [], @config)
+
+      assert {:error, %Error{reason: :storage, message: message}} =
+               Postgres.list(Farm, [owner: "ana"], @config)
+
+      assert message =~ "mix ramal.gen.migration"
     end
   end
 

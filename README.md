@@ -126,7 +126,7 @@ children = [
 ]
 ```
 
-Run `mix ramal.gen.migration` for the `ramal_branches` table. Without `storage:` branches live in ETS and are lost when
+Run `mix ramal.gen.migration` for the `ramal_branches` table (run it again after upgrading from 0.3.0 for the owner column, then migrate). Without `storage:` branches live in ETS and are lost when
 the supervisor stops, which is fine for development and tests.
 
 **3. Branch.**
