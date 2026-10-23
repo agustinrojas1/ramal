@@ -264,6 +264,9 @@ Ramal is deliberately small, and it says what it does not do:
   an aggregate query with a limit keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
   test can notice. A filter or sort on an aggregate is judged on the base rows. For one total over a large table,
   `Ramal.aggregate/4` is cheaper.
+- **Use `Ramal.load/3` to load onto a record the branch changed.** `Ash.load/3` reselects the foreign key from the
+  database without running any hook, so after a herd moved paddock in the branch it still follows the old one. A load
+  inside a read (`Ash.Query.load/2`) is patched.
 - **A filter or sort through a relationship the branch changed reads more.** Ramal checks that part of the filter in
   memory on the rows the database returns for the rest, so keep attribute predicates next to it to narrow the read.
 - **Text sorts inside a branch use byte order,** not the database's collation, once the branch has changed that resource:

@@ -51,6 +51,8 @@ test decides whether it happens.
   `list/2`; it is not authorization, and anyone holding an id can act on the branch.
 - Use `Ramal.aggregate/4` for counts and sums inside a branch. Aggregates and calculations declared on the resource and
   computed in SQL do not see the overlay.
+- Use `Ramal.load/3` (not `Ash.load/3`) to load a relationship onto a record the branch changed: `Ash.load/3` reselects the
+  foreign key from the database, so it follows the old one. A load inside a read (`Ash.Query.load/2`) is patched.
 - Use UUID primary keys. A resource whose key the database generates cannot be created inside a branch.
 - An agent's tools run in a branch with `Ramal.run(branch_id, fn -> ... end)` around the call, or, where the call cannot
   be wrapped (an MCP server), with `context: Ramal.context(branch_id)` on the Ash call. `Ramal.Tools` has the branch
