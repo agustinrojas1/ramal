@@ -127,6 +127,14 @@ The stored JSON is what `Ramal.Storage.Postgres` writes to the `state` column. T
 | 1,000 | 3,018,251 | 1,023,133 (-66%) |
 | 5,000 | 14,084,083 | 4,612,222 (-67%) |
 
+`merge heap words` is the largest heap (`heap_block_size` plus `old_heap_block_size` at the end of a garbage collection, which grows in steps) that the process calling `Ramal.merge/1` reaches while it holds the branch, replays it and keeps the result. A branch crosses the process boundary as a full copy, and the merge used to ask for it twice:
+
+| rows updated | merge heap words, before | after |
+|---|---|---|
+| 100 | 514,837 | 364,609 (-29%) |
+| 1,000 | 2,639,025 | 1,517,744 (-42%) |
+| 5,000 | 11,347,307 | 7,022,466 (-38%) |
+
 ## What this is not
 
 It is not a reproduction of the [DAPLab benchmark](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html) (BranchBench). The workload is modelled on the workload the article focuses on, a Monte Carlo tree search that keeps forking promising partial states, mutates, queries and prunes; ours is a fixed-shape tree search, not MCTS, and it does not use their harness, schemas or step counts. The article reports that Neon finished 33 of 1,000 steps before hitting its active branch limit and that Dolt finished 170 steps before a two-hour timeout; those are their figures from their harness, cited here and deliberately kept out of the tables above, which were not measured the same way. It compares one Postgres schema at one size on one machine; Neon, Dolt and other branching databases are not measured.

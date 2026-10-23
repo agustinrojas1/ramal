@@ -163,6 +163,13 @@ defmodule Ramal.Branch.Server do
   def status(id), do: call(id, :status)
 
   @doc """
+  The domain of the branch and nothing else, for a caller that needs it to name the branch in telemetry and not the
+  copy of the whole branch `get/1` makes.
+  """
+  @spec domain(String.t()) :: {:ok, module} | {:error, Error.t()}
+  def domain(id), do: call(id, :domain)
+
+  @doc """
   The changes of the branch (`Ramal.Branch.diff/2`), computed inside the process. Only the changes cross the process
   boundary, not the overlay, the log and the base `get/1` copies, which is most of what a diff of a large branch cost.
   Like `get/1` it answers whatever the status of the branch is, so a rejected or proposed branch can still be reviewed.
@@ -362,6 +369,8 @@ defmodule Ramal.Branch.Server do
   def handle_call(:get, _from, state), do: reply(state, {:ok, state.branch})
 
   def handle_call(:status, _from, state), do: reply(state, {:ok, state.branch.status})
+
+  def handle_call(:domain, _from, state), do: reply(state, {:ok, state.branch.domain})
 
   def handle_call({:diff, opts}, _from, state), do: reply(state, Branch.diff(state.branch, opts))
 

@@ -76,10 +76,10 @@ defmodule Ramal.Merge do
     opts = validate!(opts)
 
     with :ok <- ensure_outside_branch(id),
-         {:ok, branch} <- Server.get(id) do
-      :telemetry.span([:ramal, :merge], %{branch_id: id, domain: branch.domain}, fn ->
+         {:ok, domain} <- Server.domain(id) do
+      :telemetry.span([:ramal, :merge], %{branch_id: id, domain: domain}, fn ->
         result = claim_and_merge(id, opts, from, decide)
-        {result, stop_metadata(id, branch, result)}
+        {result, stop_metadata(id, domain, result)}
       end)
     end
   end
@@ -457,11 +457,11 @@ defmodule Ramal.Merge do
 
   # -- telemetry ----------------------------------------------------------------------------------------------------
 
-  defp stop_metadata(id, branch, {:ok, %Result{} = result}) do
-    %{branch_id: id, domain: branch.domain, result: :ok, replayed: result.replayed}
+  defp stop_metadata(id, domain, {:ok, %Result{} = result}) do
+    %{branch_id: id, domain: domain, result: :ok, replayed: result.replayed}
   end
 
-  defp stop_metadata(id, branch, {:error, %Error{reason: reason}}) do
-    %{branch_id: id, domain: branch.domain, result: :error, reason: reason}
+  defp stop_metadata(id, domain, {:error, %Error{reason: reason}}) do
+    %{branch_id: id, domain: domain, result: :error, reason: reason}
   end
 end
