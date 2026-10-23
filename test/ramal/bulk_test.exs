@@ -81,9 +81,10 @@ defmodule Ramal.BulkTest do
       assert log_actions(branch) == [:create]
     end
 
-    test "with a transaction for all records, one failure takes every record back", %{
-      branch: branch
-    } do
+    test "with a transaction for all records, a failure does not take the earlier records back",
+         %{
+           branch: branch
+         } do
       result =
         inside(branch, fn ->
           Ash.bulk_create([%{name: "B1", head: 1}, %{name: nil, head: 2}], Herd, :create,
@@ -159,6 +160,39 @@ defmodule Ramal.BulkTest do
       assert db_heads() == @base
     end
 
+    # The stream reads the source in pages of `batch_size` and writes between them. The pages are cut from the patched
+    # list (ADR 0030); read from the database they would repeat the branch's rows and skip the base's.
+    test "of a query in pages updates every row once, branch changes included", %{herds: herds} do
+      for mods <- [[], [:create], [:destroy], [:update], [:create, :destroy]] do
+        {:ok, branch} = Ramal.branch(Farm)
+
+        expected =
+          inside(branch, fn ->
+            if :create in mods, do: Ash.create!(Herd, %{name: "NEW", head: 7}, authorize?: false)
+            if :destroy in mods, do: Ash.destroy!(herds.r8, authorize?: false)
+            if :update in mods, do: Ash.update!(herds.r8, %{head: 5}, authorize?: false)
+            names = Herd |> Ash.read!(authorize?: false) |> Enum.map(& &1.name) |> Enum.sort()
+
+            result =
+              Ash.bulk_update(Herd, :update, %{head: 2},
+                authorize?: false,
+                strategy: [:stream],
+                batch_size: 1,
+                return_errors?: true,
+                return_records?: true
+              )
+
+            assert result.status == :success, inspect(mods)
+            assert result.records |> Enum.map(& &1.name) |> Enum.sort() == names, inspect(mods)
+            names
+          end)
+
+        assert inside(branch, &heads/0) |> Map.keys() |> Enum.sort() == expected
+        assert inside(branch, &heads/0) |> Map.values() |> Enum.uniq() == [2]
+        assert db_heads() == @base
+      end
+    end
+
     # Ash picks the strategy before any hook runs, and inside a branch neither atomic strategy can be used: the read
     # preparation has a `before_action` hook and the capture's `atomic/3` answers `:not_atomic`.
     test "with only the atomic strategy is refused and writes nothing", %{
@@ -195,6 +229,27 @@ defmodule Ramal.BulkTest do
       assert db_heads() == @base
       assert {:ok, %Result{replayed: 2}} = Ramal.merge(branch)
       assert db_heads() == %{"R8" => 35}
+    end
+
+    test "of a query in pages destroys every row once", %{branch: branch, herds: herds} do
+      result =
+        inside(branch, fn ->
+          Ash.create!(Herd, %{name: "NEW", head: 7}, authorize?: false)
+          Ash.update!(herds.r7, %{head: 1}, authorize?: false)
+
+          Ash.bulk_destroy(Herd, :destroy, %{},
+            authorize?: false,
+            strategy: [:stream],
+            batch_size: 1,
+            return_errors?: true,
+            return_records?: true
+          )
+        end)
+
+      assert result.status == :success
+      assert result.records |> Enum.map(& &1.name) |> Enum.sort() == ["NEW", "R7", "R8", "R9"]
+      assert inside(branch, &heads/0) == %{}
+      assert db_heads() == @base
     end
 
     test "of a row the branch created leaves no entry", %{branch: branch} do

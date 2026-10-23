@@ -38,4 +38,8 @@ the data layer is reached instead of writing the base.
 - A bulk action in a branch costs a captured write per record; it is not faster than a loop, only shorter to write.
 - `transaction: :all` with `rollback_on_error?` rolls back the data layer's transaction, which holds nothing; the records
   that succeeded stay in the branch.
+- A bulk update or destroy of a query reads its source with `Ash.stream!/2` in pages of `batch_size` and writes between
+  the pages. The pages are cut from the patched list like any paged read (ADR 0030); the source read of the bulk
+  action carries `query_for: :bulk_update` as well, so `Ramal.Preparation.Paged` tells a page of the stream from the
+  whole-list read of an atomic strategy by the `bypass_max_page_size?` mark that `Ash.Actions.Read.Stream` sets.
 - `:bulk_unsupported` remains as the guard's reason only.
