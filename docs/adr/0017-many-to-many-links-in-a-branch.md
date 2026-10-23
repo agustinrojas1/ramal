@@ -24,7 +24,7 @@ carries `context.data_layer.lateral_join_source = {source_records, path}`, and t
 filters the destination by the keys the patched join rows name, and after the usual patch tags each row with its source
 record's primary key, once per source that links to it, applying `limit` and `offset` per source. When the branch holds
 no entry for the join resource nothing changes and Postgres does the join. **Prototyped: works.**
-`Ramal.Preparation.ManyToMany` is about 100 lines, and the two known-limit tests now assert the right behaviour, plus
+The new module, `lib/ramal/preparation/many_to_many.ex`, is about 100 lines, and the two known-limit tests now assert the right behaviour, plus
 tests for several sources at once, the vet's side of the relationship, sort, filter, `limit` and `offset`.
 
 **Load, B: load in Elixir from the patched join resource and the patched destination.** Ash gives no hook before the
