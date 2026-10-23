@@ -243,6 +243,15 @@ merge checks and replays in the tenant. Both the attribute and the schema-per-te
 Pass `owner:` to `Ramal.branch/2` and `Ramal.list(domain, owner: user_id)` shows each user their own. It is a filter, not
 access control; the [security notes](https://github.com/agustinrojas1/ramal/blob/main/SECURITY.md) say where the line is.
 
+### Branches in a cluster
+
+With `Ramal.Storage.Postgres` (after `mix ramal.gen.migration`) and `cluster: true` on `Ramal.Supervisor`, every node
+serves the same branches: `:global` gives each branch one process, and the storage refuses the saves of a process that
+no longer holds the branch. A netsplit can still lose writes. The process on the losing side is fenced at its next save:
+it emits `[:ramal, :branch, :fenced]` and stops, and unless the branch is durable (`durable: true`) what it held since its
+last save is lost. A durable branch stores each action before the action returns, so no acknowledged write is lost, and
+an action on the losing side fails with `:fenced`. `Ramal.Supervisor` says what stays per node.
+
 ### For AI agents
 
 Ramal is written with an agent in the loop in mind: the agent works in a branch, a person approves. Three pieces:

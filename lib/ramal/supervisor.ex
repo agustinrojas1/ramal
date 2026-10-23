@@ -48,16 +48,20 @@ defmodule Ramal.Supervisor do
 
   When the network splits, each side can load the same branch, one process per side. Every load bumps the branch's
   epoch in the storage, and every write of a process is conditional on the epoch it loaded. The process that lost is
-  refused at its next save, emits `[:ramal, :branch, :fenced]` and stops: what it held since its last save is lost, and
-  nothing it holds overwrites the newer state. A merge it was running is refused too, inside the merge transaction.
-  When the nodes find each other again `:global` keeps the process with the higher epoch and stops the other.
+  refused at its next save: it emits `[:ramal, :branch, :fenced]` and stops, and nothing it holds overwrites the newer
+  state. A merge it was running is refused too, inside the merge transaction. When the nodes find each other again
+  `:global` keeps the process with the higher epoch and stops the other.
+
+  The split loses writes. Without `durable: true`, what the losing process held since its last save is lost, and the
+  `:fenced` event announces it. A durable branch (`:durable`, ADR 0048) stores each action before the action returns, so
+  no acknowledged write is lost, and an action the losing process cannot store fails with `:fenced`. Another node loads
+  the branch with every action that ended.
 
   These stay on the node: the telemetry events (attach handlers on every node), the `:branch_rate` window, and the
   marks of a process killed for its heap, which the other nodes do not see (they load the last saved state, as they
-  would after the node crashed). Writes since the last save are lost when the node of the process crashes, as on one
-  node, unless the branch is durable (`:durable`, ADR 0048): the log of its actions is fenced by the epoch too, and
-  another node loads the branch with every action that ended. `ramal_live`'s inspector shows the events of its own node unless its broadcaster runs on every node over a
-  clustered `Phoenix.PubSub`.
+  would after the node crashed). A crash of the node that holds a branch loses its unsaved writes, as on one node,
+  unless the branch is durable. `ramal_live`'s inspector shows the events of its own node unless its broadcaster runs
+  on every node over a clustered `Phoenix.PubSub`.
 
   `idle_timeout` and `max_heap_size` belong to the supervisor, not to a branch, because a per-branch value would be
   forgotten when the branch is unloaded and loaded again.

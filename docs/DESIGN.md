@@ -381,7 +381,7 @@ backend reads `:repo` from it). Two implementations:
 A cluster (`Ramal.Supervisor` `cluster: true`, ADR 0044) names branch processes with `:global` (Ramal.Cluster, the `:via`
 module and the resolver that keeps the process with the higher epoch) and needs the optional `claim(id, config)`: it
 increments the branch's `epoch` and returns the stored branch carrying it. `put` and `mark_merged` of a branch that has an
-epoch are conditional on it and return `:fenced` otherwise; the process then emits `[:ramal, :branch, :fenced]` and stops.
+epoch are conditional on it and return `:fenced` otherwise; the process then emits `[:ramal, :branch, :fenced]` and stops. What that process held since its last save is lost and announced, unless the branch is durable: a durable branch appends each action before the action returns, so only an action the losing process cannot store fails (`:fenced`), and no acknowledged write is lost.
 The epoch is the `Ramal.Branch` field `epoch` (`nil` without a cluster), the `epoch` column of `ramal_branches`, and is
 never part of `state`. `verification/tla/Cluster.tla` models it.
 
