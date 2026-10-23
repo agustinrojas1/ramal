@@ -2,7 +2,7 @@ defmodule Ramal.Storage.PostgresTest do
   # Ramal.Supervisor is one per node and named, so these tests cannot run concurrently.
   use Ramal.DataCase, async: false
 
-  import Ramal.BranchCase, only: [eventually: 1, loaded?: 1]
+  import Ramal.BranchCase, only: [crash: 1, eventually: 1, loaded?: 1]
 
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
@@ -373,18 +373,6 @@ defmodule Ramal.Storage.PostgresTest do
       {:ok, branch} = Ramal.branch(Farm)
       on_exit(fn -> Postgres.delete(branch.id, @config) end)
       {:ok, branch: branch}
-    end
-
-    # What a crash of the node leaves: the process gone, no terminate/2, and the marks a restart clears.
-    defp crash(id) do
-      pid = Ramal.Supervisor.whereis(id)
-      ref = Process.monitor(pid)
-      Process.exit(pid, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
-      eventually(fn -> Ramal.Supervisor.too_large?(id) end)
-      Ramal.Supervisor.clear_too_large(id)
-      Ramal.Supervisor.clear_running(id)
-      eventually(fn -> not loaded?(id) end)
     end
 
     defp logged_seqs(id) do

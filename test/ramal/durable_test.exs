@@ -26,19 +26,6 @@ defmodule Ramal.DurableTest do
 
   defp seqs(id), do: Enum.map(deltas(id), &elem(&1, 0))
 
-  # What a crash of the node leaves: the process gone without running terminate/2, its marks cleared as a restart
-  # clears them (the ETS tables of the supervisor are the only thing the test cannot lose, and storage is one of them).
-  defp crash(id) do
-    pid = Ramal.Supervisor.whereis(id)
-    ref = Process.monitor(pid)
-    Process.exit(pid, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
-    eventually(fn -> Ramal.Supervisor.too_large?(id) end)
-    Ramal.Supervisor.clear_too_large(id)
-    Ramal.Supervisor.clear_running(id)
-    eventually(fn -> not loaded?(id) end)
-  end
-
   defp create(branch, text),
     do: Ramal.run!(branch, fn -> Ash.create!(Silent, %{text: text}, authorize?: false) end)
 

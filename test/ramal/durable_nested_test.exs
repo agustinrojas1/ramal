@@ -4,7 +4,7 @@ defmodule Ramal.DurableNestedTest do
   # Ramal.Supervisor is one per node and named, so these tests cannot run concurrently.
   use Ramal.DataCase, async: false
 
-  import Ramal.BranchCase, only: [eventually: 1, loaded?: 1]
+  import Ramal.BranchCase, only: [crash: 1]
 
   alias Ramal.{Branch, Error}
   alias Ramal.Branch.Server
@@ -37,17 +37,6 @@ defmodule Ramal.DurableNestedTest do
       ETS.writes_after(%Branch{id: branch_id, domain: Farm, inserted_at: DateTime.utc_now()}, [])
 
     deltas
-  end
-
-  defp crash(id) do
-    pid = Ramal.Supervisor.whereis(id)
-    ref = Process.monitor(pid)
-    Process.exit(pid, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
-    eventually(fn -> Ramal.Supervisor.too_large?(id) end)
-    Ramal.Supervisor.clear_too_large(id)
-    Ramal.Supervisor.clear_running(id)
-    eventually(fn -> not loaded?(id) end)
   end
 
   describe "a nested fork merged into a durable parent" do
