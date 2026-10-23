@@ -6,8 +6,8 @@ defmodule Bench.RamalSide do
 
   alias Bench.Item
 
-  def branch do
-    {:ok, branch} = Ramal.branch(Bench.Domain)
+  def branch(opts \\ []) do
+    {:ok, branch} = Ramal.branch(Bench.Domain, opts)
     branch
   end
 

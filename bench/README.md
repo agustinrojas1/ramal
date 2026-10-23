@@ -35,6 +35,7 @@ The baselines are raw SQL through Ecto with no Ash in the path, no validations, 
 * **read**: a filtered read (`bucket < n`) returning about 1% (`small`) or 10% (`wide`) of the rows, from a node with that overlay.
 * **write**: one update in a node with that overlay.
 * **merge**: apply 100 or 1,000 updates to the base. Ramal replays each through the real update action in one transaction and checks staleness; `delta` applies them in one SQL statement.
+* **durable**: one update in a branch whose overlay holds 0, 100 or 1,000 updated rows, with the branch not durable and durable (ADR 0048), with ETS storage and with Postgres storage (`ramal_branches` and `ramal_branch_writes`, tables the setup creates). The Postgres difference is what the append costs. `durable_compact` times the snapshot a compaction stores (a `put` of the branch, every 100 appends), for a branch with 100 or 1,000 updated rows. Only Ramal has the case.
 * **fingerprint**: `Ramal.Resource.fingerprint/1` over 100, 1,000 and 20,000 records, and a `wide` read in an empty branch against the same read outside any branch.
 * **tree_search**: from a root, three levels; every level forks 4 children from each kept node, changes 5 rows in each, scores each by the sum of `score` over the whole table, and keeps the best 2. Mutations are a pure function of position in the tree, so all variants do the same logical work, and the run raises if they do not find the same best score.
 
@@ -88,6 +89,19 @@ The overlay size shows little in a small read or in a write up to 1,000 entries,
 * **Wide reads.** Reading 2,000 rows through Ash costs about 10 ms before any branch is involved in this run (5.5 ms in the 2026-10-22 run: the machine was faster then), against 2 ms for raw SQL. Inside a branch with no changes Ramal adds a few ms (the fingerprints, below); once the overlay holds 100 or 1,000 rows of that table it adds 6 to 9 ms more, because the read has to patch, filter and sort the rows in memory.
 * **Aggregates.** `Ramal.aggregate/4` grows with the overlay: 2.4 ms with none, 8.2 ms with 100 entries and 31.8 ms with 1,000. About 8 ms of each query at 1,000 is Ash handling a filter with a 1,000-key `in` list, which Ramal cannot avoid without changing what the aggregate means for filters it cannot evaluate. It is still independent of the table size, which is what the tree search needs.
 * **Merge.** Replay costs about 0.4 ms per change (0.7 ms in the 2026-10-22 run), because each change is a real action with validations, policies and changes, and the staleness check re-reads the rows. A set-based `UPDATE` is 15 to 64 times faster. That is the price of merging through the application's own rules, which a database merge cannot do.
+
+### Durable branches
+
+A branch with `durable: true` (ADR 0048) stores what each action wrote before the action returns. Run on 2026-10-23 on the commit that adds it, on the same machine as above, twice: [`durable-20261023.json`](results/published/durable-20261023.json) and [`durable-20261023-rerun.json`](results/published/durable-20261023-rerun.json). Medians in milliseconds, first run then rerun.
+
+| | not durable | durable | cost of the append (`durable_append`) |
+|---|---|---|---|
+| one update, ETS storage, overlay 0 / 100 / 1,000 | 1.51 / 2.14 / 2.38 and 2.08 / 2.16 / 2.44 | 1.35 / 1.29 / 2.29 and 1.72 / 1.94 / 1.57 | 0.01 to 0.02 |
+| one update, Postgres storage, overlay 0 / 100 / 1,000 | 1.98 / 1.49 / 1.53 and 1.98 / 1.09 / 2.04 | 4.29 / 3.93 / 2.43 and 2.65 / 3.24 / 3.31 | 1.61 / 1.72 / 1.10 and 1.12 / 1.39 / 1.40 |
+
+`durable_append` is the storage call as the branch process measures it (the `duration` of `[:ramal, :branch, :append]`), which is the time an action waits for the storage; it does not depend on the overlay, since a delta holds the rows of one action. With Postgres on the same host it is 1.1 to 1.7 ms, and with ETS 0.01 to 0.02 ms. The whole update in the Postgres rows is 1 to 2 ms slower when durable, which agrees with it, but a sandbox that moves a case by tens of percent between two runs, as the rows above do, cannot tell the two apart more finely than that, and the ETS rows show durable updates faster than plain ones in places for the same reason. The update's own action also holds a connection while the process stores the delta over another, so these numbers need a pool of at least two connections.
+
+Compaction stores the branch as a snapshot, which also deletes the deltas it covers, after every 100 appends. `durable_compact` times that `put` for a branch with 100 or 1,000 updated rows: 7.2 and 8.1 ms at 100, 72.9 and 68.4 ms at 1,000. It grows with the branch because the snapshot is the whole state, so at 1,000 rows it adds about 0.7 ms to each action on average. The action that reaches the hundredth append is answered before the snapshot starts, but any call to the branch, a read included, waits for the process until it is done.
 
 ### Before and after fast aggregates
 
