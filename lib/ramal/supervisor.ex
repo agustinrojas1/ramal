@@ -10,6 +10,9 @@ defmodule Ramal.Supervisor do
   It starts a `Registry` keyed by branch id, a `DynamicSupervisor` for the branch processes, and owns the ETS
   tables the library needs. There is one instance per node; its configuration lives in `:persistent_term`.
 
+  At start it logs a warning, once, when the host's Ash or AshPostgres is outside the versions `Ramal.Ash` is tested
+  with. It never refuses to start.
+
   A branch lives on one node. To let every node of a cluster use the same branches, see `:cluster` below.
 
   ## Options
@@ -87,6 +90,8 @@ defmodule Ramal.Supervisor do
 
   use Supervisor
 
+  require Logger
+
   alias Ramal.Error
   alias Ramal.Storage.ETS
 
@@ -120,6 +125,7 @@ defmodule Ramal.Supervisor do
     config = build_config(opts)
     check_cluster!(config)
     check_durable!(config)
+    check_ash_versions()
     :persistent_term.put(@config_key, config)
 
     children = [
@@ -150,6 +156,20 @@ defmodule Ramal.Supervisor do
   end
 
   defp check_durable!(_config), do: :ok
+
+  # Ramal runs on Ash internals (Ramal.Ash), so a version outside the range it is tested with may break a branch without
+  # a sign. Warn once per start. Never refuse: the host may be ahead of the range, and the warning is the signal.
+  defp check_ash_versions do
+    for app <- [:ash, :ash_postgres] do
+      case Ramal.Ash.check_version(app, Ramal.Ash.installed_version(app)) do
+        :ok ->
+          :ok
+
+        {:untested, version, range} ->
+          Logger.warning(Ramal.Ash.untested_message(app, version, range))
+      end
+    end
+  end
 
   defp create_table(name, type \\ :set) do
     if :ets.whereis(name) == :undefined do

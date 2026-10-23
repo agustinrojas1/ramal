@@ -10,6 +10,7 @@ A library. No OTP application of its own beyond `Ramal.Supervisor`, which the ho
 
 ```
 lib/ramal.ex                 public API (branch, run, fork, diff, merge, discard, current)
+lib/ramal/ash.ex             Ramal's contract with Ash: the tested versions, the Ash internals it relies on, the boot check (public)
 lib/ramal/branch.ex          the Branch struct and pure functions over it
 lib/ramal/branch/server.ex   GenServer: one process per open branch
 lib/ramal/cluster.ex         the :via module over :global and the resolver for branches in a cluster (ADR 0044)
@@ -63,7 +64,7 @@ Do not add a module `docs/DESIGN.md` does not name without first adding it there
 - Errors are `{:error, %Ramal.Error{}}` with a `reason` atom and a message a developer can act on. Raise only in the bang variants.
 - No speculative abstractions. If one storage backend exists, there is still a behaviour (it is in the design), but no plugin registry, no config DSL, no macros beyond the Spark extension.
 - Comments explain why, not what. A rule that comes from an Ash limitation cites the doc or source line.
-- Telemetry events for every branch lifecycle step; no logging from the library except at `:debug`.
+- Telemetry events for every branch lifecycle step; no logging from the library except at `:debug`, and the boot warning when the host's Ash or AshPostgres is outside the tested range (`Ramal.Ash`).
 
 ## Tests
 

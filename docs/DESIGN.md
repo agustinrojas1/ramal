@@ -344,6 +344,8 @@ This is the section that decides correctness. In a read action's preparation, wh
 `:multitenancy_unsupported`, `:tenant_mismatch`, `:partial_record`, `:branch_mismatch`, `:task_in_action`,
 `:unbranchable_resources`, `:row_busy`, `:limit_reached`. `lib/ramal/error.ex` holds the authoritative table.
 
+`Ramal.Ash` (public) is Ramal's contract with Ash: the Ash and AshPostgres versions the suite passes on, and the Ash internals Ramal relies on, so that a change in Ash has one place to look. `Ramal.Supervisor` compares the host's versions with it at boot and warns when they are outside the range. It never refuses to start.
+
 ### 5.1 Agent tools (ADR 0019)
 
 `Ramal.Tools` gives an LLM agent the branch calls as tools, with no dependency on an AI library:
