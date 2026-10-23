@@ -30,7 +30,7 @@ primary keys, metadata and log options.
   only when Ecto SQL is present. Ids must be UUIDs (what `Ramal.Branch.new/2` makes).
 - **`c:Ramal.Storage.list/3` returns `{:ok, branches} | {:error, error}`**: a database can fail where an ETS table cannot,
   and a row that no longer decodes must not be silently dropped.
-- A state version number (`"version": 1`) is stored; a newer one is refused rather than guessed at.
+- A state version number is stored (`"version": 2` since the compact codec); a newer one is refused rather than guessed at, and the older versions the codec lists are still read.
 
 ## Consequences
 

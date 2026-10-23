@@ -16,7 +16,15 @@ defmodule Ramal.Storage.Codec do
     * Everything else (primary keys, action input, actors, metadata, options) is a plain term: strings, numbers,
       booleans and `nil` are themselves; a list is a list; a map with only string keys that do not start with `$` is an
       object; and everything else is a one-key object that says what it is: `$a` atom, `$t` tuple, `$m` map as pairs,
-      `$s` struct, `$b` base64 of a binary that is not valid UTF-8.
+      `$s` struct, `$b` base64 of a binary that is not valid UTF-8, and for the structs that fill a record most often,
+      `$dt` `DateTime` (UTC), `$ndt` `NaiveDateTime`, `$d` `Date` and `$tm` `Time`, each as its ISO 8601 text. They
+      apply to the ISO calendar and to a `DateTime` in UTC, which the text reads back as the same value; any other is a
+      `$s` struct. A `$s` struct lists only the fields that differ from the module's default struct.
+    * The parts of a record's non-attribute fields (`__meta__`, `__metadata__`) that several records have in common are
+      written once under `"extras"`, and the records refer to them (`{"$x": index}`).
+    * A base row's snapshot is stored as what differs from the branch's record of the same row (`"like": "overlay"`),
+      because an update changes a few attributes of the row it started from. A snapshot of a row the branch deleted, which
+      has no record to compare with, is stored whole.
     * Atoms are read back with `String.to_existing_atom/1`, never created. Module names are found through the code
       path when the atom does not exist yet (a fresh VM has not loaded the host's modules), so a module that is not on
       the path is an error, not a new atom. Modules are loaded as they are named, before the values that follow them
@@ -42,7 +50,8 @@ defmodule Ramal.Storage.Codec do
   alias Ash.Resource.Info
   alias Ramal.{Branch, Error}
 
-  @version 1
+  @version 2
+  @readable_versions [1, 2]
   @statuses %{
     "open" => :open,
     "proposed" => :proposed,
@@ -59,21 +68,21 @@ defmodule Ramal.Storage.Codec do
 
       iex> {:ok, state} = Ramal.Storage.Codec.encode_state(Ramal.Branch.new(Ramal.Test.Farm))
       iex> {state["version"], state["overlay"], state["log"]}
-      {1, [], []}
+      {2, [], []}
   """
   @spec encode_state(Branch.t()) :: {:ok, map} | {:error, Error.t()}
   def encode_state(%Branch{} = branch) do
     {:ok,
-     %{
+     dedupe_extras(%{
        "version" => @version,
        "overlay" => Enum.map(branch.overlay, &overlay_entry/1),
-       "base" => Enum.map(branch.base, &base_entry/1),
+       "base" => Enum.map(branch.base, &base_entry(&1, branch.overlay)),
        "log" => Enum.map(branch.log, &log_entry/1),
        "metadata" => term(branch.metadata, ["metadata"]),
        "owner" => term(branch.owner, ["owner"]),
        "inserted_at" => term(branch.inserted_at, ["inserted_at"]),
        "proposal" => proposal(branch.proposal)
-     }}
+     })}
   catch
     {:codec, message, path} ->
       {:error,
@@ -113,7 +122,10 @@ defmodule Ramal.Storage.Codec do
       :storage
   """
   @spec decode_state(map, map) :: {:ok, Branch.t()} | {:error, Error.t()}
-  def decode_state(columns, %{"version" => @version} = state) do
+  def decode_state(columns, %{"version" => version} = state) when version in @readable_versions do
+    state = expand_extras(state)
+    overlay = Map.new(state["overlay"], &decode_overlay_entry/1)
+
     {:ok,
      %Branch{
        id: columns.id,
@@ -123,8 +135,8 @@ defmodule Ramal.Storage.Codec do
        inserted_at: unterm(state["inserted_at"]),
        metadata: unterm(state["metadata"]),
        owner: unterm(state["owner"]),
-       overlay: Map.new(state["overlay"], &decode_overlay_entry/1),
-       base: Map.new(state["base"], &decode_base_entry/1),
+       overlay: overlay,
+       base: Map.new(state["base"], &decode_base_entry(&1, overlay)),
        log: Enum.map(state["log"], &decode_log_entry/1),
        proposal: decode_proposal(state["proposal"])
      }}
@@ -147,7 +159,7 @@ defmodule Ramal.Storage.Codec do
     {:error,
      Error.new(
        :storage,
-       "stored branch #{columns.id} has state version #{version}; this Ramal reads version #{@version}"
+       "stored branch #{columns.id} has state version #{version}; this Ramal reads versions #{Enum.join(@readable_versions, " and ")}"
      )}
   end
 
@@ -157,6 +169,109 @@ defmodule Ramal.Storage.Codec do
       :error -> throw({:codec, "unknown status #{inspect(status)}"})
     end
   end
+
+  # -- extras ------------------------------------------------------------------------------------------------------
+
+  # The fields of a record that are not attributes (`__meta__`, `__metadata__`, loaded relationships) are the
+  # same for most rows of a resource, and written out they are most of what a row costs. A part of them that more than
+  # one record has, and that is larger than the reference to it, is written once under `"extras"` and the records hold
+  # `{"$x": index}` in its place. A plain object never has a key that starts with `$`, so a reference cannot be data.
+  @shared_weight 5
+
+  defp dedupe_extras(state) do
+    extras = for %{"record" => %{"extra" => extra}} <- state["overlay"], do: extra
+    counts = Enum.reduce(extras, %{}, &count_parts/2)
+
+    {overlay, shared} =
+      Enum.map_reduce(state["overlay"], %{index: %{}, table: []}, fn
+        %{"record" => %{"extra" => extra} = record} = entry, shared ->
+          {extra, shared} = share_parts(extra, counts, shared)
+          {%{entry | "record" => %{record | "extra" => extra}}, shared}
+
+        entry, shared ->
+          {entry, shared}
+      end)
+
+    case shared.table do
+      [] -> state
+      table -> state |> Map.put("overlay", overlay) |> Map.put("extras", Enum.reverse(table))
+    end
+  end
+
+  defp count_parts(part, counts) when is_map(part) or is_list(part) do
+    counts = Map.update(counts, part, 1, &(&1 + 1))
+    children = if is_map(part), do: Map.values(part), else: part
+    Enum.reduce(children, counts, &count_parts/2)
+  end
+
+  defp count_parts(_leaf, counts), do: counts
+
+  defp share_parts(part, counts, shared) when is_map(part) or is_list(part) do
+    if Map.get(counts, part, 0) > 1 and weight(part) >= @shared_weight do
+      reference(part, shared)
+    else
+      descend(part, counts, shared)
+    end
+  end
+
+  defp share_parts(leaf, _counts, shared), do: {leaf, shared}
+
+  defp descend(part, counts, shared) when is_map(part) do
+    {pairs, shared} =
+      Enum.map_reduce(part, shared, fn {key, value}, shared ->
+        {value, shared} = share_parts(value, counts, shared)
+        {{key, value}, shared}
+      end)
+
+    {Map.new(pairs), shared}
+  end
+
+  defp descend(part, counts, shared),
+    do: Enum.map_reduce(part, shared, &share_parts(&1, counts, &2))
+
+  defp reference(part, %{index: index, table: table} = shared) do
+    case index do
+      %{^part => at} ->
+        {%{"$x" => at}, shared}
+
+      _new ->
+        at = map_size(index)
+        {%{"$x" => at}, %{shared | index: Map.put(index, part, at), table: [part | table]}}
+    end
+  end
+
+  defp weight(part) when is_map(part), do: 1 + (part |> Map.values() |> weight_all())
+  defp weight(part) when is_list(part), do: 1 + weight_all(part)
+  defp weight(_leaf), do: 1
+
+  defp weight_all(parts), do: parts |> Enum.map(&weight/1) |> Enum.sum()
+
+  defp expand_extras(%{"extras" => table, "overlay" => overlay} = state) when is_list(table) do
+    table = List.to_tuple(table)
+
+    overlay =
+      Enum.map(overlay, fn
+        %{"record" => %{"extra" => extra} = record} = entry ->
+          %{entry | "record" => %{record | "extra" => expand_parts(extra, table)}}
+
+        entry ->
+          entry
+      end)
+
+    %{state | "overlay" => overlay}
+  end
+
+  defp expand_extras(state), do: state
+
+  defp expand_parts(%{"$x" => at}, table)
+       when is_integer(at) and at >= 0 and at < tuple_size(table),
+       do: elem(table, at)
+
+  defp expand_parts(part, table) when is_map(part),
+    do: Map.new(part, fn {key, value} -> {key, expand_parts(value, table)} end)
+
+  defp expand_parts(part, table) when is_list(part), do: Enum.map(part, &expand_parts(&1, table))
+  defp expand_parts(leaf, _table), do: leaf
 
   # -- encode -------------------------------------------------------------------------------------------------------
 
@@ -206,14 +321,21 @@ defmodule Ramal.Storage.Codec do
     }
   end
 
-  defp base_entry({{resource, key}, row}) do
+  defp base_entry({{resource, key} = ref, row}, overlay) do
     %{
       "resource" => Atom.to_string(resource),
       "key" => term(key, [{:resource, resource}, "base"]),
       "fingerprint" => row.fingerprint,
-      "snapshot" => row.snapshot && record(row.snapshot)
+      "snapshot" => row.snapshot && snapshot(row.snapshot, Map.get(overlay, ref))
     }
   end
+
+  # An update leaves most of a row as it was, so the snapshot is stored as what differs from the record.
+  defp snapshot(%resource{} = snapshot, {_kind, %resource{} = record}) do
+    Map.put(record(snapshot, record), "like", "overlay")
+  end
+
+  defp snapshot(snapshot, _overlay_entry), do: record(snapshot)
 
   defp log_entry({type, resource, action, params, actor, opts, at}) do
     path = [Atom.to_string(action), {:resource, resource}, "log"]
@@ -232,10 +354,15 @@ defmodule Ramal.Storage.Codec do
     }
   end
 
-  defp record(%resource{} = record) do
+  # With `against`, only what differs from that record of the same resource.
+  defp record(%resource{} = record, against \\ nil) do
     attributes = Info.attributes(resource)
     names = MapSet.new(attributes, & &1.name)
-    {unloaded, loaded} = Enum.split_with(attributes, &unloaded?(Map.fetch!(record, &1.name)))
+
+    {unloaded, loaded} =
+      attributes
+      |> Enum.reject(&same_field?(record, against, &1.name))
+      |> Enum.split_with(&unloaded?(Map.fetch!(record, &1.name)))
 
     %{
       "attrs" =>
@@ -244,9 +371,15 @@ defmodule Ramal.Storage.Codec do
           &{Atom.to_string(&1.name), attribute(&1, Map.fetch!(record, &1.name), resource)}
         ),
       "unloaded" => Enum.map(unloaded, &Atom.to_string(&1.name)),
-      "extra" => extra(record, resource, names)
+      "extra" => extra(record, resource, names, against)
     }
+    |> Map.reject(fn {_name, stored} -> stored == [] or stored == %{} end)
   end
+
+  defp same_field?(_record, nil, _name), do: false
+
+  defp same_field?(record, against, name),
+    do: Map.fetch!(record, name) === Map.fetch!(against, name)
 
   defp unloaded?(%Ash.NotLoaded{}), do: true
   defp unloaded?(_value), do: false
@@ -263,14 +396,16 @@ defmodule Ramal.Storage.Codec do
     end
   end
 
-  defp extra(record, resource, names) do
-    default = Map.from_struct(struct(resource))
+  # The fields that are not attributes. A full record lists the ones that differ from a fresh struct of the resource; a
+  # record stored against another lists the ones that differ from that one, which can be a field at its default.
+  defp extra(record, resource, names, against) do
+    reference = Map.from_struct(against || struct(resource))
 
     extra =
       record
       |> Map.from_struct()
       |> Enum.reject(fn {field, value} ->
-        field in names or Map.fetch!(default, field) == value
+        field in names or Map.fetch!(reference, field) === value
       end)
       |> Map.new()
 
@@ -310,10 +445,33 @@ defmodule Ramal.Storage.Codec do
     %{"$t" => value |> Tuple.to_list() |> Enum.map(&term(&1, path))}
   end
 
+  # The text of a date or time reads back as the same value only in the ISO calendar, and a `DateTime` only in UTC.
+  # The years of ISO 8601 are four digits. Anything else falls through to the struct clause below.
+  defp term(
+         %DateTime{calendar: Calendar.ISO, year: year, time_zone: "Etc/UTC", zone_abbr: "UTC"} =
+           value,
+         _path
+       )
+       when year in 0..9999 and value.utc_offset == 0 and value.std_offset == 0,
+       do: %{"$dt" => DateTime.to_iso8601(value)}
+
+  defp term(%NaiveDateTime{calendar: Calendar.ISO, year: year} = value, _path)
+       when year in 0..9999,
+       do: %{"$ndt" => NaiveDateTime.to_iso8601(value)}
+
+  defp term(%Date{calendar: Calendar.ISO, year: year} = value, _path) when year in 0..9999,
+    do: %{"$d" => Date.to_iso8601(value)}
+
+  defp term(%Time{calendar: Calendar.ISO} = value, _path), do: %{"$tm" => Time.to_iso8601(value)}
+
+  # Only the fields that differ from the module's default struct are written; `unterm/1` starts from that struct.
   defp term(%module{} = value, path) do
+    defaults = defaults(module)
+
     fields =
       value
       |> Map.from_struct()
+      |> Enum.reject(fn {k, v} -> Map.fetch(defaults, k) === {:ok, v} end)
       |> Map.new(fn {k, v} -> {Atom.to_string(k), term(v, [Atom.to_string(k) | path])} end)
 
     %{"$s" => Atom.to_string(module), "f" => fields}
@@ -328,6 +486,13 @@ defmodule Ramal.Storage.Codec do
   end
 
   defp term(value, path), do: unstorable(value, path)
+
+  # A module the VM has not loaded yet still has structs in memory (a literal needs no loaded module).
+  defp defaults(module) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :__struct__, 0),
+      do: Map.from_struct(module.__struct__()),
+      else: %{}
+  end
 
   defp label(key) when is_atom(key), do: Atom.to_string(key)
   defp label(key), do: {:inspect, key}
@@ -377,11 +542,30 @@ defmodule Ramal.Storage.Codec do
     end
   end
 
-  defp decode_base_entry(%{"resource" => resource, "key" => key} = row) do
+  defp decode_base_entry(%{"resource" => resource, "key" => key} = row, overlay) do
     resource = module!(resource)
-    snapshot = row["snapshot"] && decode_record(resource, row["snapshot"])
-    {{resource, unterm(key)}, %{fingerprint: row["fingerprint"], snapshot: snapshot}}
+    ref = {resource, unterm(key)}
+
+    snapshot =
+      row["snapshot"] && decode_snapshot(resource, row["snapshot"], Map.get(overlay, ref))
+
+    {ref, %{fingerprint: row["fingerprint"], snapshot: snapshot}}
   end
+
+  defp decode_snapshot(resource, %{"like" => "overlay"} = stored, entry) do
+    case entry do
+      {_kind, %^resource{} = record} ->
+        decode_record(resource, stored, record)
+
+      _no_record ->
+        throw(
+          {:codec,
+           "the snapshot of a #{inspect(resource)} row refers to a record the branch lacks"}
+        )
+    end
+  end
+
+  defp decode_snapshot(resource, stored, _entry), do: decode_record(resource, stored)
 
   defp decode_proposal(nil), do: nil
 
@@ -426,7 +610,13 @@ defmodule Ramal.Storage.Codec do
     end
   end
 
-  defp decode_record(resource, %{"attrs" => attrs, "unloaded" => unloaded, "extra" => extra}) do
+  # `like` is the record that the stored fields are changes to, for a snapshot stored against the overlay.
+  defp decode_record(resource, stored, like \\ nil)
+
+  defp decode_record(resource, stored, like) do
+    attrs = Map.get(stored, "attrs", %{})
+    unloaded = Map.get(stored, "unloaded", [])
+    extra = Map.get(stored, "extra", %{})
     attributes = Info.attributes(resource)
     known = MapSet.new(attributes, &Atom.to_string(&1.name))
 
@@ -435,7 +625,7 @@ defmodule Ramal.Storage.Codec do
     end
 
     record =
-      Enum.reduce(attributes, struct(resource), fn attribute, record ->
+      Enum.reduce(attributes, like || struct(resource), fn attribute, record ->
         name = Atom.to_string(attribute.name)
 
         cond do
@@ -478,6 +668,10 @@ defmodule Ramal.Storage.Codec do
   defp unterm(value) when is_list(value), do: Enum.map(value, &unterm/1)
   defp unterm(%{"$a" => name}), do: atom!(name)
   defp unterm(%{"$b" => encoded}), do: Base.decode64!(encoded)
+  defp unterm(%{"$dt" => text}), do: iso8601!(text, &DateTime.from_iso8601/1)
+  defp unterm(%{"$ndt" => text}), do: iso8601!(text, &NaiveDateTime.from_iso8601/1)
+  defp unterm(%{"$d" => text}), do: iso8601!(text, &Date.from_iso8601/1)
+  defp unterm(%{"$tm" => text}), do: iso8601!(text, &Time.from_iso8601/1)
   defp unterm(%{"$t" => items}), do: items |> Enum.map(&unterm/1) |> List.to_tuple()
   defp unterm(%{"$m" => pairs}), do: Map.new(pairs, fn [k, v] -> {unterm(k), unterm(v)} end)
 
@@ -503,6 +697,17 @@ defmodule Ramal.Storage.Codec do
   end
 
   defp unterm(map) when is_map(map), do: Map.new(map, fn {k, v} -> {k, unterm(v)} end)
+
+  defp iso8601!(text, parse) when is_binary(text) do
+    case parse.(text) do
+      {:ok, value} -> value
+      {:ok, value, _offset} -> value
+      {:error, _reason} -> throw({:codec, "#{inspect(text)} is not an ISO 8601 date or time"})
+    end
+  end
+
+  defp iso8601!(text, _parse),
+    do: throw({:codec, "#{inspect(text)} is not an ISO 8601 date or time"})
 
   defp atom!("Elixir." <> _ = name), do: module!(name)
 
