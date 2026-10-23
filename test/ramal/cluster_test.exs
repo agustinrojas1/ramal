@@ -141,6 +141,46 @@ defmodule Ramal.ClusterTest do
     end
   end
 
+  describe "nested forks" do
+    test "merge into a parent that a cluster process serves, and the parent persists on its epoch" do
+      start_cluster()
+      {:ok, parent} = Ramal.branch(Farm, name: "parent")
+      {:ok, child} = Ramal.fork(parent, nested: true)
+
+      Ramal.run!(child, fn -> Ash.create!(Herd, %{name: "nested", head: 3}, authorize?: false) end)
+
+      assert {:ok, %{replayed: 1}} = Ramal.merge(child, authorize?: false)
+
+      assert {:ok, %{epoch: epoch, merged_children: [id]}} = Ramal.get(parent.id)
+      assert id == child.id
+      assert {:ok, %{merged_children: [^id]}} = ETS.fetch(parent.id, [])
+      assert epoch == 1
+      assert heads() == %{}
+    end
+
+    test "cannot merge into a parent that another load fenced: the parent says so and stops" do
+      capture_branch_events()
+      start_cluster()
+      {:ok, parent} = Ramal.branch(Farm, name: "parent")
+      {:ok, child} = Ramal.fork(parent, nested: true)
+
+      Ramal.run!(child, fn -> Ash.create!(Herd, %{name: "nested", head: 3}, authorize?: false) end)
+
+      {:ok, _held} = Ramal.get(parent.id)
+
+      {:ok, other} = ETS.claim(parent.id, [])
+      :ok = ETS.put(%{other | name: "theirs"}, [])
+
+      assert {:error, %Error{reason: :fenced}} = Ramal.merge(child, authorize?: false)
+
+      id = parent.id
+      assert_receive {:telemetry, [:ramal, :branch, :fenced], %{branch_id: ^id}}, 2_000
+      eventually(fn -> not loaded?(id) end)
+      assert {:ok, %{name: "theirs", merged_children: []}} = ETS.fetch(id, [])
+      assert {:ok, %{status: :open}} = Ramal.get(child.id)
+    end
+  end
+
   describe "a process whose name :global gave to another" do
     test "saves what it holds and unloads when it is told it was superseded" do
       capture_branch_events()
