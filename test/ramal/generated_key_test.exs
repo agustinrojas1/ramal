@@ -153,6 +153,105 @@ defmodule Ramal.GeneratedKeyTest do
     end
   end
 
+  describe "bulk creates" do
+    test "give each record its own placeholder, and the merge renames each", %{branch: branch} do
+      notes =
+        inside(branch, fn ->
+          Ash.bulk_create([%{body: "one"}, %{body: "two"}, %{body: "three"}], Note, :create,
+            authorize?: false,
+            return_errors?: true,
+            return_records?: true
+          ).records
+        end)
+
+      placeholders = notes |> Enum.map(& &1.id) |> Enum.sort()
+      assert length(Enum.uniq(placeholders)) == 3
+      assert Enum.all?(placeholders, &(&1 < 0))
+      assert base_notes() == []
+
+      assert {:ok, %Result{replayed: 3, keys: keys}} = Ramal.merge(branch, authorize?: false)
+      assert keys |> Map.keys() |> Enum.sort() == Enum.map(placeholders, &{Note, &1})
+      assert base_notes() |> Enum.map(& &1.body) |> Enum.sort() == ["one", "three", "two"]
+
+      assert base_notes() |> Enum.map(& &1.id) |> Enum.sort() ==
+               keys |> Map.values() |> Enum.sort()
+    end
+
+    test "rename the key a later action refers to", %{branch: branch} do
+      inside(branch, fn ->
+        [parent] =
+          Ash.bulk_create([%{body: "parent"}], Note, :create,
+            authorize?: false,
+            return_records?: true
+          ).records
+
+        note!(%{body: "child", parent_id: parent.id})
+      end)
+
+      assert {:ok, %Result{replayed: 2}} = Ramal.merge(branch, authorize?: false)
+
+      assert [%{id: parent_id, body: "parent"}, %{body: "child", parent_id: child_parent}] =
+               base_notes()
+
+      assert child_parent == parent_id
+    end
+  end
+
+  describe "upserts" do
+    defp upsert!(code, body, parent_id \\ nil),
+      do:
+        Ash.create!(Note, %{code: code, body: body, parent_id: parent_id},
+          action: :upsert,
+          authorize?: false
+        )
+
+    test "of a row the base has take its key and hand out no placeholder", %{branch: branch} do
+      existing = note!(%{body: "known", code: "k"})
+
+      found = inside(branch, fn -> upsert!("k", "known again", existing.id) end)
+
+      assert found.id == existing.id
+      assert {:ok, %Result{keys: keys}} = Ramal.merge(branch, authorize?: false)
+      assert keys == %{}
+      assert [%{id: id, parent_id: parent, body: "known again"}] = base_notes()
+      assert id == existing.id
+      assert parent == existing.id
+    end
+
+    test "of a missing row get a placeholder that the merge renames", %{branch: branch} do
+      created = inside(branch, fn -> upsert!("f", "fresh") end)
+
+      assert created.id < 0
+      assert {:ok, %Result{replayed: 1, keys: keys}} = Ramal.merge(branch, authorize?: false)
+      assert [%{id: real, body: "fresh"}] = base_notes()
+      assert keys == %{{Note, created.id} => real}
+    end
+
+    test "of a row the branch created with a placeholder update it, and the merge writes one row",
+         %{
+           branch: branch
+         } do
+      {first, second} =
+        inside(branch, fn ->
+          first = upsert!("s", "same")
+          parent = note!(%{body: "parent"})
+          {first, upsert!("s", "same again", parent.id)}
+        end)
+
+      assert second.id == first.id
+
+      assert {:ok, %Result{replayed: 3, keys: keys}} = Ramal.merge(branch, authorize?: false)
+      assert map_size(keys) == 2
+
+      assert [%{body: "same again", parent_id: same_parent}, %{id: parent_id, body: "parent"}] =
+               base_notes()
+
+      assert same_parent == parent_id
+
+      assert keys[{Note, first.id}] != nil
+    end
+  end
+
   describe "forks" do
     test "keep their own placeholders and each is renamed at its own merge", %{branch: branch} do
       inside(branch, fn -> note!(%{body: "parent"}) end)

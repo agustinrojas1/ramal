@@ -25,11 +25,24 @@ defmodule Ramal.Test.Serial.Note do
 
   actions do
     defaults([:read, :destroy, create: :*, update: :*])
+
+    # An upsert on the code: a Note whose key the database generates, found by something other than its key.
+    create :upsert do
+      accept([:code, :body, :parent_id])
+      upsert?(true)
+      upsert_identity(:unique_code)
+      upsert_fields([:body, :parent_id])
+    end
+  end
+
+  identities do
+    identity(:unique_code, [:code])
   end
 
   attributes do
     integer_primary_key(:id)
     attribute(:body, :string, public?: true)
+    attribute(:code, :string, public?: true)
   end
 
   relationships do
