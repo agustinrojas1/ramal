@@ -317,7 +317,7 @@ Ramal is deliberately small, and it says what it does not do:
   merging through your own rules.
 - **Writes since the last save are lost if the node crashes.** A branch is saved at the moments listed above, not on every write.
 - **Bulk actions run record by record** inside a branch, each one captured like a single action, so they cost what a loop costs. A bulk update or destroy of a query must allow `strategy: [:atomic, :stream]`.
-- **A `through` path of several hops stays unsupported:** it sees the base rows of its intermediate resources.
+- **A `through` path with a many_to_many hop** (`through: [:herds, :vets]`) is left to the database, which returns nothing for it with or without a branch (AshPostgres 2.15 ignores the join resource). A `through` path of has_many and belongs_to hops sees the branch.
 - **Authorization is yours.** Anyone who holds a branch id can act on it. Ramal records who decided and never checks.
 - **Pre-1.0.** The public API may change before 1.0; the changelog says when it does.
 

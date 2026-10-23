@@ -50,7 +50,8 @@ defmodule Ramal.Preparation.Related do
   # changed relationship is not: the rewrite is exact about "true" and says "false" where the runtime says "unknown",
   # which `not` would turn into a match or a miss, so such a conjunct is left to Elixir whole. So is a leaf with an
   # `exists`, a calculation, an aggregate, a path of more than one hop, a root attribute next to the related one, a
-  # `many_to_many`/`has_many` path, or a relationship with its own filter, read action or manual definition.
+  # `many_to_many`/`has_many` path, or a relationship with its own filter, read action, manual definition or `through`
+  # path (ADR 0046).
   # Confirmed in `lib/ash/filter/filter.ex` (3.37): `Ash.Filter.map/2` visits a `Ref` through the function and stops
   # on `{:halt, expression}`, which is how the leaf is rebuilt with the path taken off; `Ash.Filter.parse/2` takes the
   # keyword form (`[paddock_id: [in: ids], or: [...], not: [...]]`) and returns hydrated expressions that can sit next
@@ -210,6 +211,7 @@ defmodule Ramal.Preparation.Related do
   defp plain_relationship?(relationship) do
     is_nil(Map.get(relationship, :filter)) and is_nil(Map.get(relationship, :read_action)) and
       is_nil(Map.get(relationship, :manual)) and Map.get(relationship, :no_attributes?) != true and
+      is_nil(Map.get(relationship, :through)) and
       (relationship.type != :belongs_to or
          Info.primary_key(relationship.destination) == [relationship.destination_attribute])
   end

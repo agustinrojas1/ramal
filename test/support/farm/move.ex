@@ -12,6 +12,11 @@ defmodule Ramal.Test.Farm.Move do
 
   actions do
     defaults([:read, :destroy, create: :*, update: :*])
+
+    # A paginated list, so the moves of a paddock can be loaded a page at a time through its herds.
+    read :list do
+      pagination(offset?: true, keyset?: true, countable: true, required?: false)
+    end
   end
 
   attributes do
