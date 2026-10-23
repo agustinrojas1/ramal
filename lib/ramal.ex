@@ -134,6 +134,30 @@ defmodule Ramal do
   end
 
   @doc """
+  The Ash context that makes an action run in the branch, for callers that cannot use `run/2`.
+
+  `run/2` puts the branch in the calling process. A tool runner such as an LLM agent's MCP server executes each tool
+  call inside its own request, passes `context:` to Ash and cannot wrap the call in a function. Pass this map as the
+  `context` option of the read, create, update or destroy and the action sees and writes the branch, as it does inside
+  `run/2`, with the differences below. Ash carries `context[:shared]` into the queries and changesets it derives, so
+  relationship loads follow (ADR 0002). `AshAi` hands the `context` of its MCP router and its tool loop to the action
+  it runs.
+
+  Unlike `run/2` this does not check that the branch exists or is open: an unknown, proposed, merged or discarded
+  branch makes the action fail instead, with the error `run/2` would have returned. It also does not queue the
+  notifications of the writes, so a notifier fires for a write made in a branch even on a resource without
+  `notify_in_branch? true`. Prefer `run/2` whenever you can wrap the call in a function.
+
+  ## Example
+
+      {:ok, branch} = Ramal.branch(MyApp.Farm)
+      herd = Ash.create!(MyApp.Farm.Herd, %{name: "R10", head: 5}, context: Ramal.context(branch))
+      # The row is in the branch, not in the database.
+  """
+  @spec context(branch_or_id) :: map
+  def context(branch_or_id), do: Current.shared_context(id_of(branch_or_id))
+
+  @doc """
   The branch with that id, with its overlay and log as they are now.
 
   ## Example

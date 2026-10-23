@@ -53,6 +53,16 @@ Done; ships with 0.2 (`bench/` is not published to Hex).
   (BranchBench); their reported figures are cited as theirs in `bench/README.md` and never placed beside ours. Nothing in
   the README cites a number this project cannot reproduce.
 
+## Agent tooling
+
+Done; unreleased.
+
+- `usage-rules.md` and a skill (`usage-rules/skills/ramal/`) that teach a coding agent to use Ramal, in the format of the
+  `usage_rules` package.
+- `Ramal.context/1` and `Ramal.Tools`: the branch calls as tools for any LLM tool loop or MCP server, without merge or
+  approve (ADR 0019), and `docs/agents.md` with the wiring for a tool loop and for `AshAi`.
+- Not done: an `ash_ai` extension, which would add a dependency on a fast-moving package.
+
 ## 1.0
 
 - Six months without a breaking change to the public API.

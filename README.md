@@ -67,6 +67,7 @@ That combination is the whole library.
 - **AI agents that explore alternatives.** Give an agent a branch instead of your database. It can try five plans,
   read the results of each, score them, keep the best and throw the rest away, and it cannot damage real data while it
   does. A tree search that forks promising states is exactly what a branch is cheap at (see the [benchmark](#benchmark)).
+  [How to wire an agent to Ramal](#for-ai-agents).
 - **What-if planning.** "What happens to pasture capacity if we move this herd?" Run the real move in a branch, read
   the numbers (`Ramal.aggregate/4` gives exact counts and sums for the branch), and discard it if you do not like the answer.
 - **Preview and staging of edits.** Show a user the result of a change before it exists: the form edits a branch, the page
@@ -202,6 +203,30 @@ It supports `:count`, `:exists`, `:sum`, `:min`, `:max` and `:avg`.
 Pass `owner:` to `Ramal.branch/2` and `Ramal.list(domain, owner: user_id)` shows each user their own. It is a filter, not
 access control; the [security notes](https://github.com/agustinrojas1/ramal/blob/main/SECURITY.md) say where the line is.
 
+### For AI agents
+
+Ramal is written with an agent in the loop in mind: the agent works in a branch, a person approves. Three pieces:
+
+- **`Ramal.Tools`** gives an agent the branch calls (open, list, fork, diff, propose, discard) as tool definitions with
+  JSON Schemas and one `call/3`, for any tool loop or MCP server. There is deliberately no merge or approve tool: an
+  agent proposes, a person decides. The host fixes the domain and owner, so the agent cannot reach another user's branch.
+- **`Ramal.context/1`** is the `context:` option that runs an Ash call in a branch, for tool servers (such as
+  [AshAi](https://hexdocs.pm/ash_ai)) that cannot wrap the call in `Ramal.run/2`.
+- **`usage-rules.md` and a skill** teach coding agents (Claude Code, Cursor, Copilot) to use Ramal correctly. They are in
+  the format of [`usage_rules`](https://hex.pm/packages/usage_rules): `mix usage_rules.sync` puts them in your `AGENTS.md`
+  and `.claude/skills`.
+
+```elixir
+opts = [domain: MyApp.Farm, owner: "session-42", proposed_by: "planner agent"]
+
+tools = Ramal.Tools.definitions(opts)                      # name, description, input_schema: hand these to your model
+{:ok, %{"id" => id}} = Ramal.Tools.call("ramal_open_branch", %{"name" => "move R7"}, opts)
+{:ok, %{"changes" => _}} = Ramal.Tools.call("ramal_branch_diff", %{"branch_id" => id}, opts)
+```
+
+The [agent guide](https://github.com/agustinrojas1/ramal/blob/main/docs/agents.md) has the tool loop, the `AshAi` MCP plug
+and what is and is not tested.
+
 ## Key features
 
 - **Real actions inside a branch.** Validations, policies, hooks, defaults and managed relationships run as they do outside.
@@ -213,6 +238,7 @@ access control; the [security notes](https://github.com/agustinrojas1/ramal/blob
 - **Telemetry** for every branch lifecycle step, every patched read and every captured write.
 - **Safety valves.** Optional per-domain limits on open branches and on the rate of new ones, a heap limit on each branch
   process, and the `sensitive?` attributes of a stored actor are dropped from the saved branch.
+- **Agent tooling.** Branch tools for an LLM agent without merge or approve, a context for MCP servers, and usage rules and a skill for coding agents ([above](#for-ai-agents)).
 - **A LiveView inspector** in a separate package, [`ramal_live`](#inspector).
 - **No Phoenix in core, AshPostgres optional.** The library adds one supervisor to your tree and nothing else.
 
@@ -269,6 +295,7 @@ The figures are indicative. Run `mix bench` on your own hardware before drawing 
 ## Learn more
 
 - [HexDocs](https://hexdocs.pm/ramal): the API, with an example on every function.
+- [Agent guide](https://github.com/agustinrojas1/ramal/blob/main/docs/agents.md) and [usage rules](https://github.com/agustinrojas1/ramal/blob/main/usage-rules.md): Ramal for AI agents.
 - [Design](https://github.com/agustinrojas1/ramal/blob/main/docs/DESIGN.md) and [roadmap](https://github.com/agustinrojas1/ramal/blob/main/docs/ROADMAP.md): how it works and what comes next.
 - [Architecture decision records](https://github.com/agustinrojas1/ramal/tree/main/docs/adr): why each choice was made.
 - [Security notes](https://github.com/agustinrojas1/ramal/blob/main/SECURITY.md): what Ramal enforces and what it leaves to you.

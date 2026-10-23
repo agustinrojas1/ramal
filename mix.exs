@@ -73,7 +73,15 @@ defmodule Ramal.MixProject do
       logo: "assets/logo/ramal-mark.svg",
       source_ref: "v#{@version}",
       extras:
-        ["README.md", "docs/DESIGN.md", "docs/ROADMAP.md", "CONTRIBUTING.md", "CHANGELOG.md"] ++
+        [
+          "README.md",
+          "docs/DESIGN.md",
+          "docs/ROADMAP.md",
+          "docs/agents.md",
+          "usage-rules.md",
+          "CONTRIBUTING.md",
+          "CHANGELOG.md"
+        ] ++
           Path.wildcard("docs/adr/0*.md"),
       groups_for_extras: [Guides: ~r/docs\/.*/]
     ]
@@ -83,7 +91,8 @@ defmodule Ramal.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib mix.exs README.md LICENSE CHANGELOG.md assets/logo)
+      files:
+        ~w(lib mix.exs README.md LICENSE CHANGELOG.md assets/logo usage-rules.md usage-rules docs/agents.md)
     ]
   end
 end
