@@ -9,6 +9,10 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
 
     One row per branch: `id` (uuid), `domain`, `name`, `status`, `inserted_at` and `updated_at` as columns, and the rest
     in `state` (jsonb) as `Ramal.Storage.Codec` writes it. Branch ids are UUIDs, as `Ramal.Branch.new/2` makes them.
+    `owner` (jsonb) is a column Postgres generates from `state -> 'owner'` (ADR 0021), with an index, for the `owner:`
+    filter of `Ramal.list/2`; nothing writes it, and it is `NULL` for an unowned branch. A table made by 0.3.0 or
+    earlier gets it from the second migration `mix ramal.gen.migration` writes; until then everything but the `owner:`
+    filter works.
     The branch process calls this module from its own process, so the repo's pool serves it like any other
     caller. The module exists only when Ecto SQL is a dependency of the host.
 
@@ -105,9 +109,10 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
       end
     end
 
-    # The owner is compared in the database on its JSON form (`state -> 'owner'`), so the branches of other owners are
-    # never decoded. A branch stored before owners existed has no `owner` key and counts as unowned. `Ramal.list/2`
-    # checks the decoded owner again, so a term whose JSON form is not canonical can only make this miss, never leak.
+    # The owner is compared in the database on its JSON form, in the generated `owner` column, so the branches of other
+    # owners are never decoded and the hash index serves the lookup. A branch stored before owners existed has no
+    # `owner` key and counts as unowned. `Ramal.list/2` checks the decoded owner again, so a term whose JSON form is not
+    # canonical can only make this miss, never leak.
     defp list_filter(domain, filters) do
       base = {"domain = $1", [Atom.to_string(domain)]}
 
@@ -124,14 +129,11 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
 
     defp by_owner({where, params}, :error), do: {:ok, where, params}
 
-    defp by_owner({where, params}, {:ok, nil}) do
-      {:ok, where <> " AND (state -> 'owner' IS NULL OR state -> 'owner' = 'null'::jsonb)",
-       params}
-    end
+    defp by_owner({where, params}, {:ok, nil}), do: {:ok, where <> " AND owner IS NULL", params}
 
     defp by_owner({where, params}, {:ok, owner}) do
       with {:ok, json} <- Codec.encode_owner(owner) do
-        {:ok, where <> " AND state -> 'owner' = $#{length(params) + 1}::jsonb", params ++ [json]}
+        {:ok, where <> " AND owner = $#{length(params) + 1}::jsonb", params ++ [json]}
       end
     end
 
@@ -213,7 +215,7 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     defp failed(exception) do
       Error.new(
         :storage,
-        "Postgres storage failed: #{Exception.message(exception)}; is the ramal_branches table migrated (mix ramal.gen.migration)?",
+        "Postgres storage failed: #{Exception.message(exception)}; is the ramal_branches table migrated (mix ramal.gen.migration writes what is missing, the owner column included)?",
         %{exception: exception}
       )
     end
