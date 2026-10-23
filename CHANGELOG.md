@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `demo/`, a guided walkthrough you run locally with `elixir demo/walkthrough.exs` against a Postgres from `demo/docker-compose.yml`, and the same tour as a Livebook notebook, `demo/ramal_tour.livemd`, with a "Run in Livebook" badge in the READMEs. Both step through branching, real-action validation and policies, diff, fork, exact aggregates, merge, a stale refusal, an all-or-nothing replay failure, and a proposal approved by a person. Not part of the Hex package.
+
+### Changed
+
+- `ramal_live/examples/farm_demo.exs` finds Postgres on port 5436 (the `demo/` compose file) or 5435 by itself, and prints one line and exits when none answers instead of a Postgrex stack trace.
+
 ## [0.3.0] - 2026-10-23
 
 ### Added

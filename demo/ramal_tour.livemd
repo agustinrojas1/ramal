@@ -1,0 +1,731 @@
+# Ramal: a guided tour
+
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fagustinrojas1%2Framal%2Fblob%2Fmain%2Fdemo%2Framal_tour.livemd)
+
+[Ramal](https://github.com/agustinrojas1/ramal) gives an [Ash](https://ash-hq.org) application Git-style branches of its data. A branch is a process that holds changes in memory on top of your database, and nothing reaches the database until the branch is merged.
+
+This notebook is the same story as `elixir demo/walkthrough.exs`, one chapter per section, so you can read the explanation, run the cell and change it:
+
+1. **The farm**: the starting data, in Postgres.
+2. **Open a branch and change things inside it**: the real action runs, its policy and validation still apply.
+3. **Diff**: what would this branch change?
+4. **Fork, and try an alternative next to it**: three branches open at once.
+5. **Count and sum inside a branch**: `Ramal.aggregate/4`, and the one catch about database aggregates.
+6. **Merge**: the branch is replayed through your real actions in one transaction.
+7. **Stale branches are refused**: a branch that read a row somebody else has since changed.
+8. **A merge is all or nothing**: a failure halfway leaves Postgres as it was.
+9. **Propose, review, approve**: an agent suggests, a person decides.
+10. **Where the farm ended up**.
+
+It is one self-contained file: it installs `ramal` from Hex and defines the farm itself, so you can open it straight from the badge above. Evaluate the cells from top to bottom. To start over, use "Reconnect and setup" and evaluate again; the setup recreates the three tables.
+
+## Setup
+
+You need a **Postgres 14 or newer** that this notebook can reach. The quickest way is the compose file next to this notebook in the repository, which starts one on port 5436:
+
+```sh
+docker compose -f demo/docker-compose.yml up -d
+```
+
+Without the repository, this does the same:
+
+```sh
+docker run -d --name ramal-demo-db -p 5436:5432 -e POSTGRES_USER=ramal -e POSTGRES_PASSWORD=ramal -e POSTGRES_DB=ramal_demo postgres:16
+```
+
+The first cell installs the dependencies. The first run compiles Ash, which takes a couple of minutes and a few GB of memory at its peak; it is cached afterwards. Compiler warnings about `Igniter` and `Owl` come from optional code paths of the Ash packages.
+
+It installs `ramal ~> 0.3.0` from Hex, the same package your app would use. If you opened the notebook from a checkout of the repository and that version is not on Hex, it falls back to the checkout. Set `RAMAL_TOUR_SOURCE=path` in the runtime's environment to use the checkout on purpose.
+
+```elixir
+checkout = Path.expand("..", __DIR__)
+
+in_checkout? =
+  File.regular?(Path.join(checkout, "mix.exs")) and
+    String.contains?(File.read!(Path.join(checkout, "mix.exs")), "app: :ramal,")
+
+install = fn ramal ->
+  Mix.install(
+    [
+      ramal,
+      # The versions Ramal's own tests run against.
+      {:ash, "~> 3.36.0"},
+      {:ash_postgres, "~> 2.15.0"},
+      {:simple_sat, "~> 0.1"}
+    ],
+    consolidate_protocols: false,
+    config: [
+      ash: [sat_solver: {SimpleSat, []}, missed_notifications: :ignore, default_string_length_count: :codepoints],
+      logger: [level: :warning]
+    ]
+  )
+end
+
+source =
+  if System.get_env("RAMAL_TOUR_SOURCE") == "path" and in_checkout? do
+    {:ramal, path: checkout, override: true}
+  else
+    {:ramal, "~> 0.3.0"}
+  end
+
+try do
+  install.(source)
+rescue
+  error in Mix.Error ->
+    if in_checkout? and elem(source, 1) != [path: checkout, override: true] do
+      IO.puts("ramal ~> 0.3.0 is not on Hex yet (#{Exception.message(error)}); using the checkout at #{checkout}")
+      install.({:ramal, path: checkout, override: true})
+    else
+      reraise error, __STACKTRACE__
+    end
+end
+
+Logger.configure(level: :warning)
+:ok
+```
+
+Where Postgres is. Edit this if yours is elsewhere. If Livebook itself runs in Docker, `localhost` is the container: use `host.docker.internal` as the host.
+
+```elixir
+pg = [
+  hostname: System.get_env("RAMAL_PG_HOST", "localhost"),
+  port: String.to_integer(System.get_env("RAMAL_PG_PORT", "5436")),
+  username: System.get_env("RAMAL_PG_USER", "ramal"),
+  password: System.get_env("RAMAL_PG_PASSWORD", "ramal"),
+  database: System.get_env("RAMAL_PG_DATABASE", "ramal_demo")
+]
+
+Application.put_env(:ramal_demo, Farm.Repo, pg ++ [pool_size: 10, log: false])
+pg |> Keyword.delete(:password) |> Keyword.new()
+```
+
+### The farm
+
+Three Ash resources, a domain and a repo. Nothing in them is specific to a demo, and the only Ramal lines are the `extensions: [Ramal.Resource]`, which is how a resource opts in to being visible inside a branch. Everything else is an ordinary Ash app:
+
+* a **validation** that reads other rows (`Farm.CapacityCheck`: a paddock must be able to hold the herd),
+* a **policy** (only a manager may move a herd),
+* an **action** that writes an audit row after it succeeds (`:move`).
+
+```elixir
+defmodule Farm.Repo do
+  use AshPostgres.Repo, otp_app: :ramal_demo
+
+  def min_pg_version, do: %Version{major: 14, minor: 0, patch: 0}
+  def installed_extensions, do: ["ash-functions"]
+end
+
+defmodule Farm.CapacityCheck do
+  @moduledoc false
+  # Refuses a move when the destination paddock cannot hold the herd. It reads the destination's other herds through Ash,
+  # so inside a branch it sees the moves that branch has already made, not only what is in Postgres.
+  use Ash.Resource.Validation
+
+  require Ash.Query
+
+  @impl true
+  def validate(changeset, _opts, _context) do
+    destination_id = Ash.Changeset.get_attribute(changeset, :paddock_id)
+    herd_id = Ash.Changeset.get_attribute(changeset, :id)
+    head = Ash.Changeset.get_attribute(changeset, :head)
+
+    with destination_id when not is_nil(destination_id) <- destination_id,
+         {:ok, paddock} <- Ash.get(Farm.Paddock, destination_id, authorize?: false),
+         {:ok, herds} <-
+           Farm.Herd |> Ash.Query.filter(paddock_id == ^destination_id) |> Ash.read(authorize?: false) do
+      present = herds |> Enum.reject(&(&1.id == herd_id)) |> Enum.map(& &1.head) |> Enum.sum()
+
+      if present + head <= paddock.capacity_head do
+        :ok
+      else
+        {:error,
+         field: :to_paddock_id,
+         message: "paddock #{paddock.name} holds #{paddock.capacity_head} head and already has #{present}"}
+      end
+    else
+      nil -> :ok
+      {:error, error} -> {:error, error}
+    end
+  end
+end
+
+defmodule Farm.Paddock do
+  use Ash.Resource,
+    domain: Farm,
+    extensions: [Ramal.Resource],
+    data_layer: AshPostgres.DataLayer
+
+  postgres do
+    table("paddocks")
+    repo(Farm.Repo)
+  end
+
+  actions do
+    defaults([:read, :destroy, create: :*, update: :*])
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:name, :string, allow_nil?: false, public?: true)
+    attribute(:hectares, :float, public?: true)
+    attribute(:capacity_head, :integer, allow_nil?: false, public?: true)
+  end
+end
+
+defmodule Farm.Herd do
+  use Ash.Resource,
+    domain: Farm,
+    extensions: [Ramal.Resource],
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer]
+
+  postgres do
+    table("herds")
+    repo(Farm.Repo)
+  end
+
+  actions do
+    defaults([:read, :destroy, create: :*, update: :*])
+
+    update :move do
+      description("Moves the herd to another paddock, refusing when the destination is too small, and logs the move.")
+
+      # The capacity validation reads other herds, so Ash cannot run this action as one atomic SQL update.
+      require_atomic?(false)
+      accept([])
+
+      argument(:to_paddock_id, :uuid, allow_nil?: false)
+
+      change(set_attribute(:paddock_id, arg(:to_paddock_id)))
+      validate(Farm.CapacityCheck)
+
+      change(fn changeset, _context ->
+        Ash.Changeset.after_action(changeset, fn changeset, herd ->
+          Ash.create!(
+            Farm.Move,
+            %{herd_id: herd.id, from_paddock_id: changeset.data.paddock_id, to_paddock_id: herd.paddock_id, moved_on: Date.utc_today()},
+            authorize?: false
+          )
+
+          {:ok, herd}
+        end)
+      end)
+    end
+  end
+
+  policies do
+    # Only a manager may move a herd. Everything else is open, to keep the demo short.
+    policy action(:move) do
+      authorize_if(actor_attribute_equals(:role, :manager))
+    end
+
+    policy action([:read, :create, :update, :destroy]) do
+      authorize_if(always())
+    end
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:name, :string, allow_nil?: false, public?: true)
+    attribute(:head, :integer, allow_nil?: false, public?: true)
+  end
+
+  relationships do
+    belongs_to(:paddock, Farm.Paddock, public?: true, attribute_writable?: true)
+  end
+end
+
+defmodule Farm.Move do
+  use Ash.Resource,
+    domain: Farm,
+    extensions: [Ramal.Resource],
+    data_layer: AshPostgres.DataLayer
+
+  postgres do
+    table("moves")
+    repo(Farm.Repo)
+  end
+
+  actions do
+    defaults([:read, :destroy, create: :*, update: :*])
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:herd_id, :uuid, allow_nil?: false, public?: true)
+    attribute(:from_paddock_id, :uuid, public?: true)
+    attribute(:to_paddock_id, :uuid, allow_nil?: false, public?: true)
+    attribute(:moved_on, :date, allow_nil?: false, public?: true)
+  end
+end
+
+defmodule Farm do
+  use Ash.Domain, validate_config_inclusion?: false
+
+  resources do
+    resource(Farm.Paddock)
+    resource(Farm.Herd)
+    resource(Farm.Move)
+  end
+end
+```
+
+The tables are plain DDL, recreated every time this cell runs, in the `ramal_demo` database only. The cell stops with one line if Postgres cannot be reached.
+
+```elixir
+defmodule Farm.Data do
+  @moduledoc false
+  alias Farm.{Herd, Paddock, Repo}
+
+  @ddl [
+    "DROP TABLE IF EXISTS moves, herds, paddocks",
+    """
+    CREATE TABLE paddocks (
+      id uuid PRIMARY KEY,
+      name text NOT NULL,
+      hectares double precision,
+      capacity_head bigint NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE herds (
+      id uuid PRIMARY KEY,
+      name text NOT NULL,
+      head bigint NOT NULL,
+      paddock_id uuid REFERENCES paddocks (id)
+    )
+    """,
+    """
+    CREATE TABLE moves (
+      id uuid PRIMARY KEY,
+      herd_id uuid NOT NULL,
+      from_paddock_id uuid,
+      to_paddock_id uuid NOT NULL,
+      moved_on date NOT NULL
+    )
+    """
+  ]
+
+  # Returns :ok, or {:error, message} when Postgres cannot be reached.
+  def setup! do
+    config = Application.fetch_env!(:ramal_demo, Repo)
+    {:ok, _} = Application.ensure_all_started(:postgrex)
+
+    # A plain TCP connect first: when nothing listens, Postgrex prints a long stack trace instead of one useful line.
+    case :gen_tcp.connect(to_charlist(config[:hostname]), config[:port], [], 2_000) do
+      {:ok, socket} ->
+        :gen_tcp.close(socket)
+        up(config)
+
+      {:error, reason} ->
+        {:error, "cannot reach Postgres at #{config[:hostname]}:#{config[:port]} (#{inspect(reason)}). Start it with `docker compose -f demo/docker-compose.yml up -d`, or edit the connection cell above."}
+    end
+  end
+
+  defp up(config) do
+    case Ecto.Adapters.Postgres.storage_up(config) do
+      :ok -> create_tables(config)
+      {:error, :already_up} -> create_tables(config)
+      {:error, reason} -> {:error, "cannot open database #{config[:database]} as #{config[:username]}: #{inspect(reason)}"}
+    end
+  end
+
+  defp create_tables(config) do
+    {:ok, pid} = Repo.start_link(pool_size: 2)
+    Enum.each(@ddl, &Repo.query!/1)
+    Supervisor.stop(pid)
+    :ok
+  rescue
+    error -> {:error, "cannot reach Postgres at #{config[:hostname]}:#{config[:port]}: #{Exception.message(error)}"}
+  end
+
+  def seed! do
+    [l07, l18, l22, l31] =
+      for {name, hectares, capacity} <- [{"L07", 40.0, 100}, {"L18", 25.5, 60}, {"L22", 31.0, 80}, {"L31", 18.0, 45}] do
+        Ash.create!(Paddock, %{name: name, hectares: hectares, capacity_head: capacity})
+      end
+
+    for {name, head, paddock} <- [{"R7", 30, l07}, {"R8", 35, l07}, {"R9", 25, l18}, {"R10", 40, l31}] do
+      Ash.create!(Herd, %{name: name, head: head, paddock_id: paddock.id})
+    end
+
+    %{l07: l07, l18: l18, l22: l22, l31: l31}
+  end
+end
+
+with {:error, message} <- Farm.Data.setup!(), do: raise(message)
+:ok
+```
+
+A few helpers that print what the cells below show. Nothing here is Ramal. `herds/0` goes through Ash, so inside `Ramal.run!/2` it shows the branch's version of the farm; `postgres_herds/0` goes around Ash with plain SQL, so it always shows what is really in the database.
+
+```elixir
+defmodule Tour do
+  @moduledoc false
+  import IO.ANSI, only: [format: 1]
+
+  def show(text), do: text |> String.split("\n") |> Enum.each(&IO.puts("  " <> &1))
+  def ok(text), do: IO.puts(format([:green, "✓ ", text, :reset]))
+  def refused(text), do: IO.puts(format([:yellow, "✗ ", text, :reset]))
+  def label(text), do: IO.puts(format([:magenta, text, :reset]))
+
+  # Rows as an aligned table, rows being lists of strings.
+  def table(header, rows) do
+    all = [header | rows]
+    widths = all |> Enum.zip_with(& &1) |> Enum.map(fn col -> col |> Enum.map(&String.length/1) |> Enum.max() end)
+
+    line = fn row ->
+      row |> Enum.zip(widths) |> Enum.map_join("  ", fn {cell, w} -> String.pad_trailing(cell, w) end) |> String.trim_trailing()
+    end
+
+    show(line.(header))
+    Enum.each(rows, &show(line.(&1)))
+  end
+
+  def herds do
+    names = paddock_names()
+
+    Farm.Herd
+    |> Ash.read!(authorize?: false)
+    |> Enum.sort_by(&natural(&1.name))
+    |> Enum.map(&[&1.name, to_string(&1.head), Map.get(names, &1.paddock_id, "-")])
+  end
+
+  def postgres_herds do
+    %{rows: rows} =
+      Farm.Repo.query!("""
+      SELECT h.name, h.head::text, coalesce(p.name, '-')
+      FROM herds h LEFT JOIN paddocks p ON p.id = h.paddock_id
+      """)
+
+    Enum.sort_by(rows, &natural(hd(&1)))
+  end
+
+  def print_herds(rows), do: table(["herd", "head", "paddock"], rows)
+
+  def postgres_moves do
+    %{rows: [[n]]} = Farm.Repo.query!("SELECT count(*) FROM moves")
+    n
+  end
+
+  def herd(name), do: Farm.Herd |> Ash.read!(authorize?: false) |> Enum.find(&(&1.name == name))
+
+  def paddock_names, do: Farm.Paddock |> Ash.read!(authorize?: false) |> Map.new(&{&1.id, &1.name})
+
+  def herd_name(id), do: Farm.Herd |> Ash.read!(authorize?: false) |> Enum.find_value("?", &(&1.id == id && &1.name))
+
+  # One line per change, with ids turned back into names so a person can read it.
+  def print_diff(changes) do
+    names = paddock_names()
+    herd_names = Farm.Herd |> Ash.read!(authorize?: false) |> Map.new(&{&1.id, &1.name})
+
+    for change <- changes do
+      what =
+        case {change.resource, change.kind} do
+          {Farm.Herd, :created} -> "herd #{elem(change.changes.name, 1)}"
+          {Farm.Herd, _} -> "herd #{Map.get(herd_names, change.key, change.key)}"
+          {Farm.Move, _} -> "move log row"
+          {other, _} -> inspect(other)
+        end
+
+      show("#{String.pad_trailing(to_string(change.kind), 8)} #{what}  (#{fields(change, names, herd_names)})")
+    end
+
+    :ok
+  end
+
+  # A move log row is described by the move it records; any other row by the attributes that differ.
+  defp fields(%{resource: Farm.Move, changes: changes}, names, herd_names) do
+    {_, herd_id} = changes.herd_id
+    {_, from} = changes.from_paddock_id
+    {_, to} = changes.to_paddock_id
+    "herd #{Map.get(herd_names, herd_id, "?")}: #{pretty(from, names)} → #{pretty(to, names)}"
+  end
+
+  defp fields(%{changes: changes}, names, _herd_names) do
+    Enum.map_join(changes, ", ", fn {field, {before, after_value}} ->
+      "#{field}: #{pretty(before, names)} → #{pretty(after_value, names)}"
+    end)
+  end
+
+  # The message Ash would show a person, not the whole exception.
+  def reason({:error, %{errors: [first | _]}}), do: reason_of(first)
+  def reason({:error, other}), do: Exception.message(other)
+
+  defp reason_of(%Ash.Error.Forbidden.Policy{}), do: "not authorized (the :move policy needs a manager)"
+  defp reason_of(%{message: message}) when is_binary(message), do: message
+  defp reason_of(other), do: Exception.message(other)
+
+  defp pretty(nil, _names), do: "nil"
+  defp pretty(value, names) when is_map_key(names, value), do: Map.fetch!(names, value)
+  defp pretty(value, _names), do: inspect(value)
+
+  # R7 before R10.
+  defp natural(name), do: {String.length(name), name}
+end
+
+:ok
+```
+
+## 1. The farm
+
+Four paddocks and four herds, in Postgres. Paddocks have a capacity; herd R7 is crowding L07 with R8.
+
+The data layer is AshPostgres and the actions are ordinary Ash actions. This cell also starts what your application's supervision tree would: the repo and `Ramal.Supervisor`. Here branches are kept in ETS and disappear with the runtime; in an app, `Ramal.Storage.Postgres` keeps them across restarts.
+
+```elixir
+import Tour
+require Ash.Query
+
+# Start over cleanly when this cell is evaluated again.
+if pid = Process.whereis(Tour.Supervisor), do: Supervisor.stop(pid)
+
+{:ok, _} =
+  Supervisor.start_link([Farm.Repo, {Ramal.Supervisor, storage: Ramal.Storage.ETS}],
+    strategy: :one_for_one,
+    name: Tour.Supervisor
+  )
+
+p = Farm.Data.seed!()
+manager = %{name: "Marta", role: :manager}
+visitor = %{name: "A visitor", role: :guest}
+
+print_herds(postgres_herds())
+```
+
+## 2. Open a branch and change things inside it
+
+Branch A explores one idea: move herd R7 to paddock L18. `Ramal.run!/2` runs the real `move` action inside the branch, so a read inside it sees the move.
+
+```elixir
+{:ok, a} = Ramal.branch(Farm, name: "A: R7 to L18")
+
+Ramal.run!(a, fn ->
+  Ash.update!(herd("R7"), %{to_paddock_id: p.l18.id}, action: :move, actor: manager)
+
+  label("A read inside the branch sees the move:")
+  print_herds(herds())
+end)
+```
+
+The same read outside the branch, and Postgres itself with plain SQL, see nothing. The database is untouched.
+
+```elixir
+label("Outside the branch:")
+print_herds(herds())
+show("moves logged in Postgres: #{postgres_moves()}")
+ok("branch A holds the change; the database is untouched")
+```
+
+The action's rules still apply inside a branch. A **policy** first: only a manager may move a herd.
+
+```elixir
+result = Ramal.run!(a, fn -> Ash.update(herd("R8"), %{to_paddock_id: p.l22.id}, action: :move, actor: visitor) end)
+refused("a visitor was refused: #{reason(result)}")
+```
+
+A **validation** next. L31 holds 45 head and herd R10 already has 40, so R7's 30 do not fit.
+
+```elixir
+result = Ramal.run!(a, fn -> Ash.update(herd("R7"), %{to_paddock_id: p.l31.id}, action: :move, actor: manager) end)
+refused("the move was refused: #{reason(result)}")
+```
+
+## 3. Diff: what would this branch change?
+
+`Ramal.diff/1` lists every row the branch changed, computed from the branch itself without asking Postgres.
+
+The second line is the audit row that the `move` action creates after it succeeds (a hook). The branch holds it too, so a read of the moves table inside the branch would show it.
+
+```elixir
+{:ok, changes} = Ramal.diff(a)
+print_diff(changes)
+```
+
+The same list as data, if you would rather read the structs:
+
+```elixir
+changes
+```
+
+## 4. Fork, and try an alternative next to it
+
+A fork starts where its parent is. Here A2 builds on A and also moves herd R9 to L22; A stays as it was.
+
+```elixir
+{:ok, a2} = Ramal.fork(a, name: "A2: A, plus R9 to L22")
+Ramal.run!(a2, fn -> Ash.update!(herd("R9"), %{to_paddock_id: p.l22.id}, action: :move, actor: manager) end)
+
+{:ok, a_changes} = Ramal.diff(a)
+{:ok, a2_changes} = Ramal.diff(a2)
+show("A  has #{length(a_changes)} changes, A2 has #{length(a2_changes)} (what it inherited plus its own):")
+print_diff(a2_changes)
+```
+
+A different idea, started from the database: branch B moves R7 to L22 instead.
+
+```elixir
+{:ok, b} = Ramal.branch(Farm, name: "B: R7 to L22")
+Ramal.run!(b, fn -> Ash.update!(herd("R7"), %{to_paddock_id: p.l22.id}, action: :move, actor: manager) end)
+
+{:ok, open} = Ramal.list(Farm, status: :open)
+ok("#{length(open)} branches are open at once: #{open |> Enum.map(& &1.name) |> Enum.sort() |> Enum.join(" | ")}")
+```
+
+Each one is a process holding a map. Opening a branch copies nothing from Postgres.
+
+## 5. Count and sum inside a branch
+
+How many head would each paddock hold in A2? `Ramal.aggregate/4` asks Postgres about the rows the branch did not touch, then adds the rows it did, so the cost follows the size of the branch, not of the table.
+
+```elixir
+head_in = fn paddock ->
+  Farm.Herd |> Ash.Query.filter(paddock_id == ^paddock.id) |> Ramal.aggregate!(:sum, :head) || 0
+end
+
+rows =
+  for name <- [:l07, :l18, :l22, :l31] do
+    paddock = Map.fetch!(p, name)
+    in_branch = Ramal.run!(a2, fn -> head_in.(paddock) end)
+    [name |> to_string() |> String.upcase(), to_string(paddock.capacity_head), to_string(head_in.(paddock)), to_string(in_branch)]
+  end
+
+table(["paddock", "capacity", "head now (Postgres)", "head in A2"], rows)
+
+total = fn -> Farm.Herd |> Ramal.aggregate!(:sum, :head) end
+ok("total head: #{total.()} in Postgres, #{Ramal.run!(a2, total)} in A2 (a move changes where, not how many)")
+```
+
+**The catch.** Aggregates Ash hands to the database (`Ash.count!`, or an `aggregates do ... end` block) cannot see a branch. Use `Ramal.aggregate/4` inside one. Ramal emits `[:ramal, :read, :unpatched_aggregate]` when a database aggregate runs in a branch, so a test can notice.
+
+```elixir
+in_l22 = Farm.Herd |> Ash.Query.filter(paddock_id == ^p.l22.id)
+plain = Ramal.run!(a2, fn -> Ash.count!(in_l22) end)
+exact = Ramal.run!(a2, fn -> Ramal.aggregate!(in_l22, :count) end)
+show("herds in L22 inside A2:  Ash.count! says #{plain}   Ramal.aggregate says #{exact}")
+```
+
+## 6. Merge: replay the branch through your real actions
+
+A looks good. Merging replays its log, oldest first, through the same actions, in one Postgres transaction. The audit row is written by the real `move` action, once.
+
+```elixir
+{:ok, result} = Ramal.merge(a, actor: manager)
+ok("merged: #{result.replayed} action replayed, branch status #{result.branch.status}")
+
+label("Postgres now:")
+print_herds(postgres_herds())
+show("moves logged in Postgres: #{postgres_moves()}")
+```
+
+## 7. Stale branches are refused
+
+Branch B read herd R7 when R7 was in L07. A has since moved it, so B's picture of the farm is out of date and the merge is refused. Nothing is written.
+
+```elixir
+{:error, %Ramal.Error{reason: :stale, details: %{rows: rows}}} = Ramal.merge(b, actor: manager)
+
+for row <- rows do
+  refused("merge refused: herd #{herd_name(row.key)} #{row.reason} since the branch read it (#{inspect(row.resource)})")
+end
+
+show("Postgres still has R7 where A put it:")
+print_herds(Enum.filter(postgres_herds(), &(hd(&1) == "R7")))
+```
+
+Your options: discard the branch and start again from the new state, or merge with `on_stale: :ignore` when you know the change still makes sense (the replay validates again either way). A2 forked from A, so it is stale too. The next cell discards both.
+
+```elixir
+:ok = Ramal.discard(b)
+:ok = Ramal.discard(a2)
+```
+
+## 8. A merge is all or nothing
+
+Branch C creates herd R11 in L22 and moves R9 there. Both fit in L22 at the time.
+
+```elixir
+{:ok, c} = Ramal.branch(Farm, name: "C: R11 and R9 to L22")
+
+Ramal.run!(c, fn ->
+  Ash.create!(Farm.Herd, %{name: "R11", head: 10, paddock_id: p.l22.id})
+  Ash.update!(herd("R9"), %{to_paddock_id: p.l22.id}, action: :move, actor: manager)
+end)
+
+{:ok, changes} = Ramal.diff(c)
+print_diff(changes)
+```
+
+Meanwhile somebody writes straight to the database: herd R12, 60 head, also in L22 (capacity 80).
+
+```elixir
+Ash.create!(Farm.Herd, %{name: "R12", head: 60, paddock_id: p.l22.id}, authorize?: false)
+print_herds(postgres_herds())
+```
+
+Merging C replays R11's creation, which works, and then R9's move, which now overflows L22 (R12's 60 plus R11's 10). The second step fails, so the first is rolled back too.
+
+```elixir
+{:error, %Ramal.Error{reason: :merge_failed, details: details}} = Ramal.merge(c, actor: manager)
+refused("merge failed at step #{details.index + 1} (#{inspect(details.action)}): #{reason({:error, details.error})}")
+
+show("Postgres, after the failed merge:")
+print_herds(postgres_herds())
+
+r11_in_postgres? = Enum.any?(postgres_herds(), &(hd(&1) == "R11"))
+{:ok, c_now} = Ramal.get(c.id)
+ok("R11 in Postgres: #{r11_in_postgres?}. The transaction rolled back, and branch C is still #{c_now.status}, so it can be fixed or discarded.")
+```
+
+The staleness check only knows rows the branch read. The replay's validations catch what it could not know.
+
+```elixir
+:ok = Ramal.discard(c)
+```
+
+## 9. Propose, review, approve
+
+When an agent suggests and a person decides, freeze the branch as a proposal. Here an agent recounts herd R9.
+
+```elixir
+{:ok, d} = Ramal.branch(Farm, name: "D: recount R9")
+Ramal.run!(d, fn -> Ash.update!(herd("R9"), %{head: 27}) end)
+
+{:ok, _} = Ramal.propose(d, proposed_by: "counting-agent", reason: "the gate counter says 27, not 25")
+
+{:ok, pending} = Ramal.list(Farm, status: :proposed)
+show("waiting for a decision: #{Enum.map_join(pending, ", ", & &1.name)}")
+{:ok, changes} = Ramal.diff(d)
+show("what the reviewer reads:")
+print_diff(changes)
+```
+
+Marta approves. Approving is merging, with the decision recorded on the branch. Ramal does not decide who may approve: check that in your own policies before you call `Ramal.approve/2`.
+
+```elixir
+{:ok, %{branch: decided}} = Ramal.approve(d, decided_by: "Marta", actor: manager, reason: "checked at the gate")
+decision = decided.proposal.decision
+ok("#{decision.status} by #{decision.by} at #{Calendar.strftime(decision.at, "%H:%M:%S")}: #{decision.reason}")
+```
+
+## 10. Where the farm ended up
+
+```elixir
+print_herds(postgres_herds())
+
+{:ok, all} = Ramal.list(Farm)
+show("")
+show("branches Ramal remembers:")
+table(["branch", "status"], all |> Enum.sort_by(& &1.name) |> Enum.map(&[&1.name, to_string(&1.status)]))
+```
+
+That is the whole loop: branch, change, diff, fork, merge or discard.
+
+Branches here live in ETS and disappear with the runtime. In an app, `Ramal.Storage.Postgres` keeps them across restarts (`mix ramal.gen.migration`).
+
+## Where to go next
+
+* [`README.md`](https://github.com/agustinrojas1/ramal#readme) for what Ramal can and cannot do.
+* [`docs/DESIGN.md`](https://github.com/agustinrojas1/ramal/blob/main/docs/DESIGN.md) for how a branch works.
+* [`docs/agents.md`](https://github.com/agustinrojas1/ramal/blob/main/docs/agents.md) to give an LLM agent branches as tools. `Ramal.Tools.definitions/1` and `Ramal.Tools.call/3` work from a cell here too.
+* `elixir ramal_live/examples/farm_demo.exs` to watch branches as columns in a browser (see `demo/README.md`).
