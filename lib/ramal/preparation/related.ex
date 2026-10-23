@@ -15,9 +15,15 @@ defmodule Ramal.Preparation.Related do
   # rows, never narrows them, so no row the full filter accepts is lost. The cost is a broader base read, and an
   # in-memory check of the removed conjuncts for each base row the branch did not change.
   #
+  # An aggregate in a filter or sort (`herd_count >= 2`) is one more way to reach a relationship: the data layer counts
+  # the base's herds, so its ref counts as reaching every resource on the aggregate's path, and a conjunct that
+  # references an aggregate over a changed resource is removed like any other. `aggregates/1` hands the aggregates of
+  # the removed conjuncts to the preparation, which computes them over the branch before it evaluates the conjunct.
+  #
   # Confirmed against Ash 3.37 (`lib/ash/filter/filter.ex`): `Ash.Filter.list_refs/4` returns the refs of a filter with
   # the path of an `exists(...)` prefixed to the refs inside it, and with the refs of an expression calculation when
-  # asked to expand calculations.
+  # asked to expand calculations. A filter that names an aggregate holds an `Ash.Query.Aggregate` as the ref's
+  # attribute, and a sort on one holds it in place of the field name (`{%Ash.Query.Aggregate{}, :desc}`).
 
   alias Ash.Query.BooleanExpression
   alias Ash.Resource.Info
@@ -52,7 +58,7 @@ defmodule Ramal.Preparation.Related do
     filter_refs = refs(query.filter)
     sort_refs = Enum.flat_map(List.wrap(query.sort), &sort_refs(query.resource, &1))
 
-    if Enum.all?(filter_refs ++ sort_refs, &(&1.relationship_path == [])) do
+    if Enum.all?(filter_refs ++ sort_refs, &(path_of(&1) == [])) do
       {:ok, :safe}
     else
       with {:ok, changed} <- changed_resources(query.resource, filter_refs ++ sort_refs, id) do
@@ -86,6 +92,22 @@ defmodule Ramal.Preparation.Related do
   end
 
   @doc """
+  The aggregates a filter or a sort names on the records it is evaluated on, by name.
+  """
+  @spec aggregates(Ash.Filter.t() | [term] | nil) :: %{atom => Ash.Query.Aggregate.t()}
+  def aggregates(sort) when is_list(sort) do
+    for {%Ash.Query.Aggregate{} = aggregate, _direction} <- sort,
+        into: %{},
+        do: {aggregate.name, aggregate}
+  end
+
+  def aggregates(filter) do
+    for %{relationship_path: [], attribute: %Ash.Query.Aggregate{} = aggregate} <- refs(filter),
+        into: %{},
+        do: {aggregate.name, aggregate}
+  end
+
+  @doc """
   The relationship paths `filter` reaches, as the nested loads that bring them onto a record.
   """
   @spec loads(Ash.Filter.t() | nil) :: [atom | {atom, term}]
@@ -108,6 +130,7 @@ defmodule Ramal.Preparation.Related do
   # The relationship paths of the sort that reach a changed resource, which the sort loads before it evaluates.
   defp sort_paths(resource, sort_refs, changed) do
     for ref <- sort_refs,
+        ref.relationship_path != [],
         affected_ref?(ref, resource, changed),
         uniq: true,
         do: ref.relationship_path
@@ -144,7 +167,19 @@ defmodule Ramal.Preparation.Related do
     end
   end
 
+  defp sort_refs(_resource, {%Ash.Query.Aggregate{} = aggregate, _direction}),
+    do: [%{relationship_path: [], attribute: aggregate}]
+
   defp sort_refs(_resource, _other), do: []
+
+  # The path a ref reaches: its own, followed by the aggregate's when the ref names one.
+  defp path_of(%{
+         relationship_path: path,
+         attribute: %Ash.Query.Aggregate{relationship_path: through}
+       }),
+       do: path ++ through
+
+  defp path_of(%{relationship_path: path}), do: path
 
   defp expression_refs(expression, resource) do
     case Ash.Filter.hydrate_refs(expression, %{
@@ -160,7 +195,7 @@ defmodule Ramal.Preparation.Related do
   # The resources reached by the refs' paths that the branch has entries for, as a set.
   defp changed_resources(resource, refs, id) do
     refs
-    |> Enum.flat_map(&reached(resource, &1.relationship_path))
+    |> Enum.flat_map(&reached(resource, path_of(&1)))
     |> Enum.uniq()
     |> Enum.reduce_while({:ok, MapSet.new()}, fn reached, {:ok, changed} ->
       case Server.overlay?(id, reached) do
@@ -171,8 +206,8 @@ defmodule Ramal.Preparation.Related do
     end)
   end
 
-  defp affected_ref?(%{relationship_path: path}, resource, changed),
-    do: Enum.any?(reached(resource, path), &MapSet.member?(changed, &1))
+  defp affected_ref?(ref, resource, changed),
+    do: Enum.any?(reached(resource, path_of(ref)), &MapSet.member?(changed, &1))
 
   # Every resource a path goes through, including the join resource of a many_to_many.
   defp reached(_resource, []), do: []
@@ -191,17 +226,24 @@ defmodule Ramal.Preparation.Related do
   # What the in-memory check of the removed conjuncts reads from a base row: the first relationship hop's source
   # attribute and every attribute at the root of the query, since a query that selects some attributes leaves the others
   # out of the row.
+  defp source_attribute(resource, relationship) do
+    case Info.relationship(resource, relationship) do
+      %{source_attribute: attribute} -> [attribute]
+      _other -> []
+    end
+  end
+
   defp selects(resource, refs) do
     refs
     |> Enum.flat_map(fn
+      %{relationship_path: [], attribute: %Ash.Query.Aggregate{relationship_path: [first | _]}} ->
+        source_attribute(resource, first)
+
       %{relationship_path: [], attribute: %{name: name}} when is_atom(name) ->
         [name]
 
       %{relationship_path: [first | _]} ->
-        case Info.relationship(resource, first) do
-          %{source_attribute: attribute} -> [attribute]
-          _other -> []
-        end
+        source_attribute(resource, first)
 
       _other ->
         []

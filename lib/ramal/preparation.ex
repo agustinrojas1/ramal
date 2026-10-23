@@ -53,7 +53,9 @@ defmodule Ramal.Preparation do
       patched rows already;
     * an aggregate the read loads is recomputed from the branch's rows after the patch (lib/ramal/preparation/aggregates.ex,
       ADR 0029). The kinds and shapes it cannot do keep the database's value and emit `[:ramal, :read, :unpatched_aggregate]`.
-      A filter or sort on an aggregate is judged on the base rows;
+      A filter or sort on an aggregate is judged on the branch's numbers too: when the branch changed a resource on the
+      aggregate's path the conjunct is evaluated in Elixir like a filter through a changed relationship (ADR 0032), and
+      the aggregate is computed for the overlay's records, and for the rows a sort orders, before it is used;
     * overlay records are added without running the action's `authorize_results` checks, though the query's filter,
       including any policy filter, is applied to them;
     * `Ash.load/3` onto a record the branch changed reselects the relationship's source attribute (for example
@@ -397,8 +399,8 @@ defmodule Ramal.Preparation do
 
     with {:ok, slice, overlay_rows} <-
            Server.select(id, resource, base_keys, Prefilter.compile(query.filter)),
-         {:ok, results} <- check_base_rows(query, results, slice),
-         {:ok, matching} <- matching_keys(query, slice),
+         {:ok, results} <- check_base_rows(query, results, slice, id),
+         {:ok, matching} <- matching_keys(query, slice, id),
          {:ok, patched} <-
            results
            |> Overlay.patch(slice, &MapSet.member?(matching, Resource.key(resource, &1)),
@@ -407,7 +409,7 @@ defmodule Ramal.Preparation do
            )
            |> load_calculations(slice, query),
          {:ok, distinct} <- distinct(patched, query),
-         {:ok, sorted} <- sort(distinct, query) do
+         {:ok, sorted} <- sort(distinct, query, id) do
       patched =
         sorted
         |> Enum.drop(offset || 0)
@@ -425,13 +427,15 @@ defmodule Ramal.Preparation do
   defp check_base_rows(
          %{context: %{ramal: %{related: %{removed: removed}}}} = query,
          results,
-         slice
+         slice,
+         id
        )
        when removed != nil do
     {changed, untouched} =
       Enum.split_with(results, &Map.has_key?(slice, Resource.key(query.resource, &1)))
 
     with {:ok, loaded} <- load_for_filter(untouched, removed, query),
+         {:ok, loaded} <- load_aggregates(loaded, Related.aggregates(removed), query, id),
          {:ok, matches} <- Runtime.filter_matches(query.domain, loaded, removed) do
       keys = MapSet.new(matches, &Resource.key(query.resource, &1))
 
@@ -443,7 +447,7 @@ defmodule Ramal.Preparation do
     end
   end
 
-  defp check_base_rows(_query, results, _slice), do: {:ok, results}
+  defp check_base_rows(_query, results, _slice, _id), do: {:ok, results}
 
   # The data layer computes an expression calculation in SQL on the base row, so a record the branch created or changed
   # comes out of the overlay without it (`Ash.NotLoaded`) and a record the branch changed would carry the database's
@@ -520,10 +524,12 @@ defmodule Ramal.Preparation do
   # which computes it from the database row, so a record the branch changed would be judged by its old attributes
   # (`load_records_and_parent/5` in `lib/ash/filter/runtime.ex`). The expression calculations are evaluated in memory
   # first, which the runtime then finds already loaded.
-  defp matching_keys(query, slice) do
+  defp matching_keys(query, slice, id) do
     records = for {_key, {_kind, record}} <- slice, do: record
 
     with {:ok, records} <- load_in_memory(records, filter_calculations(query), query),
+         {:ok, records} <-
+           load_aggregates(records, Related.aggregates(full_filter(query)), query, id),
          {:ok, records} <- load_for_filter(records, full_filter(query), query),
          {:ok, matches} <-
            Runtime.filter_matches(query.domain, records, full_filter(query)) do
@@ -577,14 +583,30 @@ defmodule Ramal.Preparation do
   # A sort through a relationship the branch changed is evaluated in memory first, with the relationship loaded through
   # the patched reads, as for a filter calculation (`load_in_memory/3`); the runtime sort then reuses those values
   # instead of asking the data layer, which would read the base's rows.
-  defp sort(rows, %{sort: sort, context: %{ramal: %{related: %{sort?: true}}}} = query) do
+  defp sort(rows, %{sort: sort} = query, id) when sort not in [nil, []] do
+    if memory_sort?(query) do
+      memory_sort(rows, query, id)
+    else
+      {:ok, Sort.runtime_sort(rows, sort, resource: query.resource, domain: query.domain)}
+    end
+  end
+
+  defp sort(rows, _query, _id), do: {:ok, rows}
+
+  # A sort on an aggregate is evaluated in memory too: the rows the overlay supplies have no value for it, and a row
+  # whose related rows the branch changed has the database's.
+  defp memory_sort?(%{sort: sort, context: %{ramal: ramal}}),
+    do: match?(%{sort?: true}, ramal[:related]) or Related.aggregates(sort) != %{}
+
+  defp memory_sort(rows, %{sort: sort} = query, id) do
     calculations =
       for {%Ash.Query.Calculation{} = calculation, _} <- sort,
           into: %{},
           do: {calculation.name, calculation}
 
     with {:ok, loaded} <- load_related(rows, query),
-         {:ok, loaded} <- load_in_memory(loaded, calculations, query) do
+         {:ok, loaded} <- load_in_memory(loaded, calculations, query),
+         {:ok, loaded} <- load_aggregates(loaded, Related.aggregates(sort), query, id) do
       sorted =
         Sort.runtime_sort(loaded, sort,
           resource: query.resource,
@@ -599,13 +621,7 @@ defmodule Ramal.Preparation do
     end
   end
 
-  defp sort(rows, %{sort: sort} = query) when sort not in [nil, []] do
-    {:ok, Sort.runtime_sort(rows, sort, resource: query.resource, domain: query.domain)}
-  end
-
-  defp sort(rows, _query), do: {:ok, rows}
-
-  defp load_related(rows, %{context: %{ramal: %{related: %{paths: paths}}}} = query) do
+  defp load_related(rows, %{context: %{ramal: %{related: %{paths: [_ | _] = paths}}}} = query) do
     load = Enum.map(paths, &Related.nested_load/1)
 
     Ash.load(rows, load,
@@ -616,10 +632,22 @@ defmodule Ramal.Preparation do
     )
   end
 
+  defp load_related(rows, _query), do: {:ok, rows}
+
   # `Ash.Filter.Runtime` loads a relationship the filter reaches with `Ash.load/3`, which reselects the source attribute
   # (`paddock_id`) from the data layer without running the read hooks, so a record whose foreign key the branch changed
   # would be judged by the database's. Loading it first with `reuse_values?: true`, which skips the reselect, goes
   # through the patched reads and leaves the runtime a loaded relationship to use.
+  # An aggregate in a filter or sort is computed by the data layer from the base rows, which a record from the overlay
+  # is not (the runtime would load it from the database and find nothing), and a record whose related rows the branch
+  # changed would carry the database's number. The aggregates are computed over the branch first (`Aggregates.apply/3`),
+  # and the runtime then finds them loaded.
+  defp load_aggregates(records, aggregates, _query, _id) when map_size(aggregates) == 0,
+    do: {:ok, records}
+
+  defp load_aggregates(records, aggregates, query, id),
+    do: Aggregates.apply(records, %{query | aggregates: aggregates}, id)
+
   defp load_for_filter(records, filter, query) do
     case Related.loads(filter) do
       [] ->

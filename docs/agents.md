@@ -194,4 +194,4 @@ an unattended agent:
 - It forks a branch and merges both. The second merge is `:stale`; that is the guard working.
 - It uses a bulk action. Bulk actions and upserts are refused inside a branch; it must loop over single-row actions. An AshAi `update` or `destroy` tool is a bulk action (see above).
 - It forgets branches. Set `max_active_branches` and `branch_rate` on `Ramal.Supervisor` when an agent can open branches.
-- It filters or sorts on an aggregate declared on the resource (`filter head_count > 10`). That is judged on the base rows; an aggregate it only loads is computed from the branch, and `Ramal.aggregate/4` gives one total.
+- It filters or sorts on an aggregate declared on the resource (`filter head_count > 10`) over a large table. The branch's numbers are used, which reads the aggregate for every row the rest of the filter matches when the branch changed a resource on its path; `Ramal.aggregate/4` gives one total cheaply.

@@ -262,7 +262,8 @@ Ramal is deliberately small, and it says what it does not do:
 - **Aggregates loaded inside a branch are recomputed from the branch's rows,** which reads the related rows of each
   returned row where the database would sum them in one query. `first`, `list` and `custom` aggregates, `uniq?`, and
   an aggregate query with a limit keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
-  test can notice. A filter or sort on an aggregate is judged on the base rows. For one total over a large table,
+  test can notice. A filter or sort on an aggregate sees the branch too, and when the branch changed a resource on its path
+  that reads the aggregate for every row the rest of the filter matches. For one total over a large table,
   `Ramal.aggregate/4` is cheaper.
 - **Use `Ramal.load/3` to load onto a record the branch changed.** `Ash.load/3` reselects the foreign key from the
   database without running any hook, so after a herd moved paddock in the branch it still follows the old one. A load
