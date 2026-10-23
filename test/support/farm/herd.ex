@@ -21,6 +21,13 @@ defmodule Ramal.Test.Farm.Herd do
       prepare(build(load: [:size]))
     end
 
+    # A managed belongs_to on a create: Ash sets the foreign key after the before-action hooks.
+    create :create_with_paddock do
+      accept([:name, :head])
+      argument(:paddock, :map, allow_nil?: false)
+      change(manage_relationship(:paddock, type: :create))
+    end
+
     update :move do
       description(
         "Moves the herd to another paddock, refusing when the destination would exceed its capacity."
