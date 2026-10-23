@@ -460,14 +460,13 @@ defmodule Ramal.CaptureTest do
   end
 
   describe "upserts" do
-    test "an upsert action is refused" do
+    test "an upsert action runs in the branch" do
       {:ok, branch} = Ramal.branch(Ramal.Test.Capture)
 
-      assert {:error, error} =
+      assert {:ok, %Flaky{text: "x"}} =
                inside(branch, fn -> Ash.create(Flaky, %{text: "x"}, action: :upsert) end)
 
-      assert reason_of(error) == :upsert_unsupported
-      assert state(branch).overlay == %{}
+      assert [{{Flaky, _key}, {:created, _record}}] = Map.to_list(state(branch).overlay)
     end
   end
 

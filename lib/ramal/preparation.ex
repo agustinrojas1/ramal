@@ -37,8 +37,11 @@ defmodule Ramal.Preparation do
       decides `more?` from the database's rows, so the last `before_action` hook reads the whole patched list, cuts the
       page out of it (lib/ramal/preparation/paged.ex) and gives Ash the rows with `Ash.Query.set_result/2` and the count
       with the `full_count` context key, both honoured in `lib/ash/actions/read/read.ex` (Ash 3.37). Offset and keyset
-      pages, `count`, `more?` and the cursors are those of the patched list (ADR 0030). Without overlay entries for the
-      resource, and for a paged relationship load, the database pages as before.
+      pages, `count`, `more?` and the cursors are those of the patched list (ADR 0030). A relationship loaded with a page,
+      a limit or an offset is one lateral join that limits per source record: when the branch changed its destination or
+      its join resource, the rows of all the sources are read whole, tagged with their source and cut per source, and the
+      page is handed to Ash the same way (ADR 0040). Without overlay entries for the resource the database pages as
+      before.
     * `authorize_results` checks (the runtime half of a policy, which `Ash.Can` adds when `strict_check` cannot decide)
       run in the read action of Ash on the data layer's rows, before any `after_action` hook, so they would never see a row
       the branch created and would judge a row the branch changed or destroyed by the database's values. While the
@@ -69,8 +72,7 @@ defmodule Ramal.Preparation do
     * a sort on text uses byte order once the overlay touches the resource, where Postgres uses its collation, so mixed-case
       text can come out in another order than outside the branch (ADR 0024);
     * a paged read of a resource the overlay touches reads every row the filter matches and pages the list in Elixir,
-      so it costs what an unpaged read does, not one page (ADR 0030); a paged relationship load is still paged by the
-      database and patched afterwards.
+      so it costs what an unpaged read does, not one page (ADR 0030, and per source for a relationship load, ADR 0040).
 
   ## Example
 
@@ -162,9 +164,25 @@ defmodule Ramal.Preparation do
     warn_unpatched_aggregates(query, id)
 
     case ManyToMany.rewrite(query, id) do
-      {:ok, query, links} -> strip_paging(query, id, links, nil)
-      :skip -> relate(query, id)
-      {:error, error} -> Ash.Query.add_error(query, error)
+      {:ok, rewritten, links} ->
+        rewritten |> keep_lateral(query, links) |> strip_paging(id, links, nil)
+
+      :skip ->
+        relate(query, id)
+
+      {:error, error} ->
+        Ash.Query.add_error(query, error)
+    end
+  end
+
+  # A paged lateral load is paged per source record by `Ash.Actions.Read` after the hooks (`drop_pagination_extra/3`
+  # looks for the lateral join in the context of the query the hooks return), and the rows it gets from `page/2` are
+  # tagged with their source, so the query keeps the join. The data layer never runs it: the page is the result.
+  defp keep_lateral(rewritten, original, %{lateral_source: source}) do
+    if Paged.lateral_plan(original) do
+      Ash.Query.set_context(rewritten, %{data_layer: %{lateral_join_source: source}})
+    else
+      rewritten
     end
   end
 
@@ -369,7 +387,44 @@ defmodule Ramal.Preparation do
     end
   end
 
+  # A paged relationship load (ADR 0038): the rows of every source record are read whole and each source is paged on its
+  # own, as the database's lateral join would. The count is the source record's own aggregate (`Aggregates`).
+  defp page(%{context: %{ramal: %{links: %{lateral_source: _}}}} = query, id) do
+    case Paged.lateral_plan(query) do
+      nil -> query
+      plan -> page_by_source(query, plan, id)
+    end
+  end
+
   defp page(query, _id), do: query
+
+  defp page_by_source(query, plan, id) do
+    sorted = Paged.stable_sort(query)
+
+    with {:ok, rows} <- read_whole_list(sorted, id),
+         {:ok, page} <- Paged.cut_by_source(sorted, plan, rows) do
+      query
+      |> Ash.Query.set_result(page)
+      |> Ash.Query.set_context(%{ramal: %{paged?: true, whole: rows}})
+      |> put_source_count(plan, rows)
+    else
+      {:error, error} -> Ash.Query.add_error(query, error)
+    end
+  end
+
+  # The count of a page of several sources is each source's own aggregate. The page of one source that `Ash.page/2` asks
+  # for next is read again, and Ash counts it with a query of its own, which AshPostgres cannot build for a lateral
+  # join (it fails the same way outside a branch), so that count is given here.
+  defp put_source_count(query, %{count?: true}, rows) do
+    {sources, _path} = query.context.ramal.links.lateral_source
+
+    case sources do
+      [_one] -> Ash.Query.set_context(query, %{full_count: length(rows)})
+      _many -> query
+    end
+  end
+
+  defp put_source_count(query, _plan, _rows), do: query
 
   defp page(query, plan, id) do
     sorted = Paged.stable_sort(query)
@@ -395,7 +450,8 @@ defmodule Ramal.Preparation do
     ramal = query.context.ramal
     private = query.context[:private] || %{}
 
-    # The checks run on the page, once, when this hook's list is the result (`after_data_layer/3`).
+    # The checks run on the page, once, when this hook's list is the result (`after_data_layer/3`). A paged load is read
+    # without its lateral join: the rows of all its sources are read together and tagged by `after_data_layer/3`.
     whole = %{
       Ash.Query.unset(query, [:page, :limit, :offset])
       | context: update_in(query.context, [:ramal], &Map.delete(&1, :authorize_results)),
@@ -407,6 +463,12 @@ defmodule Ramal.Preparation do
         after_transaction: [],
         around_transaction: []
     }
+
+    whole =
+      update_in(
+        whole.context[:data_layer],
+        &if(&1, do: Map.delete(&1, :lateral_join_source), else: &1)
+      )
 
     # The query's filter already holds what the policies added, and the rows are authorized when Ash reads the page.
     Resource.read_all(whole,

@@ -26,7 +26,16 @@ defmodule Ramal.Capture do
       every record of `Ash.bulk_create/4`, `Ash.bulk_update/4` and `Ash.bulk_destroy/4` is captured and logged as its
       own action, and the data layer's bulk call gets no records. A bulk update or destroy of a query picks its
       strategy before that: the atomic ones are refused through `atomic/3`, so the caller must allow `:stream`.
-    * Upserts are refused: the branch cannot know whether the row exists in the base.
+    * An upsert is decided in the branch's view (ADR 0038). `Ash.Actions.Create.do_run/4` sets
+      `context.private.upsert?` to `true` for every create (`lib/ash/actions/create/create.ex`, Ash 3.37), so by the time
+      a `before_action` hook runs the flag says nothing; `change/3` runs while the changeset is built, where the flag
+      is the action's own `upsert?`, an `upsert?: true` given to `Ash.Changeset.for_create/4`, or the one the bulk
+      path sets for each changeset. The write hook then looks the row up by the upsert identity with a patched read.
+      A row found is updated with the upsert fields (`upsert/4` in AshPostgres 2.15 `lib/data_layer.ex`: the attributes
+      the changeset set, without defaults and conflict keys, plus the update defaults); with none found the create goes
+      on as it is. An `upsert_condition` is a filter the database evaluates against the existing row, which a branch
+      cannot, so it is refused. A call-time `Ash.create(changeset, upsert?: true)` reaches only `do_run/4`'s options,
+      which no hook sees, and acts as a plain create.
 
   A failed action leaves the branch as it found it: the writes of the action and of the actions its hooks ran are
   taken back. A write made by a hook of another captured action is logged with `nested?: true`, because replaying the
@@ -95,19 +104,24 @@ defmodule Ramal.Capture do
   end
 
   defp capture(changeset, id, origin) do
-    if changeset.context[:private][:upsert?] do
-      Ash.Changeset.add_error(changeset, upsert_error(changeset))
+    if upsert?(changeset) and changeset.context[:private][:upsert_condition] != nil do
+      Ash.Changeset.add_error(changeset, upsert_condition_error(changeset))
     else
       install(changeset, id, origin)
     end
   end
 
+  defp upsert?(changeset),
+    do: changeset.action_type == :create and changeset.context[:private][:upsert?] == true
+
   defp install(changeset, id, origin) do
     case Resource.ensure_tenant(changeset.resource, changeset.tenant, id) do
       :ok ->
+        upsert? = upsert?(changeset)
+
         changeset
         |> Ash.Changeset.set_context(Current.shared_context(id))
-        |> Ash.Changeset.around_action(&around(&1, &2, id, origin))
+        |> Ash.Changeset.around_action(&around(&1, &2, id, origin, upsert?))
         |> Ash.Changeset.before_action(&ensure_wrapped/1)
 
       {:error, error} ->
@@ -125,10 +139,10 @@ defmodule Ramal.Capture do
   end
 
   # The frame counts how deeply captured actions nest in this process and keeps the undo records of their writes.
-  defp around(changeset, callback, id, origin) do
+  defp around(changeset, callback, id, origin, upsert?) do
     with :ok <- Current.verify(id, origin, what(changeset)),
          :ok <- ensure_not_in_task(changeset) do
-      run_captured(changeset, callback, id)
+      run_captured(changeset, callback, id, upsert?)
     end
   end
 
@@ -150,7 +164,7 @@ defmodule Ramal.Capture do
     end
   end
 
-  defp run_captured(changeset, callback, id) do
+  defp run_captured(changeset, callback, id, upsert?) do
     frame = Process.get(@frame, %{depth: 0, undos: []})
     nested? = frame.depth > 0
     mark = length(frame.undos)
@@ -159,7 +173,7 @@ defmodule Ramal.Capture do
     changeset =
       changeset
       |> Ash.Changeset.set_context(%{@wrapped => true})
-      |> Ash.Changeset.before_action(&write(&1, id, nested?))
+      |> Ash.Changeset.before_action(&write(&1, id, nested?, upsert?))
 
     try do
       result = callback.(changeset)
@@ -196,13 +210,13 @@ defmodule Ramal.Capture do
     end
   end
 
-  defp write(changeset, id, nested?) do
+  defp write(changeset, id, nested?, upsert?) do
     with {:ok, held} <- held_record(changeset, id),
          {:ok, changeset} <- complete(changeset, held, id),
-         {:ok, kind, record, base_row} <- written(changeset, held) do
+         {:ok, kind, record, base_row, extra} <- written(changeset, held, id, upsert?) do
       resource = changeset.resource
       key = Resource.key(resource, record)
-      entry = log_entry(changeset, key, nested?)
+      entry = log_entry(changeset, key, nested?, extra)
 
       # If the call times out the process may still carry the write out, with no one left to remember how to undo it, so
       # the write sends its undo to this process as well; see `settle_late_write/2`.
@@ -225,7 +239,7 @@ defmodule Ramal.Capture do
 
           changeset
           |> Ash.Changeset.set_result({:ok, result_record(kind, record, resource)})
-          |> settle_foreign_keys(id, {resource, key})
+          |> settle_foreign_keys(id, {resource, key}, extra[:upsert])
 
         {:ok, {:error, :destroyed}, _summary} ->
           Ash.Changeset.add_error(changeset, stale_error(changeset, key))
@@ -234,7 +248,7 @@ defmodule Ramal.Capture do
           Ash.Changeset.add_error(changeset, error)
       end
     else
-      {:error, %Error{} = error} -> Ash.Changeset.add_error(changeset, error)
+      {:error, error} -> Ash.Changeset.add_error(changeset, error)
     end
   end
 
@@ -265,26 +279,33 @@ defmodule Ramal.Capture do
   # after-action hooks get the changeset as it stands then, so the key is read from it and copied onto the record the
   # action returns and onto the overlay's. An update registers that step as a before-action hook before this one
   # (`lib/ash/actions/update/update.ex`), so it needs nothing.
-  defp settle_foreign_keys(%{action_type: :create} = changeset, id, ref) do
+  #
+  # An upsert that found its row takes only its upsert fields from the input, so the key of a relationship outside them
+  # stays what the row had.
+  defp settle_foreign_keys(%{action_type: :create} = changeset, id, ref, upsert) do
     Ash.Changeset.after_action(changeset, fn changeset, result ->
-      case changed_foreign_keys(changeset, result) do
+      case changed_foreign_keys(changeset, result, upsert) do
         keys when keys == %{} -> {:ok, result}
         keys -> put_foreign_keys(id, ref, result, keys)
       end
     end)
   end
 
-  defp settle_foreign_keys(changeset, _id, _ref), do: changeset
+  defp settle_foreign_keys(changeset, _id, _ref, _upsert), do: changeset
 
-  defp changed_foreign_keys(changeset, result) do
+  defp changed_foreign_keys(changeset, result, upsert) do
     {:ok, built} = Ash.Changeset.apply_attributes(changeset)
 
     for %{type: :belongs_to, source_attribute: attribute} <-
           Info.relationships(changeset.resource),
+        takes?(upsert, attribute),
         Map.get(built, attribute) != Map.get(result, attribute),
         into: %{},
         do: {attribute, Map.get(built, attribute)}
   end
+
+  defp takes?({_identity, fields, true}, attribute), do: attribute in fields
+  defp takes?(_upsert, _attribute), do: true
 
   defp put_foreign_keys(id, ref, result, keys) do
     patch = fn branch ->
@@ -355,20 +376,19 @@ defmodule Ramal.Capture do
     end
   end
 
-  defp written(%{action_type: :create} = changeset, _held) do
-    {:ok, record} = Ash.Changeset.apply_attributes(changeset)
+  defp written(%{action_type: :create} = changeset, _held, id, upsert?) do
+    {:ok, built} = Ash.Changeset.apply_attributes(changeset)
+    upsert = if upsert?, do: plan_upsert(changeset, built)
 
-    if Enum.all?(Info.primary_key(changeset.resource), &(Map.get(record, &1) != nil)) do
-      {:ok, :created, record, nil}
-    else
-      {:error, key_error(changeset)}
+    with {:ok, upsert} <- find_conflict(upsert, changeset, built, id) do
+      written_create(changeset, built, upsert)
     end
   end
 
   # An update that changes no attribute is still logged: its hooks and managed relationships can write other rows, and
   # those writes are logged as nested, so only replaying this action brings them back. The overlay keeps the row as it
   # was (Ash does not write it either, so `updated_at` stays) and `Ramal.diff/1` leaves it out.
-  defp written(%{action_type: :update} = changeset, held) do
+  defp written(%{action_type: :update} = changeset, held, _id, _upsert?) do
     original = changeset.data
     changeset = if held, do: %{changeset | data: held}, else: changeset
 
@@ -381,13 +401,164 @@ defmodule Ramal.Capture do
       end
 
     with {:ok, record} <- apply_atomics(changeset, record) do
-      {:ok, :updated, record, base_row(original)}
+      {:ok, :updated, record, base_row(original), []}
     end
   end
 
-  defp written(%{action_type: :destroy} = changeset, _held) do
-    {:ok, :deleted, changeset.data, base_row(changeset.data)}
+  defp written(%{action_type: :destroy} = changeset, _held, _id, _upsert?) do
+    {:ok, :deleted, changeset.data, base_row(changeset.data), []}
   end
+
+  defp written_create(changeset, built, nil) do
+    if Enum.all?(Info.primary_key(changeset.resource), &(Map.get(built, &1) != nil)) do
+      {:ok, :created, built, nil, []}
+    else
+      {:error, key_error(changeset)}
+    end
+  end
+
+  # No row in the branch's view has the upsert's key, so it is an ordinary create that the merge replays as an upsert:
+  # `found?: false` has it force the branch's primary key, and the fields keep the key out of what a row that appeared
+  # in the base meanwhile would take.
+  defp written_create(changeset, built, %{found: nil} = upsert) do
+    with {:ok, :created, record, nil, []} <- written_create(changeset, built, nil) do
+      {:ok, :created, record, nil, upsert: log_upsert(upsert, false)}
+    end
+  end
+
+  # The row is there, in the base or created by the branch: the upsert updates it. The record copies the upsert fields
+  # from the row Ash built, plus the update defaults unless `touch_update_defaults?: false` was given, and never the
+  # primary key (AshPostgres leaves keys out of `DO UPDATE SET` as well).
+  defp written_create(changeset, built, %{found: found} = upsert) do
+    resource = changeset.resource
+
+    record =
+      upsert.fields
+      |> Enum.reduce(found, fn field, acc -> Map.put(acc, field, Map.get(built, field)) end)
+      |> touch_update_defaults(resource, upsert)
+
+    {:ok, :updated, record, base_row(found), upsert: log_upsert(upsert, true)}
+  end
+
+  # `{identity, fields, found?}`: a tuple, like the entry around it, so a stored branch needs no atom of Ramal's own.
+  defp log_upsert(upsert, found?), do: {upsert.identity, upsert.fields, found?}
+
+  # What the upsert does if the row exists: the identity it conflicts on, the keys and their values, and the fields
+  # it takes. `upsert/4` in AshPostgres 2.15 uses the fields given to the action, or else what the changeset set that
+  # is not a default, without the keys, and the update defaults come on top.
+  defp plan_upsert(changeset, built) do
+    resource = changeset.resource
+    name = changeset.context[:private][:upsert_identity]
+    identity = name && Info.identity(resource, name)
+    keys = conflict_keys(resource, identity)
+
+    given = changeset.context[:private][:upsert_fields]
+    set = Map.keys(changeset.attributes) -- Map.get(changeset, :defaults, [])
+
+    fields =
+      ((given || set) -- keys) -- Info.primary_key(resource)
+
+    %{
+      identity: name,
+      definition: identity,
+      keys: keys,
+      values: Enum.map(keys, &{&1, Map.get(built, &1)}),
+      fields: fields,
+      touch?: changeset.context[:private][:touch_update_defaults?] != false,
+      found: nil
+    }
+  end
+
+  # The columns of the unique index, as `commit/3` in `lib/ash/actions/create/create.ex` (Ash 3.37) names the
+  # conflict target: the identity's keys, plus the tenant attribute of attribute multitenancy unless the identity spans
+  # tenants, or else the primary key.
+  defp conflict_keys(resource, nil), do: Info.primary_key(resource)
+
+  defp conflict_keys(resource, identity) do
+    if identity.all_tenants? or Info.multitenancy_strategy(resource) != :attribute do
+      identity.keys
+    else
+      Enum.uniq([Info.multitenancy_attribute(resource) | identity.keys])
+    end
+  end
+
+  defp find_conflict(nil, _changeset, _built, _id), do: {:ok, nil}
+
+  defp find_conflict(upsert, changeset, built, id) do
+    with {:ok, applies?} <- applies?(upsert.definition, changeset, built) do
+      if applies? and not distinct_nil?(upsert) do
+        lookup(upsert, changeset, id)
+      else
+        {:ok, upsert}
+      end
+    end
+  end
+
+  # With the default `nils_distinct?`, rows whose key has a nil in it never conflict.
+  defp distinct_nil?(%{definition: definition, values: values}) do
+    nils_distinct? = is_nil(definition) or definition.nils_distinct? != false
+    nils_distinct? and Enum.any?(values, fn {_key, value} -> is_nil(value) end)
+  end
+
+  # A partial unique index (`where` on the identity) only holds the rows that satisfy it, the new one included.
+  defp applies?(%{where: where}, changeset, built) when not is_nil(where) do
+    case Ash.Expr.eval(where,
+           resource: changeset.resource,
+           record: built,
+           domain: changeset.domain,
+           unknown_on_unknown_refs?: true
+         ) do
+      {:ok, true} -> {:ok, true}
+      {:ok, _no} -> {:ok, false}
+      _unknown_or_error -> {:error, upsert_where_error(changeset)}
+    end
+  end
+
+  defp applies?(_definition, _changeset, _built), do: {:ok, true}
+
+  # A patched read: it sees the rows the branch created and changed, not the ones it destroyed, and fingerprints the
+  # base row it returns.
+  defp lookup(upsert, changeset, id) do
+    filter =
+      Enum.map(upsert.values, fn
+        {key, nil} -> {key, [is_nil: true]}
+        {key, value} -> {key, value}
+      end)
+
+    changeset.resource
+    |> Ash.Query.do_filter(filter)
+    |> add_where(upsert.definition)
+    |> Ash.Query.limit(1)
+    |> Ash.read_one(
+      authorize?: false,
+      tenant: changeset.tenant,
+      context: Current.shared_context(id)
+    )
+    |> case do
+      {:ok, found} -> {:ok, %{upsert | found: found}}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp add_where(query, %{where: where}) when not is_nil(where),
+    do: Ash.Query.do_filter(query, where)
+
+  defp add_where(query, _definition), do: query
+
+  defp touch_update_defaults(record, _resource, %{touch?: false}), do: record
+
+  defp touch_update_defaults(record, resource, %{fields: fields}) do
+    resource
+    |> Info.attributes()
+    |> Enum.filter(&(&1.update_default != nil and &1.name not in fields))
+    |> Enum.reduce(record, fn attribute, acc ->
+      Map.put(acc, attribute.name, update_default(attribute.update_default))
+    end)
+  end
+
+  defp update_default(fun) when is_function(fun, 0), do: fun.()
+  defp update_default({module, function, args}), do: apply(module, function, args)
+  defp update_default(value), do: value
 
   # `atomic_update` (the change, or `Ash.Changeset.atomic_update/3`) leaves an expression in `changeset.atomics` that
   # the data layer evaluates against the row, and `apply_attributes/2` does not look at it. Evaluating it here, against
@@ -429,10 +600,10 @@ defmodule Ramal.Capture do
   end
 
   # Log order is capture order, and the opts carry what replay needs to find the row again.
-  defp log_entry(changeset, key, nested?) do
+  defp log_entry(changeset, key, nested?, extra) do
     {changeset.action_type, changeset.resource, changeset.action.name, changeset.params,
-     changeset.context[:private][:actor], [key: key, tenant: changeset.tenant, nested?: nested?],
-     DateTime.utc_now()}
+     changeset.context[:private][:actor],
+     [key: key, tenant: changeset.tenant, nested?: nested?] ++ extra, DateTime.utc_now()}
   end
 
   defp remember(undo) do
@@ -496,11 +667,21 @@ defmodule Ramal.Capture do
     )
   end
 
-  defp upsert_error(changeset) do
+  defp upsert_condition_error(changeset) do
     Error.new(
       :upsert_unsupported,
-      "#{inspect(changeset.resource)}.#{changeset.action.name} is an upsert; a branch cannot know whether the row " <>
-        "exists in the base, so create or update the row explicitly",
+      "#{inspect(changeset.resource)}.#{changeset.action.name} is an upsert with an upsert_condition; the database " <>
+        "evaluates a condition against the row that is there, which a branch cannot, so drop the condition or " <>
+        "update the row explicitly",
+      %{resource: changeset.resource, action: changeset.action.name}
+    )
+  end
+
+  defp upsert_where_error(changeset) do
+    Error.new(
+      :upsert_unsupported,
+      "#{inspect(changeset.resource)}.#{changeset.action.name} is an upsert on an identity with a `where` that cannot " <>
+        "be evaluated for the new row without the database, so a branch cannot tell whether it conflicts",
       %{resource: changeset.resource, action: changeset.action.name}
     )
   end
