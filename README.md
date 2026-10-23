@@ -6,7 +6,9 @@
 
 <p align="center"><b>Data branches as BEAM processes.</b></p>
 
-> **Status: 0.2, not on Hex yet.** Branches, diff, merge, proposals, exact aggregates and the LiveView inspector work and are tested on Postgres; the API may still change before 1.0. The design is in [docs/DESIGN.md](docs/DESIGN.md), the decisions in [docs/adr](https://github.com/agustinrojas1/ramal/tree/main/docs/adr), the plan in [docs/ROADMAP.md](docs/ROADMAP.md).
+[![Hex.pm](https://img.shields.io/hexpm/v/ramal.svg)](https://hex.pm/packages/ramal) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal-blue.svg)](https://hexdocs.pm/ramal)
+
+> **Status: 0.2, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, exact aggregates and the LiveView inspector work and are tested on Postgres; the API may still change before 1.0. The design is in [docs/DESIGN.md](docs/DESIGN.md), the decisions in [docs/adr](https://github.com/agustinrojas1/ramal/tree/main/docs/adr), the plan in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 Ramal gives an [Ash](https://ash-hq.org) application Git-style branches of its data. A branch is a process holding an overlay over your database: fork it, let an agent or a person change things inside it, diff it, and merge it back through your own actions, with a human in the loop. No second database, no containers, no branch quota.
 
@@ -67,11 +69,11 @@ On the BEAM a branch is a process with a map. That is the whole library.
 
 ## Install
 
-Not on Hex yet. When it is:
+Ramal is on [Hex](https://hex.pm/packages/ramal), with docs on [HexDocs](https://hexdocs.pm/ramal). Add it to `mix.exs`:
 
 ```elixir
 def deps do
-  [{:ramal, "~> 0.2"}]
+  [{:ramal, "~> 0.2.0"}]
 end
 ```
 

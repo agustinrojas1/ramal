@@ -13,11 +13,10 @@ defmodule RamalLive do
 
   ## Setup
 
-  1. Depend on it. It is not on Hex yet, so use a checkout of the Ramal repository, which holds both packages (`ramal_live`
-     finds Ramal one directory up):
+  1. Depend on it, from [Hex](https://hex.pm/packages/ramal_live):
 
-         {:ramal, path: "../ramal"},
-         {:ramal_live, path: "../ramal/ramal_live"}
+         {:ramal, "~> 0.2.0"},
+         {:ramal_live, "~> 0.2.0"}
 
   2. Start `RamalLive.Broadcaster` after the PubSub and `Ramal.Supervisor`, in every node that runs branches:
 
