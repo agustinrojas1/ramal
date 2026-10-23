@@ -774,20 +774,46 @@ defmodule Ramal.CaptureTest do
       assert reason_of(error) == :branch_mismatch
     end
 
-    # Ash refuses an atomic bulk update of a query that has a hook, so Ramal cannot install one on a query built
-    # outside a branch. This pins the documented limit: prepare the query inside run/2.
-    test "a query prepared outside run/2 is not patched inside it (documented limit)", %{
-      branch: branch
-    } do
+    test "a query prepared outside run/2 is patched when it is read inside it", %{branch: branch} do
       outside = Ash.Query.for_read(Herd, :read, %{}, authorize?: false)
+      filtered = outside |> Ash.Query.filter(head < 100) |> Ash.Query.sort(name: :desc)
 
-      names =
+      {plain, patched} =
         inside(branch, fn ->
           Ash.create!(Herd, %{name: "IN", head: 1}, authorize?: false)
-          {names(Ash.read!(outside)), names(Ash.read!(Herd, authorize?: false))}
+
+          Ash.destroy!(
+            Ash.get!(Herd, Ash.read!(Herd, authorize?: false) |> hd() |> Map.fetch!(:id),
+              authorize?: false
+            ),
+            authorize?: false
+          )
+
+          {names(Ash.read!(outside)), Enum.map(Ash.read!(filtered), & &1.name)}
         end)
 
-      assert names == {["R7", "R8", "R9"], ["IN", "R7", "R8", "R9"]}
+      assert length(plain) == 3
+      assert "IN" in plain
+      assert "IN" in patched
+      assert patched == Enum.sort(patched, :desc)
+      assert length(db_names()) == 3
+      assert Enum.sort(db_names()) == ["R7", "R8", "R9"]
+    end
+
+    test "a query prepared outside run/2 still runs as an atomic bulk update outside a branch", %{
+      herds: herds
+    } do
+      query = Ash.Query.for_read(Herd, :read, %{}, authorize?: false)
+
+      result =
+        Ash.bulk_update(query, :update, %{head: 1},
+          authorize?: false,
+          strategy: :atomic,
+          return_errors?: true
+        )
+
+      assert %Ash.BulkResult{status: :success} = result
+      assert Ash.get!(Herd, herds.r7.id, authorize?: false).head == 1
     end
   end
 

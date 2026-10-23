@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- **A query prepared outside `Ramal.run/2` and read inside it is now patched with the branch** (it read base data before). The preparation adds a `before_transaction` hook to every query; it installs the read hooks only when a branch is current when the query runs, so an atomic bulk update of a prepared query outside a branch still runs in the database. ADR 0028.
+
 ## [0.4.3] - 2026-10-23
 
 The fixes from the external review of 0.4.2, four of them critical: a branch write reaching Postgres. Read **Upgrading from 0.4.2** first.

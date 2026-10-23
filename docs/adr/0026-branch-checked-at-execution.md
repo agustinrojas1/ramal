@@ -27,7 +27,7 @@ does carry is `$callers`, the list of processes it was started from.
    outside `run/2`, which is its purpose.
 3. A captured write from a task that a hook of another captured action started is refused (`:task_in_action`): it would
    be logged on its own, and replaying the outer action runs the hook, and so the task, again.
-4. A query prepared outside a branch and read inside it is **not** caught, and is documented instead. A guard would be a
+4. A query prepared outside a branch and read inside it was **not** caught here; [ADR 0028](0028-late-binding-queries.md) fixes it. A guard would be a
    `before_action` on every query, and Ash refuses an atomic bulk update or destroy of a query that has one
    (`lib/ash/actions/update/bulk.ex`), which would change what hosts without a branch get.
 
