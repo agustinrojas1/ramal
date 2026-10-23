@@ -116,6 +116,58 @@ defmodule Ramal.PreparationTest do
       assert names(Ash.read!(Herd, authorize?: false)) |> Enum.sort() == ["R7", "R8", "R9"]
     end
 
+    test "loading a calculation evaluates it on the rows the branch created or changed", %{
+      branch: branch,
+      herds: h
+    } do
+      put(branch, :updated, %{h.r7 | head: 5})
+      put(branch, :created, new_herd(name: "N1", head: 50))
+
+      sizes =
+        inside(branch, fn ->
+          Herd
+          |> Ash.Query.load(:size)
+          |> Ash.Query.sort(:name)
+          |> Ash.read!(authorize?: false)
+        end)
+        |> Map.new(&{&1.name, &1.size})
+
+      # R7 shrank in the branch, N1 exists only there, R8 and R9 are the database's own.
+      assert sizes == %{"N1" => "large", "R7" => "small", "R8" => "large", "R9" => "small"}
+    end
+
+    test "a calculation requested through read options, get or a calculation filter is also evaluated",
+         %{
+           branch: branch,
+           herds: h
+         } do
+      put(branch, :updated, %{h.r7 | head: 5})
+      n1 = put(branch, :created, new_herd(name: "N1", head: 50))
+
+      inside(branch, fn ->
+        by_name = Map.new(Ash.read!(Herd, load: :size, authorize?: false), &{&1.name, &1.size})
+        assert %{"N1" => "large", "R7" => "small"} = by_name
+
+        assert Ash.get!(Herd, n1.id, load: :size, authorize?: false).size == "large"
+        assert Ash.get!(Herd, h.r7.id, load: :size, authorize?: false).size == "small"
+
+        # A row that is no longer large is left out by a filter on the calculation, and the one that became large stays.
+        assert Herd
+               |> Ash.Query.filter(size == "large")
+               |> Ash.Query.load(:size)
+               |> Ash.read!(authorize?: false)
+               |> Enum.map(&{&1.name, &1.size})
+               |> Enum.sort() == [{"N1", "large"}, {"R8", "large"}]
+
+        # Sorting by the calculation sees the new values too.
+        assert Herd
+               |> Ash.Query.sort(size: :asc, name: :asc)
+               |> Ash.Query.load(:size)
+               |> Ash.read!(authorize?: false)
+               |> Enum.map(& &1.name) == ["N1", "R8", "R7", "R9"]
+      end)
+    end
+
     test "an updated row replaces the base row, and leaves the result when it no longer matches",
          %{
            branch: branch,

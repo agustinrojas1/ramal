@@ -34,8 +34,9 @@ defmodule Ramal.Preparation do
 
   Known limits in 0.1, documented rather than hidden:
 
-    * aggregates and calculations the data layer computes do not see the overlay; reading one emits
-      `[:ramal, :read, :unpatched_aggregate]`. `Ramal.aggregate/4` is the exact alternative for the common kinds;
+    * an expression calculation is evaluated in memory on the records the branch created or changed, and for a filter
+      on one (`load_calculations/3`, `matching_keys/2`); a calculation with its own module, and aggregates, are not
+      computed over the overlay, and reading an aggregate emits `[:ramal, :read, :unpatched_aggregate]`. `Ramal.aggregate/4` is the exact alternative for the common kinds;
     * overlay records are added without running the action's `authorize_results` checks, though the query's filter,
       including any policy filter, is applied to them;
     * `Ash.load/3` onto a record the branch changed reselects the relationship's source attribute (for example
@@ -71,6 +72,7 @@ defmodule Ramal.Preparation do
           :ok ->
             query
             |> Ash.Query.set_context(Current.shared_context(id))
+            |> Ash.Query.set_context(%{ramal: %{calculations: query.calculations}})
             |> Ash.Query.before_action(&before_data_layer(&1, id))
             |> Ash.Query.after_action(&after_data_layer(&1, &2, id))
 
@@ -240,13 +242,14 @@ defmodule Ramal.Preparation do
     with {:ok, slice, overlay_rows} <-
            Server.select(id, resource, base_keys, Prefilter.compile(query.filter)),
          {:ok, matching} <- matching_keys(query, slice),
-         {:ok, distinct} <-
+         {:ok, patched} <-
            results
            |> Overlay.patch(slice, &MapSet.member?(matching, Resource.key(resource, &1)),
              key: &Resource.key(resource, &1),
              replace: &carry_lateral_source/2
            )
-           |> distinct(query) do
+           |> load_calculations(slice, query),
+         {:ok, distinct} <- distinct(patched, query) do
       patched =
         distinct
         |> sort(query)
@@ -256,6 +259,51 @@ defmodule Ramal.Preparation do
 
       {:ok, patched, overlay_rows}
     end
+  end
+
+  # The data layer computes an expression calculation in SQL on the base row, so a record the branch created or changed
+  # comes out of the overlay without it (`Ash.NotLoaded`) and a record the branch changed would carry the database's
+  # value for the old attributes. Ash can evaluate the expression on a record in memory, which is what `Ash.load/3`
+  # with `reuse_values?: true` does (the same call `Ash.Query.apply_to/3` makes), so the overlay's records get it here,
+  # before they are filtered, sorted or trimmed by `select`, which need every attribute.
+  defp load_calculations(rows, slice, query) do
+    {from_overlay, from_base} =
+      Enum.split_with(rows, &Map.has_key?(slice, Resource.key(query.resource, &1)))
+
+    with [_ | _] <- from_overlay,
+         {:ok, loaded} <- load_in_memory(from_overlay, query.context.ramal.calculations, query) do
+      {:ok, reorder(rows, from_base ++ loaded, query.resource)}
+    else
+      [] -> {:ok, rows}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp load_in_memory(records, calculations, query) do
+    expressions =
+      Map.filter(calculations, fn {_name, calculation} ->
+        calculation.module == Ash.Resource.Calculation.Expression
+      end)
+
+    if expressions == %{} do
+      {:ok, records}
+    else
+      load = %{Ash.Query.new(query.resource) | calculations: expressions}
+      Ash.load(records, load, domain: query.domain, reuse_values?: true, authorize?: false)
+    end
+  end
+
+  defp filter_calculations(query) do
+    for %{relationship_path: [], attribute: %Ash.Query.Calculation{} = calculation} <-
+          Ash.Filter.list_refs(query.filter, false, false, true),
+        into: %{},
+        do: {calculation.name, calculation}
+  end
+
+  # Keeps the order Overlay.patch produced, which the sort and offset after it start from.
+  defp reorder(rows, loaded, resource) do
+    by_key = Map.new(loaded, &{Resource.key(resource, &1), &1})
+    Enum.map(rows, &Map.fetch!(by_key, Resource.key(resource, &1)))
   end
 
   # A many_to_many load (and a has_many load with a limit) is one SQL query whose rows each carry the source record they
@@ -273,10 +321,16 @@ defmodule Ramal.Preparation do
 
   # The keys of overlay records that satisfy the query's filter. Computed once for the whole slice, so a filter that
   # needs relationship data loads it in one batch.
+  #
+  # `Ash.Filter.Runtime` loads a calculation the filter references onto records that lack it through the data layer,
+  # which computes it from the database row, so a record the branch changed would be judged by its old attributes
+  # (`load_records_and_parent/5` in `lib/ash/filter/runtime.ex`). The expression calculations are evaluated in memory
+  # first, which the runtime then finds already loaded.
   defp matching_keys(query, slice) do
     records = for {_key, {_kind, record}} <- slice, do: record
 
-    with {:ok, matches} <-
+    with {:ok, records} <- load_in_memory(records, filter_calculations(query), query),
+         {:ok, matches} <-
            Runtime.filter_matches(query.domain, records, query.filter) do
       {:ok, MapSet.new(matches, &Resource.key(query.resource, &1))}
     end

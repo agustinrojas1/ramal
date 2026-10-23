@@ -14,6 +14,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - `ramal_live`: a UUID in a diff (the row key and the before and after cells) no longer wraps in the middle of a group in the narrow column. It keeps to one line, cut short with an ellipsis, and the whole id is the tooltip.
 - `distinct` on a calculation inside a branch is applied over the branch's view, as 0.3.0 did for attributes: the base query is read without it and the patched rows are made distinct in memory with `Ash.Query.apply_to/3`, so a row the branch changed counts under its new value, a row it created gets its group, and a destroyed row no longer stands for one. A query that selects only some attributes, or a distinct on an aggregate, keeps the data layer's distinct and does not see the branch.
 
+- Loading an expression calculation inside a branch (`Ash.Query.load(:size)`, `load:` on a read, `Ash.get/3`) returned `Ash.NotLoaded` for rows the branch created or changed, because the data layer computes it on the base row. Those rows now get the calculation evaluated in memory with their branch values. A filter on an expression calculation had the related fault: `Ash.Filter.Runtime` loaded it through the data layer, so a row the branch changed was judged by its database value and could stay in, or be left out of, a result it did not belong in. Sorting by one is covered too. A calculation with its own module is not evaluated over the branch.
+
 ### Changed
 
 - `Ramal.fork/2` copies the branch once less: the new process is started empty and receives the fork in one message, instead of the fork travelling through the dynamic supervisor (copied into it, then into the process). A fork of a branch with 1,000 changes took about 2.7 ms instead of 4.8.
