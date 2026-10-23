@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- **Bulk actions work inside a branch.** `Ash.bulk_create/4`, `Ash.bulk_update/4` and `Ash.bulk_destroy/4` run each record through the captured single action, so every record lands in the overlay and the log and the merge replays them one by one. A bulk update or destroy of a query must allow `strategy: [:atomic, :stream]`, since neither atomic strategy can run in a branch. This also makes `manage_relationship` with `type: :append_and_remove` work when it removes a link (#43), and AshAi's `update` and `destroy` tools. `:bulk_unsupported` now only names a guard that refuses an action the capture hook did not wrap. ADR 0036.
 - **Upserts work inside a branch.** An upsert action (`upsert? true`, or `upsert?: true` given to `Ash.Changeset.for_create/4`) looks its row up by the upsert identity in the branch's view: a row of the base or one the branch created is updated (with the action's `upsert_fields`, or the attributes the call set, and the update defaults), and with none found the row is created. The merge replays the entry as an upsert with the identity and fields it had, so a row that appeared in the base meanwhile is updated rather than duplicated. An `upsert_condition` is still refused with `:upsert_unsupported`, and `upsert?: true` passed only to `Ash.create/2` at call time still acts as a create. ADR 0038.
 
 ### Changed

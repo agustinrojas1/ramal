@@ -9,7 +9,8 @@ defmodule RamalAshAiExample.Farm do
   tools do
     tool(:list_herds, RamalAshAiExample.Herd, :read)
     tool(:move_herd, RamalAshAiExample.Herd, :move_herd)
-    # An `update` tool, kept to pin that a branch refuses it (see the test and Herd).
+
+    # AshAi's own `update` tool: a bulk update on a `limit(1)` query, which a branch runs record by record.
     tool(:update_herd, RamalAshAiExample.Herd, :move)
   end
 
