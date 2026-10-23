@@ -111,6 +111,10 @@ defmodule Ramal.Test.Farm.Herd do
   calculations do
     # An expression calculation: the data layer computes it in SQL, and Ash can evaluate it on a record in memory.
     calculate(:size, :string, expr(if head >= 30, do: "large", else: "small"), public?: true)
+
+    # Calculations with their own module: one has an expression (the data layer computes it), one runs in Elixir.
+    calculate(:doubled, :integer, Ramal.Test.Farm.Calculations.Doubled, public?: true)
+    calculate(:shouted, :string, Ramal.Test.Farm.Calculations.Shouted, public?: true)
   end
 
   relationships do

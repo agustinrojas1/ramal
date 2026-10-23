@@ -42,8 +42,10 @@ defmodule Ramal.Preparation do
   Known limits in 0.1, documented rather than hidden:
 
     * an expression calculation is evaluated in memory on the records the branch created or changed, and for a filter
-      on one (`load_calculations/3`, `matching_keys/2`); a calculation with its own module, and aggregates, are not
-      computed over the overlay, and reading an aggregate emits `[:ramal, :read, :unpatched_aggregate]`. `Ramal.aggregate/4` is the exact alternative for the common kinds;
+      on one (`load_calculations/3`, `matching_keys/2`), and so is a calculation with its own module that has an
+      expression (the data layer computes those too); a calculation with only `calculate/3` runs in Elixir on the
+      patched rows already. Aggregates are not computed over the overlay, and reading one emits
+      `[:ramal, :read, :unpatched_aggregate]`. `Ramal.aggregate/4` is the exact alternative for the common kinds;
     * overlay records are added without running the action's `authorize_results` checks, though the query's filter,
       including any policy filter, is applied to them;
     * `Ash.load/3` onto a record the branch changed reselects the relationship's source attribute (for example
@@ -382,9 +384,7 @@ defmodule Ramal.Preparation do
 
   defp load_in_memory(records, calculations, query) do
     expressions =
-      Map.filter(calculations, fn {_name, calculation} ->
-        calculation.module == Ash.Resource.Calculation.Expression
-      end)
+      Map.filter(calculations, fn {_name, calculation} -> data_layer_calculation?(calculation) end)
 
     if expressions == %{} do
       {:ok, records}
@@ -392,6 +392,14 @@ defmodule Ramal.Preparation do
       load = %{Ash.Query.new(query.resource) | calculations: expressions}
       Ash.load(records, load, domain: query.domain, reuse_values?: true, authorize?: false)
     end
+  end
+
+  # A calculation with an expression is computed by the data layer, whether it is written inline or in its own module
+  # (`has_expression?/0` is defined by `use Ash.Resource.Calculation`); one with only `calculate/3` runs in Elixir after
+  # this preparation's after_action hook, on the patched rows, so it needs nothing here.
+  defp data_layer_calculation?(%{module: module}) do
+    Code.ensure_loaded?(module) and function_exported?(module, :has_expression?, 0) and
+      module.has_expression?()
   end
 
   # The filter the overlay's records are judged by: the whole one, which a read with a relaxed data-layer filter keeps.
