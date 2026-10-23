@@ -4,6 +4,8 @@ defmodule Ramal.BranchCase do
   # observe it. Tune the supervisor with `@tag supervisor: [idle_timeout: 50]`, or disable it with `supervisor: false`.
   use ExUnit.CaseTemplate
 
+  import ExUnit.Assertions
+
   using do
     quote do
       import Ramal.BranchCase
@@ -60,4 +62,20 @@ defmodule Ramal.BranchCase do
 
   @doc "Whether a process for branch `id` is running."
   def loaded?(id), do: Ramal.Supervisor.whereis(id) != nil
+
+  @doc """
+  What a crash of the node leaves: the branch process gone without running `terminate/2`, and its marks cleared as a
+  restart clears them (the ETS tables of the supervisor are the only thing a test cannot lose, and storage is one of
+  them).
+  """
+  def crash(id) do
+    pid = Ramal.Supervisor.whereis(id)
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+    eventually(fn -> Ramal.Supervisor.too_large?(id) end)
+    Ramal.Supervisor.clear_too_large(id)
+    Ramal.Supervisor.clear_running(id)
+    eventually(fn -> not loaded?(id) end)
+  end
 end
