@@ -314,7 +314,7 @@ Ramal is deliberately small, and it says what it does not do:
 - **Merge is slower than a SQL statement,** because it replays each change through your action. That is the price of
   merging through your own rules.
 - **Writes since the last save are lost if the node crashes.** A branch is saved at the moments listed above, not on every write.
-- **A few many-to-many cases stay unsupported:** `type: :append_and_remove` with a link to remove is refused, and a paged relationship load or a `through` path of several hops sees the base links.
+- **A few many-to-many cases stay unsupported:** `type: :append_and_remove` with a link to remove is refused, and a `through` path of several hops sees the base rows of its intermediate resources.
 - **Authorization is yours.** Anyone who holds a branch id can act on it. Ramal records who decided and never checks.
 - **Pre-1.0.** The public API may change before 1.0; the changelog says when it does.
 

@@ -22,10 +22,13 @@ defmodule Ramal.Preparation.ManyToMany do
   # source attribute value as the tag.
   #
   # Per-source `limit` and `offset` are what the lateral subquery applied; they are applied here per source after the
-  # destination rows are patched and sorted.
+  # destination rows are patched and sorted. The same is done for the lateral read of a has_many (one hop) that has a
+  # limit, an offset or a page, when the branch changed its destination, and a page is cut per source by the last
+  # `before_action` hook of `Ramal.Preparation` (ADR 0039).
 
   import Ash.Expr, only: [ref: 1]
 
+  alias Ash.Actions.Read.Relationships
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
   alias Ramal.Current
@@ -34,37 +37,100 @@ defmodule Ramal.Preparation.ManyToMany do
   require Ash.Query
 
   @doc """
-  Returns `{:ok, query, links}` when the query is the destination read of a many_to_many load whose join resource the
-  branch has changed, with the lateral join replaced by a filter. `links` maps a destination key to the primary keys of
-  the source records that link to it. Returns `:skip` for every other query.
+  Returns `{:ok, query, links}` when the query is the destination read of a lateral load (a many_to_many, or a has_many
+  read with a limit, an offset or a page) that the database cannot answer once the branch has changed what the load
+  reads, with the lateral join replaced by a filter. `links` maps a destination key to the source records that reach
+  it, and keeps the lateral join the query had in `:lateral_source`. Returns `:skip` for every other query.
   """
   @spec rewrite(Ash.Query.t(), String.t()) ::
           {:ok, Ash.Query.t(), map} | :skip | {:error, term}
   def rewrite(query, id) do
-    with false <- paged?(query),
-         {records, [source_hop, through_hop]} when is_list(records) <-
-           query.context[:data_layer][:lateral_join_source],
-         {_source_query, source_attribute, source_on_join, %{type: :many_to_many} = relationship} <-
+    case query.context[:data_layer][:lateral_join_source] do
+      {records, [source_hop, through_hop]} = source when is_list(records) ->
+        many_to_many(query, id, source, source_hop, through_hop)
+
+      {records, [hop]} = source when is_list(records) ->
+        direct(query, id, source, hop)
+
+      _ ->
+        :skip
+    end
+  end
+
+  defp many_to_many(query, id, {records, _path} = source, source_hop, through_hop) do
+    with {_source_query, source_attribute, source_on_join, %{type: :many_to_many} = relationship} <-
            source_hop,
          {through_query, destination_on_join, destination_attribute, _join_relationship} <-
            through_hop,
-         {:ok, slice} when map_size(slice) > 0 <- Server.slice(id, relationship.through) do
+         {:ok, true} <- touched?(query, id, relationship.through, true) do
       links(query, id, records, through_query, %{
         source: relationship.source,
         source_attribute: source_attribute,
         source_on_join: source_on_join,
         destination_on_join: destination_on_join,
-        destination_attribute: destination_attribute
+        destination_attribute: destination_attribute,
+        lateral_source: source
       })
     else
-      {:ok, _empty_slice} -> :skip
+      {:ok, false} -> :skip
       {:error, error} -> {:error, error}
       _ -> :skip
     end
   end
 
-  # A paged load goes through `Ash.Page` values that this rewrite does not rebuild (ADR 0017).
-  defp paged?(query), do: query.page not in [nil, false]
+  # A has_many (or any relationship of one hop) read with a limit, an offset or a page is one lateral join that limits
+  # per source record. When the branch changed the destination the database's rows are not the ones to limit, so the
+  # destination is read whole for every source and limited per source here. A relationship with a `parent` expression
+  # in its filter or sort needs the join to evaluate it, and a `distinct` is applied by the join per source: those keep
+  # the database's.
+  defp direct(query, id, {records, _path} = source, hop) do
+    {_source_query, source_attribute, destination_attribute, relationship} = hop
+
+    with :many <- relationship.cardinality,
+         false <- query.distinct not in [nil, []],
+         false <- parent_expr?(relationship),
+         true <- paging?(query),
+         {:ok, true} <- touched?(query, id, nil, false) do
+      primary_key = Info.primary_key(relationship.source)
+
+      by_source =
+        Enum.group_by(records, &Map.get(&1, source_attribute), &Map.take(&1, primary_key))
+
+      values = Map.keys(by_source)
+
+      query =
+        query
+        |> drop_lateral_join()
+        |> Ash.Query.filter(^ref(destination_attribute) in ^values)
+
+      {:ok, query,
+       %{by_destination: by_source, attribute: destination_attribute, lateral_source: source}}
+    else
+      {:error, error} -> {:error, error}
+      _ -> :skip
+    end
+  end
+
+  defp parent_expr?(relationship),
+    do: Relationships.has_parent_expr?(relationship)
+
+  defp paging?(query),
+    do: query.page not in [nil, false] or query.limit != nil or query.offset != nil
+
+  # Whether the branch changed a resource the load reads: the join resource, or the destination of a load that is
+  # limited per source (the database's join is right for an unlimited one, which Ramal patches like any read).
+  defp touched?(query, id, join_resource, join?) do
+    with {:ok, join_touched?} <- join_touched?(id, join_resource, join?),
+         {:ok, destination_touched?} <- Server.overlay?(id, query.resource) do
+      {:ok, join_touched? or (destination_touched? and paging?(query))}
+    end
+  end
+
+  defp join_touched?(id, resource, true) do
+    with {:ok, slice} <- Server.slice(id, resource), do: {:ok, map_size(slice) > 0}
+  end
+
+  defp join_touched?(_id, _resource, false), do: {:ok, false}
 
   defp links(query, id, records, through_query, keys) do
     %{source_attribute: source_attr, source_on_join: source_on_join} = keys
@@ -93,7 +159,8 @@ defmodule Ramal.Preparation.ManyToMany do
         |> drop_lateral_join()
         |> Ash.Query.filter(^ref(dest_attr) in ^destination_values)
 
-      {:ok, query, %{by_destination: links, attribute: dest_attr}}
+      {:ok, query,
+       %{by_destination: links, attribute: dest_attr, lateral_source: keys.lateral_source}}
     end
   end
 
