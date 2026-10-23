@@ -14,10 +14,9 @@ defmodule RamalAshAiExample.Herd do
       accept([:paddock])
     end
 
-    # AshAi runs an `update` or `destroy` tool with `Ash.bulk_update!/4` or `Ash.bulk_destroy!/4` on a query with
-    # `limit(1)` (`AshAi.Tool.Execution.run_update/7`, ash_ai 1.4.0), and a branch refuses every bulk action
-    # (`:bulk_unsupported`). A generic action runs the single-record update itself, so the write is captured. The
-    # request's shared context, which carries the branch, is passed on by `Ash.Scope.to_opts/1`.
+    # A generic action that runs the single-record update itself. AshAi's own `update` tool works in a branch too (it is
+    # a bulk update that a branch runs record by record, ADR 0036); this one shows how a hand-written tool passes the
+    # request's shared context, which carries the branch, on with `Ash.Scope.to_opts/1`.
     action :move_herd, :struct do
       description("Moves the herd with the given id to another paddock.")
       constraints(instance_of: __MODULE__)

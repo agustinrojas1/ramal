@@ -27,7 +27,7 @@ defmodule Ramal.Merge do
   Rows a replayed create writes keep the primary key they had in the branch (the key is forced onto the changeset), so
   later log entries and the branch's own diff still name the right rows. So do the rows a hook creates: the entries of
   one action and of its hooks share a `root`, and the replay of the action gives its hooks' creates the keys they had,
-  in order (ADR 0039). Attributes the caller set on the changeset after `for_create` or
+  in order (ADR 0041). Attributes the caller set on the changeset after `for_create` or
   `for_update` (`Ash.Changeset.change_attribute/3`) are recorded with the entry as `forced` and set again by the replay.
 
   ## Options
@@ -43,7 +43,7 @@ defmodule Ramal.Merge do
   resources in `details.not_rolled_back`. `Ash.transact/3` runs the function as it is for such a data layer and returns
   its `{:error, _}` inside `{:ok, _}`, which the merge unwraps.
 
-  Known limits, documented in `docs/adr/0007-merge.md` and `docs/adr/0039-replay-keeps-hook-keys-and-caller-attributes.md`:
+  Known limits, documented in `docs/adr/0007-merge.md` and `docs/adr/0041-replay-keeps-hook-keys-and-caller-attributes.md`:
   a branch works in one tenant (ADR 0034) and the staleness check reads with it, a hook that creates different rows
   from one run to the next gives them the keys the replay's creates get, and arguments set after `for_create` or
   `for_update` are not in the log.
@@ -431,7 +431,7 @@ defmodule Ramal.Merge do
   end
 
   # The keys the hooks of each outermost action created in the branch, by the action's root, in the order they ran. A
-  # replay of the action creates those rows again and gives them these keys (ADR 0039). An upsert that found its row
+  # replay of the action creates those rows again and gives them these keys (ADR 0041). An upsert that found its row
   # in the branch has the row's own key, so the replay's upsert is to find it again and takes no key.
   defp key_plans(entries) do
     entries

@@ -1,4 +1,4 @@
-# 0039. Replay keeps hook-created keys and caller-set attributes
+# 0041. Replay keeps hook-created keys and caller-set attributes
 
 Status: accepted, 2026-10-23. Amends [ADR 0007](0007-merge.md) and [ADR 0005](0005-write-capture.md).
 

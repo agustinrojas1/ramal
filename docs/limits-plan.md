@@ -23,7 +23,7 @@ starting at 0037, and record the next free number in project memory.
 | 9 | Text sorts use byte order | Fix for AshPostgres (ask Postgres to collate) | M | no |
 | 10 | Nested branches (branch of a branch, merge into parent) | Fix | L | **yes** |
 | 11 | A branch lives on one node | Fix, opt-in (`:global` registry plus fencing epoch) | XL | **yes** |
-| 12 | Merge replay limits: a top-level action on a hook-created row; attributes set outside the action's input | **Done** (ADR 0039) | M | no |
+| 12 | Merge replay limits: a top-level action on a hook-created row; attributes set outside the action's input | **Done** (ADR 0041) | M | no |
 | 13 | Filter through a changed relationship reads more | Narrow (push the unchanged part to SQL) | M | no |
 | 14 | `Ash.load/3` on a record the branch changed follows the base foreign key | Needs an Ash change; `Ramal.load/3` stays | - | no |
 | 15 | Merge is slower than SQL | Keep replay; optional `mode: :apply` later | L | yes |
@@ -573,7 +573,7 @@ same Postgres.
 
 **ADR outline.** "Replay keeps hook-created keys and caller-set attributes".
 
-**As built (ADR 0039).** Two differences from the design above. (a) The log's order cannot say which nested creates
+**As built (ADR 0041).** Two differences from the design above. (a) The log's order cannot say which nested creates
 belong to which action: a `before_action` hook's create is logged ahead of its action's entry, an `after_action` hook's
 after it, and writes of actions in other processes interleave. Every entry therefore carries a random `root` shared by an
 action and its hooks, and the plan is the nested creates with the entry's root. (b) The attributes are compared in a

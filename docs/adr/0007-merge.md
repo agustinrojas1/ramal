@@ -32,7 +32,7 @@ concurrent writers to the branch, rows created by hooks, actors, and the ids of 
 ## Consequences
 
 - A top-level entry that targets a row created by a hook of an earlier entry cannot be replayed: replay gives the hook's
-  row a new id. It fails as `:merge_failed` rather than writing the wrong row. (Changed by [ADR 0039](0039-replay-keeps-hook-keys-and-caller-attributes.md): the replay gives the hook's creates the keys they had.)
+  row a new id. It fails as `:merge_failed` rather than writing the wrong row. (Changed by [ADR 0041](0041-replay-keeps-hook-keys-and-caller-attributes.md): the replay gives the hook's creates the keys they had.)
 - The staleness read runs without a tenant, so a resource that requires one fails the merge with an Ash error; multitenancy is refused inside a branch since ADR 0009 and is
   out of scope for 0.1.
 - Rows read with `select` are not checked.
