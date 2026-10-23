@@ -44,9 +44,23 @@ What Ramal does and does not protect, so you can decide what to add. Each point 
 The inspector can merge, approve, reject, discard and fork any branch of its domain. It checks nothing itself.
 
 - **Mount it behind your authorization**, inside a `pipe_through` that requires an administrator and a `live_session` with an `on_mount` that checks the same. A LiveView socket outlives the request, so also give your sockets a `live_socket_id` and disconnect it on logout.
-- **Give it an `:actor`.** Without one, a merge replays each write as the actor it was captured with and the decision has no decider. With one, a function that returns `nil` means nobody is signed in and the page refuses every action.
+- **Give it an `:actor`.** The option is required: a router that leaves it out does not compile, so the page never acts for nobody. The page calls it with the socket and uses the result as the actor that is recorded as the decider and replays a merge. A function that returns `nil` means nobody is signed in and the page refuses every action. A tool with no users returns a constant.
 - **One `live_session` per level of access.** A LiveView joins with a URL the browser sends, and the page reads its options from the route that URL matches. Two `ramal_inspector` mounts in one `live_session` therefore share authorization: a user allowed into one can make the page use the options of the other. Put mounts that differ in who may use them in separate `live_session`s.
 - **CSRF and origin.** The page has no form and no controller action; every change is a LiveView event on the socket, which Phoenix protects with the socket's CSRF token and `check_origin`. Keep `check_origin` on in production.
-- **Destructive actions** (merge, discard, approve, reject) need a second event that the server accepts only after the first, per socket. Fork does not ask and creates a branch (a process and a stored row): rate limit the route if untrusted users reach it.
+- **Destructive actions** (merge, discard, approve, reject) need a second event that the server accepts only after the first, per socket. Fork does not ask and creates a branch (a process and a stored row): set the limits below, and rate limit the route if untrusted users reach it.
 - **Values.** Attributes marked `sensitive?: true` show as `[redacted]` in the diff. Other values are shown, cut to 80 characters, to everyone who can open the page.
 - **Output.** Every value is rendered through HEEx, which escapes it. The one `raw/1` is the page's static stylesheet, which a content security policy without `style-src 'unsafe-inline'` blocks.
+
+### Limiting how many branches exist
+
+Every branch is a stored row and, while in use, a process, and `Ramal.branch/2` and `Ramal.fork/2` (which the inspector calls) create one per call. Ramal sets no limit by default, because a limit that is right for one application refuses legitimate work in another. Set one on `Ramal.Supervisor` when untrusted or automated callers can reach those functions:
+
+```elixir
+{Ramal.Supervisor, storage: Ramal.Storage.Postgres, repo: MyApp.Repo,
+ max_active_branches: 200, branch_rate: {20, :timer.minutes(1)}}
+```
+
+- `:max_active_branches` caps the open and proposed branches of each domain.
+- `:branch_rate` caps the branches and forks created per domain in a window, counted in memory on each node.
+
+A refused call returns `{:error, %Ramal.Error{reason: :limit_reached}}` and emits `[:ramal, :limit, :reached]`. Both limits are per domain, not per user: they bound the damage, they do not share it fairly, so scope branch ids and who may fork to your users in your own code. `:max_active_branches` is soft (callers creating at the same instant can pass it by their own number) and `:branch_rate` uses fixed windows (a burst across the end of a window can reach twice the rate). With `Ramal.Storage.Postgres` the count is one query per creation, and with a custom storage that does not define `count/3` it is a `list/3`, which reads every stored branch of the domain.

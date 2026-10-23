@@ -30,19 +30,21 @@ scope "/admin" do
   pipe_through [:browser, :require_admin]
 
   live_session :admin, on_mount: [{MyAppWeb.UserAuth, :ensure_admin}] do
-    ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub
+    ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: {MyAppWeb.Inspector, :actor}
   end
 end
 ```
 
-Options of `ramal_inspector/2`: `:domain` and `:pubsub` (required), `:actor` (`{module, function}`, called with the socket,
-returns the actor that is recorded as `decided_by` and replays a merge) and `:debounce` (milliseconds, default 50).
+Options of `ramal_inspector/2`: `:domain`, `:pubsub` and `:actor` (all required) and `:debounce` (milliseconds, default 50).
+`:actor` is `{module, function}`; the page calls `module.function(socket)` and uses the result as the actor that is
+recorded as `decided_by` and replays a merge, or refuses to act when it returns `nil`. A router without it does not compile.
+For a development tool with no users, return a constant (`def actor(_socket), do: :dev`).
 
 ## Things to know
 
 - **Authorization is yours.** Whoever opens the page can merge and discard any branch of the domain. Ramal records who
   decided and never checks. Mount it behind your own authentication in a `live_session` with an `on_mount` that checks the
-  same, and give `:actor` so decisions have a decider: when that function returns `nil` the page refuses every action.
+  same, and give `:actor` (required) so decisions have a decider: when that function returns `nil` the page refuses every action.
   Mounts that differ in who may use them need separate `live_session`s, because the page reads its options from the URL the
   browser joins with. [SECURITY.md](https://github.com/agustinrojas1/ramal/blob/main/SECURITY.md) has the whole list.
 - **Secrets.** Attributes marked `sensitive?: true` show as `[redacted]` in the diff.

@@ -16,6 +16,7 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :branch, :approve]` | a proposed branch was approved and merged (after the `[:ramal, :merge]` span) |
   | `[:ramal, :branch, :reject]` | a proposed branch was rejected |
   | `[:ramal, :branch, :too_large]` | a branch process was killed for exceeding `max_heap_size` |
+  | `[:ramal, :limit, :reached]` | `branch/2` or `fork/2` was refused by a limit of `Ramal.Supervisor` (metadata: `domain`, `operation`, `limit`) |
   | `[:ramal, :merge, :start \| :stop \| :exception]` | a span around `Ramal.merge/2`; `stop` adds `result` (`:ok` or `:error`) and `replayed`, or `reason` |
   | `[:ramal, :read, :patch]` | a read inside a branch was patched with the overlay (measurements: `base_rows`, `overlay_rows`, `result_rows`, `duration`) |
   | `[:ramal, :read, :unpatched_aggregate]` | a read inside a branch selected an aggregate, which the database computes without the overlay |
@@ -82,6 +83,19 @@ defmodule Ramal.Telemetry do
       %{system_time: System.system_time()},
       Map.merge(%{branch_id: id, domain: domain}, extra)
     )
+  end
+
+  @doc """
+  Emits `[:ramal, :limit, :reached]` with `metadata` (`domain`, `operation`, `limit`).
+
+  ## Example
+
+      iex> Ramal.Telemetry.limit(:reached, %{domain: MyApp.Farm, operation: :fork, limit: :branch_rate})
+      :ok
+  """
+  @spec limit(atom, map) :: :ok
+  def limit(step, metadata) do
+    :telemetry.execute([:ramal, :limit, step], %{system_time: System.system_time()}, metadata)
   end
 
   @doc """

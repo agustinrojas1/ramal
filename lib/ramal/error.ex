@@ -22,6 +22,7 @@ defmodule Ramal.Error do
   | `:no_branchable_resources` | the domain has no resource that opted in with `Ramal.Resource` |
   | `:nested_branch` | `Ramal.run/2` was called inside another `Ramal.run/2`, or `Ramal.merge/2` inside one |
   | `:missing_snapshot` | an overlay entry that needs the base row as first seen has none recorded |
+  | `:limit_reached` | `Ramal.branch/2` or `Ramal.fork/2` was refused by `:max_active_branches` or `:branch_rate` of `Ramal.Supervisor` (`details.limit`, `max`, and `active` or `window`) |
   | `:storage` | the storage backend failed |
 
   ## Example
@@ -46,6 +47,7 @@ defmodule Ramal.Error do
           | :no_branchable_resources
           | :nested_branch
           | :missing_snapshot
+          | :limit_reached
           | :storage
 
   @type t :: %__MODULE__{reason: reason, message: String.t(), details: map}

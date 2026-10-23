@@ -113,6 +113,20 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
       end
     end
 
+    @impl true
+    def count(domain, statuses, config) do
+      with {:ok, repo} <- repo(config),
+           {:ok, result} <-
+             query(
+               repo,
+               "SELECT count(*) FROM #{@table} WHERE domain = $1 AND status = ANY($2::text[])",
+               [Atom.to_string(domain), Enum.map(statuses, &Atom.to_string/1)]
+             ) do
+        [[count]] = result.rows
+        {:ok, count}
+      end
+    end
+
     defp row_to_map([id, domain, name, status, state]) do
       {%{id: Ecto.UUID.load!(id), domain: domain, name: name, status: status}, state}
     end

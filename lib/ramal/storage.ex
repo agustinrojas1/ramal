@@ -37,4 +37,15 @@ defmodule Ramal.Storage do
   @doc "The branches of a domain, optionally filtered by `status:`, oldest first."
   @callback list(domain :: module, filters :: keyword, config) ::
               {:ok, [Branch.t()]} | {:error, Error.t()}
+
+  @doc """
+  How many branches of a domain have one of the statuses, without loading them.
+
+  Optional. `Ramal.Supervisor`'s `:max_active_branches` limit calls it before every branch is created; a backend that
+  does not define it is counted with `list/3`, which reads every stored branch of the domain.
+  """
+  @callback count(domain :: module, statuses :: [Branch.status()], config) ::
+              {:ok, non_neg_integer} | {:error, Error.t()}
+
+  @optional_callbacks count: 3
 end

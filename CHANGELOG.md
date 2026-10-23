@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking, `ramal_live`:** the `:actor` option of `ramal_inspector/2` is required. A router without it fails to compile with a message that says what to pass, and a route whose actor function does not exist raises when the page opens. Before, a missing `:actor` meant the page merged every branch as the actors the writes were captured with and recorded no decider. Add `actor: {MyAppWeb.Inspector, :actor}`; a tool with no users can return a constant (ADR 0016).
+
+### Added
+
+- `Ramal.Supervisor` options `:max_active_branches` and `:branch_rate`: optional per-domain limits on the open and proposed branches, and on the branches and forks created per window. `Ramal.branch/2` and `Ramal.fork/2` return `{:error, %Ramal.Error{reason: :limit_reached}}` past either, with the limit in `details`, and emit `[:ramal, :limit, :reached]`. Both are off by default, so nothing changes until a host sets them (ADR 0016, `SECURITY.md`).
+- `c:Ramal.Storage.count/3`, an optional callback that counts a domain's branches by status without loading them. `Ramal.Storage.ETS` and `Ramal.Storage.Postgres` define it; a backend without it is counted with `list/3`.
+
 ## [0.2.0] - 2026-10-22
 
 Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspector, a benchmark, and a security pass. No breaking change to the public API of 0.1.0: a branch stored by 0.1.0 loads unchanged, and the public functions of 0.1.0 behave as before.

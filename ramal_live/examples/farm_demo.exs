@@ -316,6 +316,11 @@ defmodule FarmDemo.DemoLive do
   def handle_async(:explore, _result, socket), do: {:noreply, assign(socket, busy: false)}
 end
 
+defmodule FarmDemo.Inspector do
+  # The inspector needs an actor function. The demo has no users, so everyone is the demo.
+  def actor(_socket), do: :demo
+end
+
 defmodule FarmDemo.Router do
   use Phoenix.Router
   import Phoenix.LiveView.Router
@@ -333,7 +338,12 @@ defmodule FarmDemo.Router do
 
     live_session :demo do
       live("/", FarmDemo.DemoLive, :index)
-      ramal_inspector("/ramal", domain: FarmDemo.Farm, pubsub: PhoenixPlayground.PubSub)
+
+      ramal_inspector("/ramal",
+        domain: FarmDemo.Farm,
+        pubsub: PhoenixPlayground.PubSub,
+        actor: {FarmDemo.Inspector, :actor}
+      )
     end
   end
 end

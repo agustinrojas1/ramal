@@ -17,13 +17,15 @@ defmodule RamalLive.Test.Router do
       ramal_inspector("/ramal",
         domain: RamalLive.Test.Farm,
         pubsub: RamalLive.Test.PubSub,
-        debounce: 0
+        debounce: 0,
+        actor: {RamalLive.Test.Inspector, :actor}
       )
 
       ramal_inspector("/ramal-debounced",
         domain: RamalLive.Test.Farm,
         pubsub: RamalLive.Test.PubSub,
-        debounce: 40
+        debounce: 40,
+        actor: {RamalLive.Test.Inspector, :actor}
       )
 
       # Mounted with `live`, which carries no options: the page has to say what went wrong.
@@ -34,6 +36,14 @@ defmodule RamalLive.Test.Router do
         pubsub: RamalLive.Test.PubSub,
         debounce: 0,
         actor: {RamalLive.Test.Inspector, :actor}
+      )
+
+      # Mounted with an `:actor` whose function does not exist: the page says so when it opens.
+      ramal_inspector("/ramal-typo",
+        domain: RamalLive.Test.Farm,
+        pubsub: RamalLive.Test.PubSub,
+        debounce: 0,
+        actor: {RamalLive.Test.Inspector, :no_such_function}
       )
 
       # The host's actor function finds nobody signed in.

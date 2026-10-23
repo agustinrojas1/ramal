@@ -88,6 +88,21 @@ defmodule Ramal.Storage.PostgresTest do
       assert Postgres.list(Ramal.Test.Other, [], @config) == {:ok, [other]}
     end
 
+    test "count returns how many branches of one domain have one of the statuses" do
+      open = branch()
+      proposed = branch(status: :proposed)
+      merged = branch(status: :merged)
+      other = Branch.new(Ramal.Test.Other)
+      for b <- [open, proposed, merged, other], do: :ok = Postgres.put(b, @config)
+
+      assert Postgres.count(Farm, [:open, :proposed], @config) == {:ok, 2}
+      assert Postgres.count(Farm, [:merged], @config) == {:ok, 1}
+      assert Postgres.count(Farm, [:discarded], @config) == {:ok, 0}
+      assert Postgres.count(Farm, [], @config) == {:ok, 0}
+      assert Postgres.count(Ramal.Test.Other, [:open], @config) == {:ok, 1}
+      assert {:error, %Error{reason: :storage}} = Postgres.count(Farm, [:open], [])
+    end
+
     test "a missing :repo is a :storage error that says how to configure it" do
       assert {:error, %Error{reason: :storage, message: message}} = Postgres.put(branch(), [])
       assert message =~ "repo: MyApp.Repo"

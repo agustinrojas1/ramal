@@ -62,6 +62,11 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
   state through the storage backend and stops. A branch is also persisted when it is created, discarded, and when the
   supervisor shuts down; writes in between live only in the process (ADR 0003). `Ramal.branch/2`, `run/2`, `fork/1`, `diff/1`, `merge/2` and `discard/1` all accept a branch id and
   rehydrate the process on demand. The host never needs to know whether the process is alive.
+- Limits: `max_active_branches` and `branch_rate`, `Ramal.Supervisor` options, both off by default. The internal module Ramal.Limits checks
+  them in `branch/2` and `fork/2` before anything is created, per domain: the first caps the open and proposed branches
+  (read from storage with the optional `count/3` callback, so one query with Postgres), the second caps creations per
+  fixed window with an atomic counter in the supervisor's ETS table. A refusal is `{:error, :limit_reached}` plus a
+  `[:ramal, :limit, :reached]` event (ADR 0016).
 - Memory: `max_heap_size` on the server process, a `Ramal.Supervisor` option, default 25 million words. A branch that
   exceeds it is killed and its last persisted state remains; a watcher process notices the untrappable kill, emits
   `[:ramal, :branch, :too_large]` and marks the branch, and the next use returns `{:error, :branch_too_large}` until
@@ -221,7 +226,8 @@ This is the section that decides correctness. In a read action's preparation, wh
 ## 6. Persistence
 
 `Ramal.Storage` is a behaviour: `put(branch, config)`, `fetch(id, config)`, `delete(id, config)`,
-`list(domain, filters, config)` (which returns `{:ok, branches}` or `{:error, error}`), where `config` is the `Ramal.Supervisor` options that are not its own (the Postgres
+`list(domain, filters, config)` (which returns `{:ok, branches}` or `{:error, error}`) and the optional
+`count(domain, statuses, config)` (how many branches have one of the statuses; without it the limits count with `list`), where `config` is the `Ramal.Supervisor` options that are not its own (the Postgres
 backend reads `:repo` from it). Two implementations:
 
 - `Ramal.Storage.ETS`: a named table owned by `Ramal.Supervisor`. Default in tests and development. Lost on restart.
@@ -348,7 +354,7 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 
 A separate Mix project, `ramal_live/`, that depends on `ramal` by path. Core never depends on it. Public modules:
 
-- `RamalLive.Router`: the macro `ramal_inspector path, domain: ..., pubsub: ...` (options `:actor`, `:debounce`). It
+- `RamalLive.Router`: the macro `ramal_inspector path, domain: ..., pubsub: ..., actor: ...` (options `:actor`, required, and `:debounce`). It
   expands to one `live` route, so the host puts it inside its own scope, pipeline and `live_session` and the page uses the
   host's root layout, LiveView socket and JavaScript (ADR 0015).
 - `RamalLive.Broadcaster`: a process the host starts. It attaches telemetry handlers (the branch lifecycle events,
@@ -376,8 +382,9 @@ cream and light amber. Barlow Condensed for headings and IBM Plex Mono for data,
 does not load fonts. No Tailwind and no asset pipeline: the CSS is inline, scoped to `.ramal`, and follows
 `prefers-color-scheme` unless the buttons in the header pick a theme.
 
-**Authorization** is the host's: put the route behind its pipeline or `on_mount`. The `:actor` option supplies the actor
-recorded as `decided_by` and used to replay a merge.
+**Authorization** is the host's: put the route behind its pipeline or `on_mount`. The `:actor` option is required and supplies
+the actor recorded as `decided_by` and used to replay a merge; a function that returns `nil` makes the page refuse every
+action (ADR 0016).
 
 ## 13. Decision log (summary; details in `docs/adr/`)
 
@@ -404,3 +411,4 @@ recorded as `decided_by` and used to replay a merge.
 | 19 | `Ramal.aggregate/4` aggregates in the database the rows outside the overlay, reads the overlaid ones through the patched path and joins the two; limit, offset and distinct keep the read-every-row path; the database's part is not fingerprinted | Reading every row made scoring a state cost a table scan (measured in `bench/`). The delta is exact and its cost follows the overlay. [ADR 0013](adr/0013-aggregate-delta.md) |
 | 20 | A many_to_many join resource gets overlay entries like any resource; an update that changes no attribute is logged; a many_to_many load and `manage_relationship` do not see links the branch changed (documented limit) | Hooks and managed relationships write nested rows that only the outer action can replay; AshPostgres loads the relationship in SQL over the base join table. [ADR 0014](adr/0014-many-to-many-join-resources.md) |
 | 21 | The inspector is a separate project whose router macro expands to one `live` route in the host's own `live_session`; options travel as route metadata; a supervised broadcaster turns telemetry into PubSub messages naming a branch, and the page re-reads only that branch | A `live_session` of its own would need its own root layout, socket and JavaScript, which is an asset pipeline; telemetry is node-local, so a handler attached on first page view would miss events. [ADR 0015](adr/0015-inspector-mounting.md) |
+| 22 | `ramal_inspector` requires `:actor`; `Ramal.branch/2` and `Ramal.fork/2` can be limited per domain by `:max_active_branches` and `:branch_rate` of `Ramal.Supervisor`, both off by default | A page that acts for nobody lets anyone who reaches the route merge as no one, and an unlimited fork is a process and a row per call. The limits stay off so no host changes behaviour by upgrading. [ADR 0016](adr/0016-security-defaults.md) |

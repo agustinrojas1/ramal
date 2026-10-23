@@ -25,6 +25,7 @@ lib/ramal/storage.ex         behaviour + Ramal.Storage.ETS, Ramal.Storage.Postgr
 lib/ramal/storage/codec.ex   a branch to a JSON-safe map and back (pure)
 lib/ramal/merge.ex           staleness check and replay
 lib/ramal/merge/result.ex    the Result struct that merge returns
+lib/ramal/limits.ex          the optional per-domain limits on creating branches and forks
 lib/ramal/telemetry.ex       event names and helpers
 lib/mix/tasks/               ramal.install, ramal.gen.migration
 test/support/farm/           the test domain (Paddock, Herd, Move) and its repo

@@ -3,11 +3,13 @@ defmodule RamalLive.RouterTest do
 
   alias RamalLive.Router
 
+  @actor {MyApp.Inspector, :actor}
+
   test "the options become a config with a default debounce" do
-    assert Router.__config__!(domain: MyApp.Farm, pubsub: MyApp.PubSub) == %{
+    assert Router.__config__!(domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: @actor) == %{
              domain: MyApp.Farm,
              pubsub: MyApp.PubSub,
-             actor: nil,
+             actor: @actor,
              debounce: 50
            }
   end
@@ -27,22 +29,34 @@ defmodule RamalLive.RouterTest do
 
   test "the domain and the pubsub are required" do
     assert_raise ArgumentError, ~r/:domain option is required/, fn ->
-      Router.__config__!(pubsub: MyApp.PubSub)
+      Router.__config__!(pubsub: MyApp.PubSub, actor: @actor)
     end
 
     assert_raise ArgumentError, ~r/:pubsub option is required/, fn ->
-      Router.__config__!(domain: MyApp.Farm)
+      Router.__config__!(domain: MyApp.Farm, actor: @actor)
+    end
+  end
+
+  test "the actor is required, and the error says what to pass" do
+    assert_raise ArgumentError, ~r/the :actor option is required.*\{module, function\}/s, fn ->
+      Router.__config__!(domain: MyApp.Farm, pubsub: MyApp.PubSub)
+    end
+  end
+
+  test "nil is not an actor function: it is refused like a missing one" do
+    assert_raise ArgumentError, ~r/:actor must be \{module, function\}, got: nil/, fn ->
+      Router.__config__!(domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: nil)
     end
   end
 
   test "an unknown option is refused, so a typo does not silently do nothing" do
     assert_raise ArgumentError, ~r/unknown options \[:debounse\]/, fn ->
-      Router.__config__!(domain: MyApp.Farm, pubsub: MyApp.PubSub, debounse: 0)
+      Router.__config__!(domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: @actor, debounse: 0)
     end
   end
 
   test "values of the wrong kind are refused" do
-    base = [domain: MyApp.Farm, pubsub: MyApp.PubSub]
+    base = [domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: @actor]
 
     assert_raise ArgumentError, ~r/:domain must be a module/, fn ->
       Router.__config__!(Keyword.put(base, :domain, "Farm"))
@@ -53,11 +67,11 @@ defmodule RamalLive.RouterTest do
     end
 
     assert_raise ArgumentError, ~r/:actor must be/, fn ->
-      Router.__config__!(base ++ [actor: &is_nil/1])
+      Router.__config__!(Keyword.put(base, :actor, &is_nil/1))
     end
 
     assert_raise ArgumentError, ~r/:debounce must be/, fn ->
-      Router.__config__!(base ++ [debounce: -1])
+      Router.__config__!(Keyword.put(base, :debounce, -1))
     end
 
     assert_raise ArgumentError, ~r/expected a keyword list/, fn -> Router.__config__!(:farm) end
@@ -80,6 +94,19 @@ defmodule RamalLive.RouterTest do
              )
   end
 
+  test "a router that mounts the inspector without an actor does not compile" do
+    assert_raise ArgumentError, ~r/the :actor option is required/, fn ->
+      Code.eval_string("""
+      defmodule RamalLive.RouterTest.NoActor do
+        use Phoenix.Router
+        import RamalLive.Router
+
+        ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub
+      end
+      """)
+    end
+  end
+
   test "an option that is wrong stops the router from compiling" do
     assert_raise ArgumentError, ~r/the :pubsub option is required/, fn ->
       Code.eval_string("""
@@ -87,7 +114,7 @@ defmodule RamalLive.RouterTest do
         use Phoenix.Router
         import RamalLive.Router
 
-        ramal_inspector "/ramal", domain: MyApp.Farm
+        ramal_inspector "/ramal", domain: MyApp.Farm, actor: {MyApp.Inspector, :actor}
       end
       """)
     end
