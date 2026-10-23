@@ -191,7 +191,15 @@ defmodule Ramal.Storage.Codec do
     {:error,
      Error.new(
        :storage,
-       "a stored write of branch #{id} has version #{version}; this Ramal reads versions #{Enum.join(@readable_versions, ", ")}"
+       "a stored write of branch #{id} has #{version_text(version)}; this Ramal reads versions #{Enum.join(@readable_versions, ", ")}"
+     )}
+  end
+
+  def decode_delta(id, _not_a_delta) do
+    {:error,
+     Error.new(
+       :storage,
+       "a stored write of branch #{id} cannot be loaded: it is not an object with a version"
      )}
   end
 
@@ -270,9 +278,22 @@ defmodule Ramal.Storage.Codec do
     {:error,
      Error.new(
        :storage,
-       "stored branch #{columns.id} has state version #{version}; this Ramal reads versions #{Enum.join(@readable_versions, ", ")}"
+       "stored branch #{columns.id} has state #{version_text(version)}; this Ramal reads versions #{Enum.join(@readable_versions, ", ")}"
      )}
   end
+
+  # The column is jsonb, so anything with write access can leave `{}`, `null`, a list or a string in it.
+  def decode_state(columns, _not_a_state) do
+    {:error,
+     Error.new(
+       :storage,
+       "stored branch #{columns.id} cannot be loaded: its state is not an object with a version"
+     )}
+  end
+
+  # A version is a number Ramal wrote. Anything else is stored data, which an error message does not echo.
+  defp version_text(version) when is_integer(version), do: "version #{version}"
+  defp version_text(_version), do: "a version that is not a number"
 
   defp status!(status) do
     case Map.fetch(@statuses, status) do
