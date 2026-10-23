@@ -388,8 +388,32 @@ defmodule Ramal.MergeTest do
     {:ok, _} = Ramal.merge(branch, authorize?: false)
 
     id = branch.id
-    assert_receive {:telemetry, [:ramal, :merge, :start], %{branch_id: ^id}}
-    assert_receive {:telemetry, [:ramal, :merge, :stop], %{result: :ok, replayed: 1}}
+    domain = branch.domain
+    assert_receive {:telemetry, [:ramal, :merge, :start], %{branch_id: ^id, domain: ^domain}}
+
+    assert_receive {:telemetry, [:ramal, :merge, :stop],
+                    %{result: :ok, replayed: 1, domain: ^domain}}
+  end
+
+  test "a merge receives the branch from its process once", %{branch: branch} do
+    inside(branch, fn -> Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false) end)
+
+    # Every copy of the branch that reaches the caller is a reply of the process that holds a Ramal.Branch.
+    :erlang.trace(Ramal.Supervisor.whereis(branch.id), true, [:send])
+    {:ok, _} = Ramal.merge(branch, authorize?: false)
+
+    replies =
+      Stream.repeatedly(fn ->
+        receive do
+          {:trace, _pid, :send, {_tag, {:ok, %Ramal.Branch{}}}, _to} -> :branch
+          {:trace, _pid, :send, _message, _to} -> :other
+        after
+          0 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+
+    assert Enum.count(replies, &(&1 == :branch)) == 1
   end
 
   defp kind({:created, _}), do: :created
