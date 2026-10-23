@@ -154,7 +154,7 @@ defmodule Ramal.Capture do
         rollback(id, mark, :raised)
         :erlang.raise(kind, reason, __STACKTRACE__)
     after
-      leave()
+      leave(id)
     end
   end
 
@@ -164,14 +164,20 @@ defmodule Ramal.Capture do
     frame = Process.get(@frame)
     {mine, rest} = Enum.split(frame.undos, length(frame.undos) - mark)
     Process.put(@frame, %{frame | undos: rest})
-    if mine != [], do: Server.update(id, &Branch.undo(&1, mine))
+    if mine != [], do: Server.undo(id, mine)
     result
   end
 
-  defp leave do
+  # The outermost action ended: the branch process holds its writes as running until told (`Server.capture/3`). A
+  # frame whose writes were all taken back has none left to end.
+  defp leave(id) do
     case Process.get(@frame) do
-      %{depth: 1} -> Process.delete(@frame)
-      frame -> Process.put(@frame, %{frame | depth: frame.depth - 1})
+      %{depth: 1, undos: undos} ->
+        Process.delete(@frame)
+        if undos != [], do: Server.release(id)
+
+      frame ->
+        Process.put(@frame, %{frame | depth: frame.depth - 1})
     end
   end
 
@@ -194,7 +200,7 @@ defmodule Ramal.Capture do
         {reply, branch}
       end
 
-      result = Server.write(id, put)
+      result = Server.capture(id, {resource, key}, put)
       settle_late_write(result, id, tag)
 
       case result do
@@ -223,7 +229,7 @@ defmodule Ramal.Capture do
   defp settle_late_write({:error, %Error{reason: :timeout}}, id, tag) do
     with :ok <- Server.settle(id) do
       receive do
-        {^tag, {:ok, undo}} -> Server.update(id, &Branch.undo(&1, [undo]))
+        {^tag, {:ok, undo}} -> Server.undo(id, [undo])
         {^tag, _refused} -> :ok
       after
         0 -> :ok

@@ -158,4 +158,15 @@ defmodule Ramal.Supervisor do
 
   @doc false
   def clear_too_large(id), do: :ets.delete(__MODULE__, {:too_large, id})
+
+  # A branch process marks itself running when it starts and clears the mark in terminate/2. A kill skips terminate/2,
+  # so a mark without a live process means the process died without persisting, and storage is behind it.
+  @doc false
+  def mark_running(id), do: :ets.insert(__MODULE__, {{:running, id}, true})
+
+  @doc false
+  def running?(id), do: :ets.member(__MODULE__, {:running, id})
+
+  @doc false
+  def clear_running(id), do: :ets.delete(__MODULE__, {:running, id})
 end

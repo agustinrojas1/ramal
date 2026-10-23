@@ -6,7 +6,9 @@ defmodule Ramal.Merge do
   `Ramal.merge/2` is the public entry point. The steps, in order:
 
     1. The branch process is claimed, which fails unless the branch is open and not already being merged. While it is
-       claimed the process refuses writes, reads of its slice, discards and a second merge.
+       claimed the process refuses writes, reads of its slice, discards and a second merge. Actions still running in the
+       branch in other processes are waited for first, up to four seconds, so their writes are replayed only if they
+       succeed (ADR 0033).
     2. Every base row the branch fingerprinted is read again, locked (`FOR UPDATE`) where the data layer supports it,
        and compared. A row that is gone or whose fingerprint differs is stale. `on_stale` decides what happens.
     3. The log is replayed oldest first with no branch current, so every action runs for real: validations and

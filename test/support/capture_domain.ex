@@ -10,6 +10,7 @@ defmodule Ramal.Test.Capture do
     resource(Ramal.Test.Capture.Silent)
     resource(Ramal.Test.Capture.Flaky)
     resource(Ramal.Test.Capture.Counter)
+    resource(Ramal.Test.Capture.Gated)
   end
 end
 
@@ -172,6 +173,61 @@ defmodule Ramal.Test.Capture.Counter do
     attribute(:label, :string, public?: true)
     attribute(:n, :integer, public?: true, default: 0)
     attribute(:m, :integer, public?: true, default: 1)
+  end
+end
+
+defmodule Ramal.Test.Capture.Gate do
+  @moduledoc false
+  # Holds an action after its write was captured and before it ends, until the test that registered itself as
+  # :ramal_test_gate lets it pass or fail. Without a registered test the action passes at once.
+  use Ash.Resource.Change
+
+  @impl true
+  def change(changeset, _opts, _context) do
+    Ash.Changeset.after_action(changeset, fn _changeset, record ->
+      case Process.whereis(:ramal_test_gate) do
+        nil ->
+          {:ok, record}
+
+        test ->
+          send(test, {:at_gate, self()})
+
+          receive do
+            {:gate, :pass} -> {:ok, record}
+            {:gate, :fail} -> {:error, "refused at the gate"}
+          end
+      end
+    end)
+  end
+end
+
+defmodule Ramal.Test.Capture.Gated do
+  @moduledoc false
+  # Actions that stop between their captured write and their end (Ramal.Test.Capture.Gate), so a test can run another
+  # process's call to the branch while the action is still running.
+  use Ash.Resource,
+    domain: Ramal.Test.Capture,
+    data_layer: Ash.DataLayer.Ets,
+    extensions: [Ramal.Resource]
+
+  actions do
+    defaults([:read, :destroy, create: :*, update: :*])
+
+    create :gated_create do
+      accept([:text])
+      change(Ramal.Test.Capture.Gate)
+    end
+
+    update :gated_update do
+      require_atomic?(false)
+      accept([:text])
+      change(Ramal.Test.Capture.Gate)
+    end
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:text, :string, public?: true)
   end
 end
 
