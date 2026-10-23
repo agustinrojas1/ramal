@@ -5,7 +5,7 @@ defmodule Ramal.CaptureTest do
   require Ash.Query
 
   alias Ash.Resource.Info
-  alias Ramal.Test.Capture.{Announced, Counter, Flaky, Silent, Ticket}
+  alias Ramal.Test.Capture.{Announced, Counter, Flaky, Silent, Slug, Ticket}
 
   @admin %{role: :admin}
   @member %{role: :member}
@@ -154,11 +154,19 @@ defmodule Ramal.CaptureTest do
       assert branch.log == []
     end
 
-    test "a primary key the database generates is refused with a message that says what to do",
+    test "a primary key the database generates gets a placeholder", %{} do
+      {:ok, branch} = Ramal.branch(Ramal.Test.Capture)
+
+      assert {:ok, %Ticket{id: id}} = inside(branch, fn -> Ash.create(Ticket, %{title: "t"}) end)
+      assert id == -2_147_483_647
+      assert [{{Ticket, ^id}, {:created, _record}}] = Map.to_list(state(branch).overlay)
+    end
+
+    test "a generated key that has no placeholder type is refused with a message that says what to do",
          %{} do
       {:ok, branch} = Ramal.branch(Ramal.Test.Capture)
 
-      assert {:error, error} = inside(branch, fn -> Ash.create(Ticket, %{title: "t"}) end)
+      assert {:error, error} = inside(branch, fn -> Ash.create(Slug, %{title: "t"}) end)
       assert reason_of(error) == :database_generated_key
       assert Exception.message(Ramal.Error.find(error)) =~ "uuid_primary_key"
       assert state(branch).overlay == %{}

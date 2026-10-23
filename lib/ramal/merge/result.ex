@@ -5,6 +5,8 @@ defmodule Ramal.Merge.Result do
     * `branch` - the branch, now with status `:merged`
     * `records` - what the replay wrote, keyed like an overlay (`Ramal.Overlay`): `{:created, record}`,
       `{:updated, record}` or `:deleted` per `{resource, key}`, with the records as the real actions returned them
+    * `keys` - for each row a replayed create wrote with a key the database generated, the placeholder the branch gave it
+      and the real key: `%{{resource, placeholder} => real_key}`. `records` is keyed by the real key (ADR 0039)
     * `replayed` - how many log entries were replayed; entries written by a hook of another action are not counted,
       because replaying that action ran the hook again
     * `stale` - the rows that had changed under the branch and that `on_stale` let through, each
@@ -23,11 +25,12 @@ defmodule Ramal.Merge.Result do
   @type t :: %__MODULE__{
           branch: Ramal.Branch.t(),
           records: Ramal.Overlay.t(),
+          keys: %{optional({module, term}) => term},
           replayed: non_neg_integer,
           stale: [stale_row],
           persist_failed: Ramal.Error.t() | nil
         }
 
   @enforce_keys [:branch]
-  defstruct [:branch, records: %{}, replayed: 0, stale: [], persist_failed: nil]
+  defstruct [:branch, records: %{}, keys: %{}, replayed: 0, stale: [], persist_failed: nil]
 end

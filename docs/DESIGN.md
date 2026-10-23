@@ -19,7 +19,7 @@ discard them. A branch must cost roughly what a process and a map cost, so thous
 - Schema changes inside a branch.
 - Branch-local indexes, or any promise about query plans.
 - Data-layer aggregates and calculations that Ramal cannot recompute over a branch (`first`, `list`, `custom`, `uniq?`, and aggregate queries with a limit keep the database's value, with a telemetry event; section 4.1 point 4 says what is recomputed).
-- Database-generated keys inside a branch, and nested branches.
+- Nested branches.
 - Multi-node branches. A branch lives on one node; persistence makes it movable, not distributed.
 - A UI. The inspector is a separate package (`ramal_live/`, section 12).
 
@@ -210,9 +210,12 @@ This is the section that decides correctness. In a read action's preparation, wh
 - All of Ash's own work still happens: argument casting, validations, policies, other `before_action` and
   `after_action` hooks, defaults, timestamps. Ramal only replaces "write this to Postgres" with "put this in the
   overlay", so a branch is a faithful rehearsal of the real action.
-- The record is `Ash.Changeset.apply_attributes/2`, which also applies defaults. Values the database would generate
-  (identity integer keys, database defaults) do not exist in a branch. 0.1 requires branch-created records to have
-  application-generated primary keys (UUIDs) and fails the action with `:database_generated_key` otherwise.
+- The record is `Ash.Changeset.apply_attributes/2`, which also applies defaults. A primary key the database would
+  generate (identity integer keys, database defaults) does not exist in a branch, so a single `generated? true` integer
+  or UUID key gets a placeholder (integers from `-2_147_483_648` up, random UUIDs) that the merge renames to the key the
+  replayed create gets, in the later entries' input and keys too ([ADR 0039](adr/0039-placeholder-keys-for-generated-primary-keys.md)).
+  `Ramal.Merge.Result.keys` maps placeholder to real key. Any other generated key fails the action with
+  `:database_generated_key`.
 - Destroys mark the key `:deleted`. Updates of a `:created` row stay `:created` with the new record. The first write to
   an existing row keeps the row as the action found it in `base`, which `diff/1` compares against.
 - Every write is appended to the log as `{action_type, resource, action_name, params, actor, opts, at}`; `opts` has

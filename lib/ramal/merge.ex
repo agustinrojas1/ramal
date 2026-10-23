@@ -234,17 +234,18 @@ defmodule Ramal.Merge do
     resources
     |> Ash.transact(fn ->
       with {:ok, stale, fetched} <- check_staleness(branch, opts),
-           {:ok, records, replayed} <- replay(entries, fetched, opts),
+           {:ok, records, replayed, keys} <- replay(entries, fetched, opts),
            :ok <- mark_merged(branch, config) do
-        {stale, records, replayed}
+        {stale, records, replayed, keys}
       end
     end)
     |> case do
-      {:ok, {stale, records, replayed}} ->
+      {:ok, {stale, records, replayed, keys}} ->
         {:ok,
          %Result{
            branch: %{branch | status: :merged},
            records: records,
+           keys: keys,
            replayed: replayed,
            stale: stale
          }}
@@ -373,23 +374,27 @@ defmodule Ramal.Merge do
   # update or destroy takes its row from there instead of reading it again (a read per change was half the cost of a
   # merge). A row is used once, because the replay changes it. The cache is dropped for good at the first entry a hook
   # wrote (`nested?`): that hook may have changed any row, and replaying it again may change a different one.
+  #
+  # `renames` maps the placeholder of a row whose key the database generates to the key the replayed create got
+  # (ADR 0039). Every later entry is rewritten with it before it is replayed.
   defp replay(entries, fetched, opts) do
     entries
-    |> Enum.reduce_while({:ok, Overlay.new(), 0, fetched}, fn {entry, index},
-                                                              {:ok, records, count, fetched} ->
-      case replay_step(entry, index, entries, fetched, opts) do
+    |> Enum.reduce_while({:ok, Overlay.new(), 0, fetched, %{}}, fn {entry, index},
+                                                                   {:ok, records, count, fetched,
+                                                                    renames} ->
+      case replay_step(entry, index, entries, fetched, renames, opts) do
         {:skip, fetched} ->
-          {:cont, {:ok, records, count, fetched}}
+          {:cont, {:ok, records, count, fetched, renames}}
 
-        {:ok, kind, ref, record, fetched} ->
-          {:cont, {:ok, record_in(records, kind, ref, record), count + 1, fetched}}
+        {:ok, kind, ref, record, fetched, renames} ->
+          {:cont, {:ok, record_in(records, kind, ref, record), count + 1, fetched, renames}}
 
         {:error, _} = error ->
           {:halt, error}
       end
     end)
     |> case do
-      {:ok, records, count, _fetched} -> {:ok, records, count}
+      {:ok, records, count, _fetched, renames} -> {:ok, records, count, renamed_keys(renames)}
       {:error, _} = error -> error
     end
   end
@@ -399,22 +404,103 @@ defmodule Ramal.Merge do
          index,
          entries,
          fetched,
+         renames,
          opts
        ) do
     if entry_opts[:nested?] do
       {:skip, %{}}
     else
+      entry = rename_entry(entry, renames)
       {row, fetched} = take_fetched(fetched, entry)
 
       case replay_entry(entry, row, opts) do
         {:ok, kind, ref, record} ->
-          {:ok, kind, ref, record, forget_upserted(fetched, ref, entry_opts)}
+          renames = learn_rename(renames, entry, entry_opts, ref)
+          {:ok, kind, ref, record, forget_upserted(fetched, ref, entry_opts), renames}
 
         {:error, error} ->
           {:error, merge_failed(entry, index, error, written_before(entries, index))}
       end
     end
   end
+
+  # -- placeholder keys ---------------------------------------------------------------------------------------------
+
+  # A replayed create that had a placeholder key (`generated_key?`) was written without forcing the key, so the record
+  # it returned has the real one: the placeholder maps to it from here on.
+  defp learn_rename(
+         renames,
+         {_type, resource, _action, _params, _actor, _opts, _at},
+         entry_opts,
+         {resource, real}
+       ) do
+    if entry_opts[:generated_key?] do
+      Map.put(renames, entry_opts[:key], {resource, real})
+    else
+      renames
+    end
+  end
+
+  # The placeholder values are unique within a branch (one counter, and random UUIDs), so a value names its row without
+  # the resource.
+  defp renamed_keys(renames) do
+    for {placeholder, {resource, real}} <- renames, into: %{}, do: {{resource, placeholder}, real}
+  end
+
+  defp rename_entry(entry, renames) when renames == %{}, do: entry
+
+  defp rename_entry({type, resource, action, params, actor, entry_opts, at}, renames) do
+    entry_opts =
+      case entry_opts[:key] do
+        key when is_map_key(renames, key) ->
+          {_resource, real} = Map.fetch!(renames, key)
+          Keyword.put(entry_opts, :key, real)
+
+        _key ->
+          entry_opts
+      end
+
+    {type, resource, action, rename_value(params, renames), actor, entry_opts, at}
+  end
+
+  # Every value of the input that is a placeholder, whatever level of maps, lists and tuples it sits at. A key that
+  # arrives as text (a form sends `"-2147483647"`) is matched as text and keeps its form. Structs are left alone.
+  defp rename_value(value, renames) when is_map_key(renames, value) do
+    {_resource, real} = Map.fetch!(renames, value)
+    real
+  end
+
+  defp rename_value(value, renames) when is_binary(value) do
+    case text_rename(value, renames) do
+      {:ok, real} -> real
+      :error -> value
+    end
+  end
+
+  defp rename_value(%_{} = struct, _renames), do: struct
+
+  defp rename_value(map, renames) when is_map(map) do
+    Map.new(map, fn {key, value} -> {key, rename_value(value, renames)} end)
+  end
+
+  defp rename_value(list, renames) when is_list(list),
+    do: Enum.map(list, &rename_value(&1, renames))
+
+  defp rename_value(tuple, renames) when is_tuple(tuple) do
+    tuple |> Tuple.to_list() |> Enum.map(&rename_value(&1, renames)) |> List.to_tuple()
+  end
+
+  defp rename_value(value, _renames), do: value
+
+  defp text_rename(text, renames) do
+    Enum.find_value(renames, :error, fn {placeholder, {_resource, real}} ->
+      if is_integer(placeholder) and Integer.to_string(placeholder) == text,
+        do: {:ok, to_text(real)}
+    end)
+  end
+
+  defp to_text(real) when is_binary(real), do: real
+  defp to_text(real), do: to_string(real)
 
   # An upsert that found its row changed it, so the copy the staleness check read is out of date.
   defp forget_upserted(fetched, ref, entry_opts) do
@@ -455,7 +541,7 @@ defmodule Ramal.Merge do
 
     case type do
       :create ->
-        replay_create(resource, action, params, run_opts, entry_opts[:upsert], ref, key)
+        replay_create(resource, action, params, run_opts, entry_opts)
 
       :update ->
         with {:ok, record} <- row_or_fetch(row, resource, key, entry_opts[:tenant]) do
@@ -477,25 +563,37 @@ defmodule Ramal.Merge do
 
   # A create the branch logged as an upsert is replayed as one, with the identity and the fields it had in the branch.
   # It forces the key only when the branch found no row: a found row has its own key, and forcing the branch's would
-  # conflict on the primary key instead of the identity.
-  defp replay_create(resource, action, params, run_opts, nil, ref, key) do
-    resource
-    |> Ash.Changeset.for_create(action, params, run_opts)
-    |> force_key(resource, key)
-    |> Ash.create(run_opts)
-    |> tag(:created, ref)
-  end
+  # conflict on the primary key instead of the identity. A create with a placeholder key (`generated_key?`) forces
+  # nothing either: the database gives the row its key, and the record says which it is.
+  defp replay_create(resource, action, params, run_opts, entry_opts) do
+    {run_opts, found?} =
+      case entry_opts[:upsert] do
+        nil ->
+          {run_opts, false}
 
-  defp replay_create(resource, action, params, run_opts, {identity, fields, found?}, ref, key) do
-    run_opts =
-      Keyword.merge(run_opts, upsert?: true, upsert_identity: identity, upsert_fields: fields)
+        {identity, fields, found?} ->
+          {Keyword.merge(run_opts,
+             upsert?: true,
+             upsert_identity: identity,
+             upsert_fields: fields
+           ), found?}
+      end
 
+    generated? = entry_opts[:generated_key?] == true
     changeset = Ash.Changeset.for_create(resource, action, params, run_opts)
 
-    if found? do
-      changeset |> Ash.create(run_opts) |> tag(:updated, ref)
-    else
-      changeset |> force_key(resource, key) |> Ash.create(run_opts) |> tag(:created, ref)
+    changeset =
+      if found? or generated?,
+        do: changeset,
+        else: force_key(changeset, resource, entry_opts[:key])
+
+    case Ash.create(changeset, run_opts) do
+      {:ok, record} ->
+        key = if generated?, do: Resource.key(resource, record), else: entry_opts[:key]
+        {:ok, if(found?, do: :updated, else: :created), {resource, key}, record}
+
+      {:error, _} = error ->
+        error
     end
   end
 

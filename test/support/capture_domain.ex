@@ -6,6 +6,7 @@ defmodule Ramal.Test.Capture do
 
   resources do
     resource(Ramal.Test.Capture.Ticket)
+    resource(Ramal.Test.Capture.Slug)
     resource(Ramal.Test.Capture.Announced)
     resource(Ramal.Test.Capture.Silent)
     resource(Ramal.Test.Capture.Flaky)
@@ -47,6 +48,30 @@ defmodule Ramal.Test.Capture.Ticket do
   attributes do
     # The database would generate this key; ETS does not, so a branch cannot know it.
     integer_primary_key(:id)
+    attribute(:title, :string, public?: true)
+  end
+end
+
+defmodule Ramal.Test.Capture.Slug do
+  @moduledoc false
+  use Ash.Resource,
+    domain: Ramal.Test.Capture,
+    data_layer: Ash.DataLayer.Ets,
+    extensions: [Ramal.Resource]
+
+  actions do
+    defaults([:read, :destroy, create: :*, update: :*])
+  end
+
+  attributes do
+    # A text key the database would generate: a branch has no placeholder for that type (ADR 0039).
+    attribute(:slug, :string,
+      primary_key?: true,
+      allow_nil?: false,
+      generated?: true,
+      writable?: false
+    )
+
     attribute(:title, :string, public?: true)
   end
 end
