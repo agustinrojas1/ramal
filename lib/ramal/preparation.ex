@@ -72,7 +72,7 @@ defmodule Ramal.Preparation do
           :ok ->
             query
             |> Ash.Query.set_context(Current.shared_context(id))
-            |> Ash.Query.set_context(%{ramal: %{calculations: query.calculations}})
+            |> Ash.Query.before_transaction(&record_calculations/1)
             |> Ash.Query.before_action(&before_data_layer(&1, id))
             |> Ash.Query.after_action(&after_data_layer(&1, &2, id))
 
@@ -81,6 +81,14 @@ defmodule Ramal.Preparation do
         end
     end
   end
+
+  # The calculations are read in a `before_transaction` hook, not in `prepare/3` and not in the `before_action` hook:
+  # this preparation runs before the action's own `prepare`, so a calculation the action loads is not in
+  # `query.calculations` yet when `prepare/3` runs, and Ash unsets `query.calculations` just before the `before_action`
+  # hooks (`do_read/5` in `lib/ash/actions/read/read.ex`, Ash 3.37). `before_transaction` hooks run after every
+  # preparation and while the calculations are still there.
+  defp record_calculations(query),
+    do: Ash.Query.set_context(query, %{ramal: %{calculations: query.calculations}})
 
   # Without overlay entries for this resource nothing changes, so the query keeps its limit and offset and Postgres
   # does the paging. Stripping them is only needed when the overlay may add or remove rows.
