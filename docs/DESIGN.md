@@ -68,7 +68,7 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
   (read from storage with the optional `count/3` callback, so one query with Postgres), the second caps creations per
   fixed window with an atomic counter in the supervisor's ETS table. A refusal is `{:error, :limit_reached}` plus a
   `[:ramal, :limit, :reached]` event (ADR 0016).
-- Memory: `max_heap_size` on the server process, a `Ramal.Supervisor` option, default 25 million words. A branch that
+- Memory: the branch process points equal terms at one copy (`Ramal.Overlay.share/3`, `Ramal.Branch.share/1`): a message and an ETS table copy a term in full, so without it each row would cost its snapshot, its record and the bookkeeping fields of both. `max_heap_size` on the server process, a `Ramal.Supervisor` option, default 25 million words. A branch that
   exceeds it is killed and its last persisted state remains; a watcher process notices the untrappable kill, emits
   `[:ramal, :branch, :too_large]` and marks the branch, and the next use returns `{:error, :branch_too_large}` until
   the branch is discarded (ADR 0003).

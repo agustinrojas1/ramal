@@ -261,6 +261,67 @@ defmodule Ramal.OverlayTest do
     end
   end
 
+  describe "share/3" do
+    # Terms built at run time, so that a copy of one is a different term from the original.
+    defp tags, do: Enum.map(1..5, &Integer.to_string/1)
+    defp copy(term), do: :erlang.binary_to_term(:erlang.term_to_binary(term))
+
+    test "returns a record equal to the one it was given" do
+      record = %{id: 1, name: "R7", tags: tags(), at: DateTime.utc_now()}
+
+      assert Overlay.share(record, []) == record
+      assert Overlay.share(record, [copy(record)], 1) == record
+      assert Overlay.share(record, [%{id: 2, tags: ["x"]}, %{}], "other") == record
+    end
+
+    test "points a field at the equal field of a reference, the first reference that has one" do
+      record = %{id: 1, tags: copy(tags()), name: "kept"}
+      first = %{tags: tags()}
+      second = %{tags: tags(), name: copy("kept")}
+
+      shared = Overlay.share(record, [first, second])
+
+      assert shared == record
+      assert :erts_debug.same(shared.tags, first.tags)
+      refute :erts_debug.same(shared.tags, second.tags)
+      assert :erts_debug.same(shared.name, second.name)
+    end
+
+    test "leaves a field that differs from the reference as it is" do
+      record = %{tags: tags() ++ ["6"]}
+      reference = %{tags: tags()}
+
+      assert :erts_debug.same(Overlay.share(record, [reference]).tags, record.tags)
+    end
+
+    test "points a field that equals the key at the key" do
+      key = String.duplicate("k", 40)
+      record = %{id: copy(key), parent_id: copy(key), name: "n"}
+
+      shared = Overlay.share(record, [], key)
+
+      assert shared == record
+      assert :erts_debug.same(shared.id, key)
+      assert :erts_debug.same(shared.parent_id, key)
+    end
+
+    test "rebuilds a struct, and the structs in its fields, without changing them" do
+      branch = Ramal.Branch.new(MyApp.Farm, name: "enforced keys")
+      row = %{at: DateTime.utc_now(), on: Date.utc_today(), branch: branch}
+
+      assert Overlay.share(row, []) == row
+      assert Overlay.share(branch, []) == branch
+      assert Overlay.share(%{row | at: DateTime.utc_now()}, [row]).on == row.on
+    end
+
+    test "returns a struct that lacks one of its fields as it is" do
+      broken = Map.delete(DateTime.utc_now(), :zone_abbr)
+
+      assert Overlay.share(broken, []) == broken
+      assert Overlay.share(%{at: broken}, []) == %{at: broken}
+    end
+  end
+
   describe "merge_into/2" do
     test "merging into an empty overlay copies the other one" do
       other = %{

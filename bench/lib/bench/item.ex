@@ -5,6 +5,7 @@ defmodule Bench.Domain do
   resources do
     resource(Bench.Item)
     resource(Bench.Note)
+    resource(Bench.Row)
   end
 end
 

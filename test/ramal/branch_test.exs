@@ -66,6 +66,107 @@ defmodule Ramal.BranchTest do
              {branch.id, branch.name, branch.inserted_at}
   end
 
+  describe "sharing" do
+    # Terms built at run time and copied the way a message copies them, so no two of them are the same term.
+    defp copy(term), do: :erlang.binary_to_term(:erlang.term_to_binary(term))
+    defp owner, do: String.duplicate("o", 40)
+    defp same?(a, b), do: :erts_debug.same(a, b)
+
+    defp snapshot(n),
+      do: %{id: 1, owner: owner(), n: n, tags: Enum.map(1..5, &Integer.to_string/1)}
+
+    defp log_entry(key, actor, n \\ 1),
+      do: {:update, A, :update, %{n: n}, actor, [key: key, tenant: nil], DateTime.utc_now()}
+
+    test "an update's record points at the fields of the snapshot it did not change" do
+      snapshot = snapshot(1)
+      row = %{fingerprint: 1, snapshot: copy(snapshot)}
+
+      {branch, _} =
+        Branch.put_write(
+          Branch.new(MyApp.Farm),
+          :updated,
+          {A, 1},
+          copy(%{snapshot | n: 2}),
+          row,
+          log_entry(1, nil)
+        )
+
+      {:updated, record} = branch.overlay[{A, 1}]
+      kept = branch.base[{A, 1}].snapshot
+
+      assert record == %{snapshot | n: 2}
+      assert kept == snapshot
+      assert same?(record.owner, kept.owner)
+      assert same?(record.tags, kept.tags)
+    end
+
+    test "a write points at the fields the write before it of the same resource holds" do
+      branch = Branch.new(MyApp.Farm)
+      first = %{id: 1, owner: owner(), n: 1, tags: []}
+      second = %{id: 2, owner: owner(), n: 2, tags: []}
+
+      {branch, _} =
+        Branch.put_write(branch, :created, {A, 1}, copy(first), nil, log_entry(1, nil))
+
+      {branch, _} =
+        Branch.put_write(branch, :created, {A, 2}, copy(second), nil, log_entry(2, nil))
+
+      assert {:created, ^second} = branch.overlay[{A, 2}]
+      assert same?(elem(branch.overlay[{A, 1}], 1).owner, elem(branch.overlay[{A, 2}], 1).owner)
+    end
+
+    test "a log entry holds the key of its ref and the actor of the entry before it" do
+      key = String.duplicate("k", 40)
+      actor = %{id: owner(), role: :admin}
+      branch = Branch.new(MyApp.Farm)
+
+      {branch, _} =
+        Branch.put_write(
+          branch,
+          :created,
+          {A, key},
+          %{id: copy(key)},
+          nil,
+          log_entry(copy(key), copy(actor))
+        )
+
+      {branch, _} =
+        Branch.put_write(branch, :created, {A, "b"}, %{id: "b"}, nil, log_entry("b", copy(actor)))
+
+      [{_, _, _, _, newer_actor, _, _}, {_, _, _, _, older_actor, older_opts, _}] = branch.log
+
+      assert newer_actor == actor
+      assert same?(newer_actor, older_actor)
+      assert same?(older_opts[:key], key)
+    end
+
+    test "share/1 gives back an equal branch whose rows point at their snapshots again" do
+      snapshot = snapshot(1)
+      branch = Branch.new(MyApp.Farm)
+
+      {branch, _} =
+        Branch.put_write(
+          branch,
+          :updated,
+          {A, 1},
+          %{snapshot | n: 2},
+          %{fingerprint: 1, snapshot: snapshot},
+          log_entry(1, %{role: :admin})
+        )
+
+      stored = copy(branch)
+      {:updated, record} = stored.overlay[{A, 1}]
+      refute same?(record.owner, stored.base[{A, 1}].snapshot.owner)
+
+      shared = Branch.share(stored)
+      {:updated, record} = shared.overlay[{A, 1}]
+
+      assert shared == stored
+      assert same?(record.owner, shared.base[{A, 1}].snapshot.owner)
+    end
+  end
+
   describe "put_write/6 and undo/2" do
     defp entry(n), do: {:update, A, :update, %{n: n}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
     defp row(n, fingerprint \\ nil), do: %{fingerprint: fingerprint, snapshot: %{n: n}}
