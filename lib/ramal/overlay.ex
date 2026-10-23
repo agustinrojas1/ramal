@@ -127,6 +127,78 @@ defmodule Ramal.Overlay do
   end
 
   @doc """
+  Whether the overlay holds any entry for `resource`. Stops at the first one, so it does not build a slice.
+
+  ## Example
+
+      iex> overlay = %{{MyApp.Herd, 1} => :deleted}
+      iex> {Ramal.Overlay.any?(overlay, MyApp.Herd), Ramal.Overlay.any?(overlay, MyApp.Paddock)}
+      {true, false}
+  """
+  @spec any?(t, resource) :: boolean
+  def any?(overlay, resource), do: Enum.any?(overlay, &match?({{^resource, _key}, _entry}, &1))
+
+  @doc """
+  The part of a resource's slice that a read needs, and how many entries the resource has in all.
+
+  A read returns `base_keys` from the base. It needs the overlay entry of each of those rows, to replace or drop the
+  row, and the records the base did not return that may satisfy the query's filter, to add them. `possible?` is the
+  cheap test of Ramal.Prefilter: it returns `false` only for a record that surely fails the filter, so what it
+  rules out would have been dropped anyway. Such an entry for a base row becomes `:deleted`, which drops the row just
+  as a failed predicate would, and one for a row the base did not return is left out. A read of a few rows from a branch
+  that changed thousands then moves a few entries instead of the whole slice.
+
+  The result patches rows like the full slice does: `patch/4` called with it returns what it returns with the full
+  slice, provided its predicate is the filter and `possible?` is sound.
+
+  ## Example
+
+      iex> overlay = %{
+      ...>   {MyApp.Herd, 1} => {:updated, %{id: 1, n: 1}},
+      ...>   {MyApp.Herd, 2} => {:updated, %{id: 2, n: 9}},
+      ...>   {MyApp.Herd, 3} => {:created, %{id: 3, n: 1}},
+      ...>   {MyApp.Herd, 4} => {:created, %{id: 4, n: 9}},
+      ...>   {MyApp.Paddock, 1} => :deleted
+      ...> }
+      iex> Ramal.Overlay.select(overlay, MyApp.Herd, [1, 2], &(&1.n < 5))
+      {%{1 => {:updated, %{id: 1, n: 1}}, 2 => :deleted, 3 => {:created, %{id: 3, n: 1}}}, 4}
+  """
+  @spec select(t, resource, [key], (record -> boolean)) :: {slice, non_neg_integer}
+  def select(overlay, resource, base_keys, possible?) when is_function(possible?, 1) do
+    replaced =
+      Enum.reduce(base_keys, %{}, &select_base_entry(&2, overlay, resource, &1, possible?))
+
+    Enum.reduce(overlay, {replaced, 0}, fn
+      {{^resource, key}, entry}, {selected, count} ->
+        {add_candidate(selected, key, entry, possible?), count + 1}
+
+      _other_resource, acc ->
+        acc
+    end)
+  end
+
+  defp select_base_entry(selected, overlay, resource, key, possible?) do
+    case Map.fetch(overlay, {resource, key}) do
+      {:ok, {_kind, record} = entry} ->
+        Map.put(selected, key, if(possible?.(record), do: entry, else: :deleted))
+
+      {:ok, :deleted} ->
+        Map.put(selected, key, :deleted)
+
+      :error ->
+        selected
+    end
+  end
+
+  defp add_candidate(selected, key, {_kind, record} = entry, possible?) do
+    if not is_map_key(selected, key) and possible?.(record),
+      do: Map.put(selected, key, entry),
+      else: selected
+  end
+
+  defp add_candidate(selected, _key, :deleted, _possible?), do: selected
+
+  @doc """
   Applies a resource's overlay slice to the rows the base returned for a query.
 
   `base_rows` are the rows the data layer returned for the query's filter, without limit and offset. The result is

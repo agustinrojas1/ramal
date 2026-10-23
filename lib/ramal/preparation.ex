@@ -52,7 +52,7 @@ defmodule Ramal.Preparation do
   alias Ash.Filter.Runtime
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
-  alias Ramal.{Current, Overlay, Resource, Telemetry}
+  alias Ramal.{Current, Overlay, Prefilter, Resource, Telemetry}
   alias Ramal.Preparation.ManyToMany
 
   @impl true
@@ -88,17 +88,17 @@ defmodule Ramal.Preparation do
   end
 
   defp strip_paging(query, id, links) do
-    case Server.slice(id, query.resource) do
-      {:ok, slice} when map_size(slice) == 0 and links == nil ->
-        Ash.Query.set_context(query, %{ramal: %{slice: slice, limit: nil, offset: nil}})
+    case Server.overlay?(id, query.resource) do
+      {:ok, false} when links == nil ->
+        Ash.Query.set_context(query, %{ramal: %{overlay?: false, limit: nil, offset: nil}})
 
-      {:ok, slice} ->
+      {:ok, overlay?} ->
         {query, distinct} = take_over_distinct(query, links)
 
         query
         |> Ash.Query.set_context(%{
           ramal: %{
-            slice: slice,
+            overlay?: overlay?,
             limit: query.limit,
             offset: query.offset,
             links: links,
@@ -143,14 +143,14 @@ defmodule Ramal.Preparation do
   defp distinct_attributes?(_query), do: false
 
   defp after_data_layer(query, results, id) do
-    %{slice: slice, limit: limit, offset: offset} = query.context.ramal
+    %{overlay?: overlay?, limit: limit, offset: offset} = query.context.ramal
     links = query.context.ramal[:links]
     record_fingerprints(query.resource, results, id)
 
     # Rows are tagged with their source records after the patch, and paged per source, not as one list.
     {patch_limit, patch_offset} = if links, do: {nil, nil}, else: {limit, offset}
 
-    with {:ok, patched} <- patch_rows(query, results, slice, patch_limit, patch_offset, id) do
+    with {:ok, patched} <- patch_rows(query, results, overlay?, patch_limit, patch_offset, id) do
       if links do
         {:ok, ManyToMany.expand(patched, links, offset, limit)}
       else
@@ -159,19 +159,17 @@ defmodule Ramal.Preparation do
     end
   end
 
-  defp patch_rows(_query, results, slice, _limit, _offset, _id) when map_size(slice) == 0 do
-    {:ok, results}
-  end
+  defp patch_rows(_query, results, false, _limit, _offset, _id), do: {:ok, results}
 
-  defp patch_rows(query, results, slice, limit, offset, id) do
+  defp patch_rows(query, results, true, limit, offset, id) do
     started = System.monotonic_time()
 
-    with {:ok, patched} <- patch(query, results, slice, limit, offset) do
+    with {:ok, patched, overlay_rows} <- patch(query, results, limit, offset, id) do
       Telemetry.read(
         :patch,
         %{
           base_rows: length(results),
-          overlay_rows: map_size(slice),
+          overlay_rows: overlay_rows,
           result_rows: length(patched),
           duration: System.monotonic_time() - started
         },
@@ -195,10 +193,16 @@ defmodule Ramal.Preparation do
     :ok
   end
 
-  defp patch(query, results, slice, limit, offset) do
+  # Only the overlay entries this read can use are fetched: those of the rows the base returned, and the records the
+  # filter may accept. The branch process rules out the rest with `Ramal.Prefilter`, which never rejects a record the
+  # filter accepts, and `matching_keys/2` runs the real filter on what is left.
+  defp patch(query, results, limit, offset, id) do
     resource = query.resource
+    base_keys = Enum.map(results, &Resource.key(resource, &1))
 
-    with {:ok, matching} <- matching_keys(query, slice) do
+    with {:ok, slice, overlay_rows} <-
+           Server.select(id, resource, base_keys, Prefilter.compile(query.filter)),
+         {:ok, matching} <- matching_keys(query, slice) do
       patched =
         results
         |> Overlay.patch(slice, &MapSet.member?(matching, Resource.key(resource, &1)),
@@ -211,7 +215,7 @@ defmodule Ramal.Preparation do
         |> take(limit)
         |> Enum.map(&apply_select(&1, query, slice))
 
-      {:ok, patched}
+      {:ok, patched, overlay_rows}
     end
   end
 

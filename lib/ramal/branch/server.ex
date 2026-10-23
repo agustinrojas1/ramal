@@ -12,7 +12,7 @@ defmodule Ramal.Branch.Server do
   #     `timeout` ms, which is how idle detection works without timers.
   use GenServer
 
-  alias Ramal.{Branch, Error, Overlay, Supervisor, Telemetry}
+  alias Ramal.{Branch, Error, Overlay, Prefilter, Supervisor, Telemetry}
 
   @max_attempts 6
 
@@ -143,6 +143,28 @@ defmodule Ramal.Branch.Server do
   def slice(id, resource), do: call(id, {:slice, resource})
 
   @doc """
+  Whether the branch holds any overlay entry for `resource`. A read asks it first, because without one the read needs
+  nothing else from the process. Rejected unless the branch is open.
+  """
+  @spec overlay?(String.t(), module) :: {:ok, boolean} | {:error, Error.t()}
+  def overlay?(id, resource), do: call(id, {:overlay?, resource})
+
+  @doc """
+  What a read of `resource` needs from the overlay (`Ramal.Overlay.select/4`) and the number of entries the resource has.
+
+  The read returned `base_keys` from the database, and `plan` is `Ramal.Prefilter.compile/1` of its filter. Only the
+  entries that can change the result cross the process boundary, so the cost of a read follows what it returns and not
+  the size of the overlay. Rejected unless the branch is open.
+  """
+  @spec select(String.t(), module, [term], Prefilter.t()) ::
+          {:ok, Overlay.slice(), non_neg_integer} | {:error, Error.t()}
+  def select(id, resource, base_keys, plan) do
+    with {:ok, {slice, count}} <- call(id, {:select, resource, base_keys, plan}) do
+      {:ok, slice, count}
+    end
+  end
+
+  @doc """
   Replaces the branch with the result of `fun`, which runs inside the process, so concurrent updates are serialised.
   `fun` receives the branch and returns the new branch. Rejected unless the branch is open.
   """
@@ -255,6 +277,25 @@ defmodule Ramal.Branch.Server do
   def handle_call({:slice, resource}, _from, state) do
     if usable?(state) do
       reply(state, {:ok, Overlay.slice(state.branch.overlay, resource)})
+    else
+      reply(state, {:error, unavailable(state)})
+    end
+  end
+
+  def handle_call({:overlay?, resource}, _from, state) do
+    if usable?(state) do
+      reply(state, {:ok, Overlay.any?(state.branch.overlay, resource)})
+    else
+      reply(state, {:error, unavailable(state)})
+    end
+  end
+
+  def handle_call({:select, resource, base_keys, plan}, _from, state) do
+    if usable?(state) do
+      selected =
+        Overlay.select(state.branch.overlay, resource, base_keys, &Prefilter.possible?(plan, &1))
+
+      reply(state, {:ok, selected})
     else
       reply(state, {:error, unavailable(state)})
     end
