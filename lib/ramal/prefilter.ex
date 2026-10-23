@@ -11,12 +11,22 @@ defmodule Ramal.Prefilter do
   # Everything that is not understood evaluates to `:unknown`, which lets the record through: relationship paths,
   # calculations, aggregates, functions, a `nil` or unloaded value, and values of different kinds.
   #
+  # An expression evaluates to the set of values the runtime could give it, out of `true`, `false` and `nil`, and the
+  # record is ruled out when `true` is not in the set. A set, not just "known or unknown", because the runtime does not
+  # use three-valued logic (`resolve_expr/5` in `lib/ash/filter/runtime.ex`, Ash 3.37): `and` returns its left side as
+  # it is when that is `nil` or `false`, so `nil and false` is `nil`, not `false`; `or` returns its right side when the
+  # left is `nil` or `false`, so `nil or false` is `false`; `not nil` is `nil`. Calling an `and` with one `false` side
+  # `false` whatever the other side said was wrong under a `not`: `not (nil and false)` is `nil` at run time, which is
+  # no match, but `not false` looked like `true`; and the same mistake nested deeper ruled out a match.
+  #
   # Confirmed against Ash 3.37 (`lib/ash/query/operator/*.ex`, `lib/comparable/comp.ex`): `Eq`, `NotEq`, `LessThan`,
   # `GreaterThan`, `LessThanOrEqual`, `GreaterThanOrEqual` and `In` return `{:known, nil}` for a `nil` side and
   # otherwise compare with `Comp`, whose clause for two binaries, two numbers or two atoms is the plain Elixir operator.
   # `IsNil` is `is_nil(value) == right`. The comparisons here are limited to two binaries, two integers or two atoms,
   # which is where `Comp` is the plain operator; a decimal, a date, a case-insensitive string or a float goes to the
   # runtime. A `MapSet` for `in` is used only when every member is the same kind as the value.
+
+  import Bitwise
 
   alias Ash.Query.{BooleanExpression, Not, Ref}
 
@@ -116,6 +126,12 @@ defmodule Ramal.Prefilter do
   defp kind(value) when is_atom(value) and value != nil, do: :atom
   defp kind(_value), do: nil
 
+  # The set of values an expression can have at run time, as bits: `@yes` is `true`, `@no` is `false`, `@null` is `nil`.
+  @yes 1
+  @no 2
+  @null 4
+  @any 7
+
   @doc """
   Whether `record` can satisfy the filter the plan was compiled from. `false` means it cannot; `true` means only that
   this module could not rule it out.
@@ -129,51 +145,64 @@ defmodule Ramal.Prefilter do
       true
   """
   @spec possible?(t, map) :: boolean
-  def possible?(plan, record), do: evaluate(plan, record) != false
+  def possible?(plan, record), do: (evaluate(plan, record) &&& @yes) != 0
 
-  # `true` and `false` are exact answers; `:unknown` is "ask the runtime".
-  defp evaluate(nil, _record), do: true
-  defp evaluate(boolean, _record) when is_boolean(boolean), do: boolean
-  defp evaluate(:unknown, _record), do: :unknown
+  defp evaluate(plan, _record) when is_boolean(plan) or is_nil(plan),
+    do: if(plan == false, do: @no, else: @yes)
 
-  defp evaluate({:and, plans}, record), do: all(plans, record)
-  defp evaluate({:or, plans}, record), do: any(plans, record)
+  defp evaluate(:unknown, _record), do: @any
+
+  defp evaluate({:and, plans}, record),
+    do: plans |> Enum.map(&evaluate(&1, record)) |> fold_right(&both/2)
+
+  defp evaluate({:or, plans}, record),
+    do: plans |> Enum.map(&evaluate(&1, record)) |> fold_right(&either/2)
 
   defp evaluate({:not, plan}, record) do
-    case evaluate(plan, record) do
-      :unknown -> :unknown
-      boolean -> not boolean
-    end
+    set = evaluate(plan, record)
+    (set &&& @null) ||| (set &&& @yes) <<< 1 ||| (set &&& @no) >>> 1
   end
 
   defp evaluate({:compare, operator, field, literal}, record) do
     case Map.get(record, field) do
       value when is_binary(value) and is_binary(literal) ->
-        compare(operator, value, literal)
+        exact(compare(operator, value, literal))
 
       value when is_integer(value) and is_integer(literal) ->
-        compare(operator, value, literal)
+        exact(compare(operator, value, literal))
 
       value when is_atom(value) and value != nil and is_atom(literal) ->
-        compare(operator, value, literal)
+        exact(compare(operator, value, literal))
 
       _other ->
-        :unknown
+        @any
     end
   end
 
   defp evaluate({:in, field, kind, members}, record) do
     value = Map.get(record, field)
 
-    if kind(value) == kind, do: MapSet.member?(members, value), else: :unknown
+    if kind(value) == kind, do: exact(MapSet.member?(members, value)), else: @any
   end
 
   defp evaluate({:nil?, field, is_nil?}, record) do
     case Map.get(record, field) do
-      %struct{} when struct in [Ash.NotLoaded, Ash.ForbiddenField] -> :unknown
-      value -> is_nil(value) == is_nil?
+      %struct{} when struct in [Ash.NotLoaded, Ash.ForbiddenField] -> @any
+      value -> exact(is_nil(value) == is_nil?)
     end
   end
+
+  defp exact(true), do: @yes
+  defp exact(false), do: @no
+
+  # `a and b` is `a` when `a` is `nil` or `false`, and `b` otherwise.
+  defp both(a, b), do: (a &&& (@no ||| @null)) ||| if((a &&& @yes) != 0, do: b, else: 0)
+
+  # `a or b` is `a` when it is `true`, and `b` otherwise.
+  defp either(a, b), do: (a &&& @yes) ||| if((a &&& (@no ||| @null)) != 0, do: b, else: 0)
+
+  defp fold_right([set], _fun), do: set
+  defp fold_right([set | rest], fun), do: fun.(set, fold_right(rest, fun))
 
   defp compare(:==, left, right), do: left == right
   defp compare(:!=, left, right), do: left != right
@@ -181,24 +210,4 @@ defmodule Ramal.Prefilter do
   defp compare(:>, left, right), do: left > right
   defp compare(:<=, left, right), do: left <= right
   defp compare(:>=, left, right), do: left >= right
-
-  defp all(plans, record) do
-    Enum.reduce_while(plans, true, fn plan, acc ->
-      case evaluate(plan, record) do
-        false -> {:halt, false}
-        true -> {:cont, acc}
-        :unknown -> {:cont, :unknown}
-      end
-    end)
-  end
-
-  defp any(plans, record) do
-    Enum.reduce_while(plans, false, fn plan, acc ->
-      case evaluate(plan, record) do
-        true -> {:halt, true}
-        false -> {:cont, acc}
-        :unknown -> {:cont, :unknown}
-      end
-    end)
-  end
 end

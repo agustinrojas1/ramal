@@ -199,6 +199,80 @@ defmodule Ramal.PrefilterTest do
       end
     end
 
+    # The runtime has no three-valued logic: `nil and false` is `nil`, `nil or false` is `false`, `not nil` is `nil`
+    # (`resolve_expr/5` in `lib/ash/filter/runtime.ex`). Found by the property above, which failed in about one run in
+    # six: an `and` with a `false` side was taken as `false` whatever the other side was, so a `not` around it ruled out
+    # a record the runtime accepted.
+    test "a record a not over a nil and a false keeps is not ruled out" do
+      for {expression, attrs} <- [
+            {Not.new(
+               BooleanExpression.new(
+                 :or,
+                 Not.new(
+                   BooleanExpression.new(
+                     :and,
+                     operator(Operator.In, :name, MapSet.new([""])),
+                     operator(Operator.Eq, :head, 1)
+                   )
+                 ),
+                 Not.new(
+                   BooleanExpression.new(
+                     :and,
+                     operator(Operator.Eq, :head, 0),
+                     operator(Operator.Eq, :head, 0)
+                   )
+                 )
+               )
+             ), [name: nil, head: 0]},
+            {Not.new(
+               BooleanExpression.new(
+                 :and,
+                 operator(Operator.Eq, :name, "a"),
+                 operator(Operator.Eq, :head, 1)
+               )
+             ), [name: nil, head: 5]}
+          ] do
+        record = herd(attrs)
+        filter = %Ash.Filter{resource: Herd, expression: expression}
+
+        {:ok, matches} = Runtime.filter_matches(Farm, [record], filter)
+        possible? = Prefilter.possible?(Prefilter.compile(filter), record)
+
+        # Either the runtime rejects it, or the prefilter lets it through.
+        assert matches == [] or possible?
+      end
+    end
+
+    test "every expression of three small leaves, up to a not over an or of nots over ands, over every record" do
+      leaves = [
+        operator(Operator.Eq, :head, 0),
+        operator(Operator.Eq, :head, 1),
+        operator(Operator.In, :name, MapSet.new([""]))
+      ]
+
+      records =
+        for head <- [nil, 0, 1, 2], name <- [nil, "", "a"], do: herd(head: head, name: name)
+
+      binary = fn items ->
+        for op <- [:and, :or], a <- items, b <- items, do: BooleanExpression.new(op, a, b)
+      end
+
+      level1 = leaves ++ Enum.map(leaves, &Not.new/1) ++ binary.(leaves)
+      level2 = level1 ++ Enum.map(level1, &Not.new/1)
+      level3 = level2 ++ binary.(level2)
+
+      for expression <- level3 ++ Enum.map(level3, &Not.new/1) do
+        filter = %Ash.Filter{resource: Herd, expression: expression}
+        plan = Prefilter.compile(filter)
+        {:ok, matches} = Runtime.filter_matches(Farm, records, filter)
+
+        for record <- matches do
+          assert Prefilter.possible?(plan, record),
+                 "the runtime accepts #{inspect(record, limit: 4)} for #{inspect(expression)} but the prefilter rules it out"
+        end
+      end
+    end
+
     property "does rule records out, so it is not vacuous" do
       check all(
               value <- integer(-3..4),

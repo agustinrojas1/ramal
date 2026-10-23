@@ -4,16 +4,17 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- The read prefilter, Ramal.Prefilter (0.3.0), could rule out a record that a read in a branch should have returned. It treated an `and` with one `false` side as `false` whatever the other side was, but Ash's filter runtime is not three-valued: `nil and false` is `nil`, `nil or false` is `false` and `not nil` is `nil`. So under a `not`, a filter such as `not (not (name in [""] and head == 1) or ...)` was ruled out for a record with a `nil` attribute that the runtime accepts. An expression now evaluates to the set of values the runtime can give it, and the record is ruled out only when `true` is not among them. Found by a property test that failed about one run in six.
+- `ramal_live`: a UUID in a diff (the row key and the before and after cells) no longer wraps in the middle of a group in the narrow column. It keeps to one line, cut short with an ellipsis, and the whole id is the tooltip.
+- `distinct` on a calculation inside a branch is applied over the branch's view, as 0.3.0 did for attributes: the base query is read without it and the patched rows are made distinct in memory with `Ash.Query.apply_to/3`, so a row the branch changed counts under its new value, a row it created gets its group, and a destroyed row no longer stands for one. A query that selects only some attributes, or a distinct on an aggregate, keeps the data layer's distinct and does not see the branch.
+
 ### Changed
 
 - `Ramal.fork/2` copies the branch once less: the new process is started empty and receives the fork in one message, instead of the fork travelling through the dynamic supervisor (copied into it, then into the process). A fork of a branch with 1,000 changes took about 2.7 ms instead of 4.8.
 - `Ramal.diff/1` is about a third faster for a branch with many changes: it no longer builds and deduplicates a list of attribute names for every updated row, and `Ramal.Resource.attributes/1` makes one pass over the attribute names. Same changes, same order.
 - `Ramal.diff/1` runs inside the branch process, so only the changes cross the process boundary and not the whole branch (overlay, log and base). The diff of a branch with 1,000 changes took about 2.8 ms instead of 5.4. The process is busy for the length of the diff, as it is for any other call.
-
-### Fixed
-
-- `ramal_live`: a UUID in a diff (the row key and the before and after cells) no longer wraps in the middle of a group in the narrow column. It keeps to one line, cut short with an ellipsis, and the whole id is the tooltip.
-- `distinct` on a calculation inside a branch is applied over the branch's view, as 0.3.0 did for attributes: the base query is read without it and the patched rows are made distinct in memory with `Ash.Query.apply_to/3`, so a row the branch changed counts under its new value, a row it created gets its group, and a destroyed row no longer stands for one. A query that selects only some attributes, or a distinct on an aggregate, keeps the data layer's distinct and does not see the branch.
 
 ## [0.3.0] - 2026-10-23
 
