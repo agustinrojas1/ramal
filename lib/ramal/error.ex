@@ -2,7 +2,7 @@ defmodule Ramal.Error do
   @moduledoc """
   The error every Ramal function returns as `{:error, %Ramal.Error{}}`.
 
-  When a Ramal error is raised inside an Ash action (for example a bulk action inside a branch), Ash returns it in
+  When a Ramal error is raised inside an Ash action (for example an upsert with an `upsert_condition` inside a branch), Ash returns it in
   the `errors` of an `Ash.Error.Invalid`; `find/2` pulls it out.
 
   `reason` is an atom from the closed list below, so a host can match on it. `message` says what happened in words
@@ -15,7 +15,7 @@ defmodule Ramal.Error do
   | `:stale` | the base moved under rows the branch read (`details.rows`) |
   | `:merge_failed` | a replayed action failed; `details` has `index`, `type`, `resource`, `action` and the Ash `error` |
   | `:database_generated_key` | a branch cannot create a row whose primary key the database generates |
-  | `:bulk_unsupported` | a bulk create, update or destroy inside a branch |
+  | `:bulk_unsupported` | an action inside a branch that the capture hook did not wrap, refused before it could reach the data layer |
   | `:upsert_unsupported` | an upsert with an `upsert_condition` (or an identity `where` that cannot be evaluated for the new row) inside a branch |
   | `:atomic_unsupported` | an atomic update whose expression cannot be evaluated in Elixir inside a branch (`details.attribute`) |
   | `:partial_record` | an update or destroy of a record read with `Ash.Query.select/2`, whose full row could not be read inside the branch |

@@ -65,7 +65,18 @@ defmodule Ramal.Test.Farm.Paddock do
     max(:biggest_head, :herds, :head, public?: true)
     avg(:average_head, :herds, :head, public?: true)
 
+    # The first and the list of related values follow the aggregate's sort; `uniq?` counts and lists distinct values.
+    first(:first_herd_name, :herds, :name, public?: true, sort: [name: :asc])
+    first(:biggest_herd_name, :herds, :name, public?: true, sort: [head: :desc])
+    list(:herd_names, :herds, :name, public?: true, sort: [name: :asc])
+    list(:herd_sizes, :herds, :size, public?: true, sort: [name: :asc])
+    list(:distinct_head_list, :herds, :head, public?: true, uniq?: true, sort: [head: :asc])
+    count(:distinct_heads, :herds, field: :head, public?: true, uniq?: true)
+
     # A kind the preparation cannot compute over a branch: it keeps the database's value and emits the event.
-    first(:first_herd_name, :herds, :name, public?: true)
+    custom(:herd_name_csv, :herds, :string,
+      public?: true,
+      implementation: {Ramal.Test.Farm.StringAgg, field: :name, delimiter: ","}
+    )
   end
 end

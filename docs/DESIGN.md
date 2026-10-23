@@ -18,7 +18,7 @@ discard them. A branch must cost roughly what a process and a map cost, so thous
 
 - Schema changes inside a branch.
 - Branch-local indexes, or any promise about query plans.
-- Data-layer aggregates and calculations that Ramal cannot recompute over a branch (`first`, `list`, `custom`, `uniq?`, and aggregate queries with a limit keep the database's value, with a telemetry event; section 4.1 point 4 says what is recomputed).
+- Data-layer aggregates and calculations that Ramal cannot recompute over a branch (`custom` aggregates, join filters and custom read actions keep the database's value, with a telemetry event; section 4.1 point 4 says what is recomputed).
 - Database-generated keys inside a branch, and nested branches.
 - Multi-node branches. A branch lives on one node; persistence makes it movable, not distributed.
 - A UI. The inspector is a separate package (`ramal_live/`, section 12).
@@ -144,11 +144,13 @@ This is the section that decides correctness. In a read action's preparation, wh
    (ADR 0031): inside a branch it puts the branch's attribute values on each record that has an overlay entry and loads
    with `reuse_values?: true`. A load inside a read (`Ash.Query.load/2`) is patched too; the test in
    `preparation_test.exs` pins the plain call, `Ramal.load/3` and both.
-4. **Aggregates and calculations:** an aggregate a read loads (`count`, `exists`, `sum`, `min`, `max`, `avg`, declared on the
+4. **Aggregates and calculations:** an aggregate a read loads (`count`, `exists`, `sum`, `min`, `max`, `avg`, `first`, `list`, declared on the
    resource or added to the query) is computed again after the patch from the related records read through the branch, for
    every row when the branch changed a resource on its path and for the rows the overlay supplied otherwise (ADR 0029).
-   `first`, `list` and `custom` aggregates, `uniq?`, a join filter, a custom read action, a field that is not an attribute
-   and an aggregate query with a limit, offset or distinct keep the database's value and emit
+   `first` and `list` take the field of the first and of every related row in the aggregate's sort, `uniq?` deduplicates a
+   `list` and counts distinct values in a `count`, `include_nil?` is honoured, and the field may be a calculation (ADR 0039).
+   `custom` aggregates, a join filter, a custom read action, a calculation field on `sum`, `min`, `max` or `avg`, and
+   a field that is neither keep the database's value and emit
    `[:ramal, :read, :unpatched_aggregate]`, so a host can detect it in tests. A filter or sort on an aggregate is judged on the branch's
    numbers (ADR 0032): the conjunct is taken out of the data-layer query when the branch changed a resource on the
    aggregate's path, as for a relationship (section 9), and the aggregates the filter or sort names are computed over the
@@ -183,10 +185,9 @@ This is the section that decides correctness. In a read action's preparation, wh
    hook reads the rows of all the sources whole and pages each source on its own, so the page, its `more?` and its
    count see the branch ([ADR 0040](adr/0040-relationship-pages-cut-per-source.md)). A `through` path of several hops
    keeps seeing the base rows of its intermediate resources. Because `manage_relationship` decides from that load, `:remove` finds a link the
-   branch created and `:append` does not link a vet twice. One limit remains: `type: :append_and_remove` is refused
-   with `:bulk_unsupported` when it has a link to remove (Ash unrelates with `Ash.bulk_destroy/4`,
-   `bulk_delete_unused_unrelate/8` in `lib/ash/actions/managed_relationships.ex`, which bypasses the capture hook). Set
-   the list with `:remove` and `:append`, or write the join resource directly.
+   branch created and `:append` does not link a vet twice. `type: :append_and_remove` unrelates with `Ash.bulk_destroy/4`
+   (`bulk_delete_unused_unrelate/8` in `lib/ash/actions/managed_relationships.ex`), which a branch runs record by record
+   like any bulk action ([ADR 0036](adr/0036-bulk-actions-record-by-record.md)).
 8. **Text sort order:** once the overlay touches a resource the whole patched list is sorted in Elixir, and strings
    compare as bytes (`Banana` before `apple`), while Postgres orders them by its collation. A sort on text, and
    `Ramal.aggregate/4` with `:min` or `:max` on a string, can therefore differ between a branch and the base for
@@ -245,7 +246,12 @@ This is the section that decides correctness. In a read action's preparation, wh
 - **Atomic updates** (`atomic_update`) are evaluated in Elixir against the row with the action's attribute changes
   applied, with `Ash.Expr.eval/2` as `Ash.DataLayer.Ets` does. An expression that needs the database fails the action
   with `:atomic_unsupported`.
-- **Bulk actions** are refused: `:bulk_unsupported` for every `Ash.bulk_*`.
+- **Bulk actions run record by record** (ADR 0036). Ash runs a changeset that has an `around_action` hook singly,
+  through the single action (`split_and_run_simple/7` in `lib/ash/actions/helpers.ex`), so each record of
+  `Ash.bulk_create/4`, `bulk_update/4` and `bulk_destroy/4` is captured and logged as its own action and the data layer's
+  bulk call gets none. A bulk update or destroy of a query must allow `:stream`, because neither atomic strategy can run
+  in a branch. A `before_action` guard refuses, with `:bulk_unsupported`, an action the `around_action` hook did not
+  wrap, so a path that skipped it fails instead of writing the base.
 - **Upserts** are decided in the branch's view ([ADR 0038](adr/0038-upserts-in-the-branch-view.md)): the capture reads
   `upsert?` in `change/3`, where it is the action's own (Ash's `do_run` sets it for every create before the hooks), looks
   the row up by the upsert identity with a patched read, and logs a found row as an update and a missing one as a create.
@@ -289,7 +295,7 @@ This is the section that decides correctness. In a read action's preparation, wh
 # opts: decided_by, reason
 
 @spec aggregate(query | resource, kind, field | nil, keyword) :: {:ok, term} | {:error, Ash.Error.t()}
-# kind: :count | :exists | :sum | :min | :max | :avg, computed in Elixir over the rows a read returns in the branch
+# kind: :count | :exists | :sum | :min | :max | :avg | :first | :list, computed in Elixir over the rows a read returns in the branch
 
 @spec load(record | [record], load, keyword) :: {:ok, record | [record]} | {:error, Ash.Error.t()}
 # Ash.load/3 that follows the branch's foreign keys (ADR 0031)
@@ -447,7 +453,7 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 2. Should `run/2` be reentrant (a branch inside a branch)? 0.1: no, `{:error, %Ramal.Error{reason: :nested_branch}}`; `merge/2` refuses the same way.
 3. ~~Where do many-to-many join resources sit in the overlay?~~ Answered: they are resources, so they get overlay
    entries like any other, keyed by the join resource's primary key (section 4.1 point 7, ADR 0014). A many_to_many
-   load and `manage_relationship` see links the branch changed (ADR 0017); a `through` path of several hops sees the base links, and `append_and_remove` with a link to remove is refused.
+   load and `manage_relationship` see links the branch changed (ADR 0017); a `through` path of several hops sees the base links, and `append_and_remove` with a link to remove works, as a bulk action run record by record (ADR 0036).
 4. ~~Does the read preparation need to handle `Ash.Query.select`?~~ Answered: Ash always selects the primary key, and
    the preparation trims overlay records to the select (section 4.1).
 5. Should fingerprints cover rows read through relationship loads? 0.1: yes, because they are reads like any other
@@ -509,7 +515,7 @@ action (ADR 0016).
 | 8 | The current branch id lives in the process dictionary and in Ash's shared context | Ash has no ambient context, and it runs some loads in tasks that lose the process dictionary. [ADR 0002](adr/0002-current-branch-carrier.md) |
 | 9 | Idle timeout and heap limit belong to the supervisor; discard keeps the record; storage takes config last | A per-branch value is lost on unload, and a kept record gives `:not_open` a meaning. [ADR 0003](adr/0003-branch-process-lifecycle.md) |
 | 10 | Reads are patched in `before_action`/`after_action` hooks; nothing is stripped when the overlay has no entry for the resource; the preparation sorts and pages the list itself | The hooks are where Ash allows changing the data-layer query and seeing its rows; `runtime_sort` takes a list, not a comparator. [ADR 0004](adr/0004-read-patching-hooks.md) |
-| 11 | Writes are captured by a last `before_action` that sets the result; atomic updates fall back through `atomic/3` and `require_atomic? false`; every bulk action is refused, and an upsert is decided in the branch view (ADR 0038); notifications are dropped unless the resource opts in; a failed action undoes its writes; `Ramal.Error` is a Splode error | `around_action` cannot skip the data layer by itself, the atomic path never reaches a hook, and Ash flattens other exceptions to strings. [ADR 0005](adr/0005-write-capture.md) |
+| 11 | Writes are captured by a last `before_action` that sets the result; atomic updates fall back through `atomic/3` and `require_atomic? false`; an upsert is decided in the branch view (ADR 0038); bulk actions run record by record (decision 34); notifications are dropped unless the resource opts in; a failed action undoes its writes; `Ramal.Error` is a Splode error | `around_action` cannot skip the data layer by itself, the atomic path never reaches a hook, and Ash flattens other exceptions to strings. [ADR 0005](adr/0005-write-capture.md) |
 | 12 | `base` holds `%{fingerprint, snapshot}` per touched row; every read fingerprints the base rows it returns, except when it selects some attributes; a fork copies everything and records `forked_from` | Staleness needs the state at first read, diff needs the state at first write, and a partial row has no comparable hash. [ADR 0006](adr/0006-fingerprints-and-fork.md) |
 | 13 | Merge claims the branch first, checks staleness inside the replay transaction with row locks where possible, and forces created rows to keep their branch primary keys; entries logged by hooks are not replayed | Writes between check and replay would be lost, a check outside the transaction races, and later log entries name rows by key. [ADR 0007](adr/0007-merge.md) |
 | 14 | Branches are stored through `Ramal.Storage.Codec`: attributes through the Ash embedded dump and cast, everything else as tagged terms, atoms never created, actors stored as the term; `list/3` can fail | A round trip must be `==`, the Ash `cast_stored` is the data layer's form, not JSON's, and a database can fail. [ADR 0008](adr/0008-postgres-storage.md) |
@@ -518,7 +524,7 @@ action (ADR 0016).
 | 17 | ~~`Ramal.aggregate/4` reads the patched rows and computes the aggregate in Elixir; `Ramal.Aggregate` holds the pure part~~ Superseded by 19 for the common kinds; the read-every-row path stays for `limit`, `offset` and `distinct` | The data layer's aggregates cannot see the overlay, and Ash offers no hook to make them. Exact for the branch, as expensive as reading the matching rows. [ADR 0011](adr/0011-branch-aggregates.md) |
 | 18 | A proposal is a branch status (`:proposed`, `:rejected`) and a `proposal` field of the stored state; approving is merging | A second table and storage API for one record per branch would duplicate what the branch row already persists, and the decision must land in the same step as the merge. [ADR 0012](adr/0012-proposals.md) |
 | 19 | `Ramal.aggregate/4` aggregates in the database the rows outside the overlay, reads the overlaid ones through the patched path and joins the two; limit, offset and distinct keep the read-every-row path; the database's part is not fingerprinted | Reading every row made scoring a state cost a table scan (measured in `bench/`). The delta is exact and its cost follows the overlay. [ADR 0013](adr/0013-aggregate-delta.md) |
-| 20 | A many_to_many join resource gets overlay entries like any resource; an update that changes no attribute is logged; a many_to_many load reads the patched join rows when the branch changed them; `append_and_remove` with a link to remove stays refused as a bulk action | Hooks and managed relationships write nested rows that only the outer action can replay; AshPostgres loads the relationship in SQL over the base join table, so the preparation replaces that join; the bulk unrelate bypasses the capture hook and capturing it would rest on undocumented data-layer behaviour. [ADR 0014](adr/0014-many-to-many-join-resources.md), [ADR 0017](adr/0017-many-to-many-links-in-a-branch.md) |
+| 20 | A many_to_many join resource gets overlay entries like any resource; an update that changes no attribute is logged; a many_to_many load reads the patched join rows when the branch changed them; `append_and_remove` with a link to remove works since bulk actions run record by record (ADR 0036) | Hooks and managed relationships write nested rows that only the outer action can replay; AshPostgres loads the relationship in SQL over the base join table, so the preparation replaces that join; the bulk unrelate is a bulk action, which a branch runs record by record through the capture hook. [ADR 0014](adr/0014-many-to-many-join-resources.md), [ADR 0017](adr/0017-many-to-many-links-in-a-branch.md) |
 | 21 | The inspector is a separate project whose router macro expands to one `live` route in the host's own `live_session`; options travel as route metadata; a supervised broadcaster turns telemetry into PubSub messages naming a branch, and the page re-reads only that branch | A `live_session` of its own would need its own root layout, socket and JavaScript, which is an asset pipeline; telemetry is node-local, so a handler attached on first page view would miss events. [ADR 0015](adr/0015-inspector-mounting.md) |
 | 22 | `ramal_inspector` requires `:actor`; `Ramal.branch/2` and `Ramal.fork/2` can be limited per domain by `:max_active_branches` and `:branch_rate` of `Ramal.Supervisor`, both off by default | A page that acts for nobody lets anyone who reaches the route merge as no one, and an unlimited fork is a process and a row per call. The limits stay off so no host changes behaviour by upgrading. [ADR 0016](adr/0016-security-defaults.md) |
 | 23 | A branch has an optional `owner`, stored in the state JSON; `Ramal.list/2` takes `owner:` and `ramal_inspector` an `:owner` function, both off by default; an owner filters, it does not authorize | A host serving several users otherwise keeps its own id-to-user table to show each person their branches. A column would need a migration for hosts that do not scope. [ADR 0018](adr/0018-branch-owner.md) |
@@ -532,3 +538,5 @@ action (ADR 0016).
 | 31 | A paginated read of a resource the overlay touches reads the whole patched list, cuts the page in Elixir and gives Ash the rows with `set_result` and the count with `full_count` | The database cannot page rows it does not have, and Ash fixes `more?` and `count` from the database before any hook after the data layer can speak. The cost is a read of every matching row per page. [ADR 0030](adr/0030-pages-cut-from-the-patched-list.md) |
 | 32 | A captured write is held under its action's process until the action ends: merges and proposals wait, forks leave it out, other writers of the row get `:row_busy`, a dead writer is undone; a process that died without `terminate/2` is not reloaded from storage | The TLA+ model (`verification/tla`) found merges, forks and proposals taking writes of actions that then failed, overlay and log diverging, and a killed process reloaded behind its own writes. [ADR 0033](adr/0033-running-actions-hold-their-writes.md) |
 | 33 | The merge's transaction stores the branch as merged and refuses a branch stored so; a branch process whose merger died asks the storage before releasing the claim; Postgres never stores a merged row back as open | A merge whose process died after the commit, or whose node restarted before the persist, left the branch open and mergeable a second time (TLA+ model, #143). [ADR 0035](adr/0035-merged-status-in-the-merge-transaction.md) |
+| 34 | Inside a branch a bulk action runs each record through the captured single action; a bulk update or destroy of a query must allow `:stream`; a guard refuses an action the capture hook did not wrap | Ash runs changesets with an `around_action` hook singly, and the refusal also blocked `append_and_remove` and AshAi's update and destroy tools. [ADR 0036](adr/0036-bulk-actions-record-by-record.md) |
+| 35 | `first`, `list`, `uniq?` and `include_nil?` aggregates, and a calculation as the field of a `first`, `list` or `count`, are computed over the branch like the other kinds | The related rows already arrive filtered and sorted by the aggregate's own query, so the kinds are a reduction over them; only `custom`, which is SQL, cannot be. [ADR 0039](adr/0039-first-list-and-uniq-aggregates.md) |

@@ -67,11 +67,15 @@ defmodule Ramal.Preparation.Paged do
   # Ash gives an unpaginated read (`Ash.Actions.Read.unpaginated_read/3`) the action's `default_limit` as its page and
   # skips the `paginate` step, and the query keeps no mark of it. The reads whose callers can be told apart are left
   # alone: Ramal's own (`Ramal.Resource.read_all/2`), the ones Ash makes for a policy or a filter on a relationship
-  # (`internal?`), and the source read of a bulk update or destroy. Any other is caught after the data layer, where a
-  # query with no limit was not paginated: the preparation then returns the whole list.
+  # (`internal?`), and the source read of a bulk update or destroy. A bulk action with the stream strategy reads its
+  # source with `Ash.stream!/2` and so carries the same `query_for`; the pages of that stream are told apart by the
+  # `bypass_max_page_size?` mark `do_stream/4` of `lib/ash/actions/read/stream.ex` sets, and are cut like any page.
+  # Any other is caught after the data layer, where a query with no limit was not paginated: the preparation then
+  # returns the whole list.
   defp unpaginated?(query) do
     query.context[:ramal][:whole?] == true or query.context[:private][:internal?] == true or
-      query.context[:query_for] in [:bulk_update, :bulk_destroy]
+      (query.context[:query_for] in [:bulk_update, :bulk_destroy] and
+         query.context[:private][:bypass_max_page_size?] != true)
   end
 
   # A relationship load is read with `accessing_from`; a many-to-many or limited has_many load carries the source
