@@ -98,7 +98,7 @@ Ramal is on [Hex](https://hex.pm/packages/ramal), with docs on [HexDocs](https:/
 
 ```elixir
 def deps do
-  [{:ramal, "~> 0.5.0"}]
+  [{:ramal, "~> 0.6.0"}]
 end
 ```
 

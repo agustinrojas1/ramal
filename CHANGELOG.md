@@ -4,18 +4,34 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-### Changed
+## [0.6.0] - 2026-10-23
 
-- Docs: a branch checks only its own domain for resources that neither use `Ramal.Resource` nor opt out, but a resource of another domain that uses it is branched like the rest (read, written, diffed and merged); the open question about several domains per branch is closed with a test.
+A branch can work in one tenant, and Ramal has a formal model: a TLA+ model of the branch lifecycle checked with TLC and Bend 2 proofs of the overlay and merge rules, which found the three bugs fixed here. Read **Upgrading from 0.5** first.
+
+### Upgrading from 0.5
+
+1. **`ramal_live` needs `ramal ~> 0.6.0`**; the two packages share a version.
+2. **A second process writing a row that a running action in the same branch already wrote gets `{:error, %Ramal.Error{reason: :row_busy}}`** until that action ends, and a merge or proposal waits up to 4 seconds for running actions (then `:timeout`). Code that writes one branch from several processes at once should retry on `:row_busy`.
+3. **With the bundled storages, a storage outage now fails a merge before it commits** (`:storage`) instead of committing it and reporting `persist_failed`. A custom `Ramal.Storage` backend keeps the old behaviour until it implements the optional `mark_merged/2`.
 
 ### Added
 
 - **A branch can work in one tenant**: `Ramal.branch(domain, tenant: tenant)`. Reads and writes of multitenant resources inside it must carry that tenant (`:tenant_mismatch` otherwise), the other tenants' rows never enter its overlay, the merge staleness check reads with the tenant, and a fork keeps it. A branch without a tenant still refuses multitenant resources used with one (`:multitenancy_unsupported`), now with a message that says to create it with `tenant:`. The internal check `ensure_untenanted/2` became `ensure_tenant/3`. Tested on Postgres with both strategies, attribute and schema-per-tenant (context), merge into the tenant's schema included. ADR 0034.
+- `verification/`: a TLA+ model of the branch lifecycle (writes, reads, fork, propose, approve, merge, idle unload, kills and restarts), checked with TLC, and proofs in Bend 2 that a read in a branch sees what the merge's replay produces, that a merge keeps every edit made outside the branch to rows the branch did not touch, and that overlay entries stay honest about the base. A CI workflow runs both; `verification/README.md` says what is proven, what is assumed and what is not covered.
+- `:row_busy`, a new `Ramal.Error` reason: a write to a row that another process's running action wrote in the same branch.
 - `c:Ramal.Storage.mark_merged/2`, an optional storage callback, and `Ramal.Storage.already_merged/1`, the error it returns for a branch already stored as merged. Both bundled backends implement it (ADR 0035).
+
+### Changed
+
+- Docs: a branch checks only its own domain for resources that neither use `Ramal.Resource` nor opt out, but a resource of another domain that uses it is branched like the rest (read, written, diffed and merged); the open question about several domains per branch is closed with a test.
 
 ### Fixed
 
 - **A branch whose merge committed can no longer be merged a second time** when the process running the merge dies before it finishes, or the node restarts before the merged branch is stored. The merge's transaction now stores the branch as merged and refuses one already stored so; with Postgres storage on the resources' repo, the merged row commits with the replay. A branch process whose merger died asks the storage before releasing the claim, and Postgres storage never stores a merged row back as open. A storage outage now fails the merge before it commits instead of reporting `persist_failed` after it (#143, ADR 0035).
+- A merge, a proposal or a fork no longer takes a write of an action that is still running in another process. Before, if that action then failed, its undo was refused and the merge replayed (or the proposal showed, or the fork kept) a write whose action had failed. A merge and a proposal now wait for running actions (up to 4 seconds) and a fork leaves their writes out ([ADR 0033](docs/adr/0033-running-actions-hold-their-writes.md), #141).
+- The writes of an action whose process dies before the action ends (a killed task, a crashed LiveView) are taken back, as a database rolls back a dead connection's transaction. Before, they stayed in the branch and were merged (#141).
+- When an action failed after another process had written the same row in the branch, the undo dropped the other write from what reads saw but not from the log, so the merge wrote what the branch did not show. A second writer of a row is now refused with `:row_busy` until the first action ends (#141).
+- A branch process killed by `max_heap_size` could be loaded again from storage, which is behind it, before its watcher marked it: writes its callers were told succeeded were lost, and a merge in progress could be claimed a second time. Such a branch is now refused with `:branch_too_large` at once (#142).
 
 ## [0.5.0] - 2026-10-23
 
@@ -31,8 +47,6 @@ Branch reads now agree with the branch in more places: pagination, aggregates (l
 
 - `examples/ash_ai`, a separate Mix project that CI runs against `ash_ai` 1.4.0: AshAi tools run in a branch through `AshAi.Tools.execute/4` and `AshAi.Mcp.Router`, end in a proposal, and the plug that takes the branch id from an MCP client checks the branch's owner. It also pins a finding: an AshAi `update` or `destroy` tool is a bulk action, which a branch refuses; `docs/agents.md` shows the generic action to use instead (#104).
 - `Ramal.load/3` and `Ramal.load!/3`: `Ash.load/3` that follows the branch's foreign keys. Ash reselects the relationship's source attribute from the database without running any hook, so `Ash.load(herd, :paddock)` after the herd moved paddock in the branch followed the old one and Ash gives Ramal no way to intercept it. Inside a branch the new functions put the branch's attribute values on each record that has an overlay entry and load with `reuse_values?: true`; outside one they are `Ash.load/3`. ADR 0031.
-- `verification/`: a TLA+ model of the branch lifecycle (writes, reads, fork, propose, approve, merge, idle unload, kills and restarts), checked with TLC, and proofs in Bend 2 that a read in a branch sees what the merge's replay produces, that a merge keeps every edit made outside the branch to rows the branch did not touch, and that overlay entries stay honest about the base. A CI workflow runs both; `verification/README.md` says what is proven, what is assumed and what is not covered.
-- `:row_busy`, a new `Ramal.Error` reason: a write to a row that another process's running action wrote in the same branch.
 
 ### Changed
 
@@ -46,10 +60,6 @@ Branch reads now agree with the branch in more places: pagination, aggregates (l
 - **A paginated read inside a branch no longer repeats the branch's rows on every page or loses base rows** (#110, #101). `Ash.page!(page, :next)` returned the rows the branch created again on each page and never reached the base rows after the first page, and `Ash.stream!/2` in a batch job did the same. When the branch changed the resource, the page is now cut from the whole patched list: a row created in the branch is on the page its sort position puts it, a deleted row shortens nothing, `count` is the patched count, and `after`/`before` keyset cursors walk the patched list without gaps or repeats. A page costs the read of every row the filter matches; a resource the branch did not change is still paged by the database, and so is a paged relationship load ([ADR 0030](docs/adr/0030-pages-cut-from-the-patched-list.md)).
 - **A query prepared outside `Ramal.run/2` and read inside it is now patched with the branch** (it read base data before). The preparation adds a `before_transaction` hook to every query; it installs the read hooks only when a branch is current when the query runs, so an atomic bulk update of a prepared query outside a branch still runs in the database. ADR 0028.
 - An aggregate declared on a resource no longer comes back as `Ash.NotLoaded` on a row the branch created or changed (#115).
-- A merge, a proposal or a fork no longer takes a write of an action that is still running in another process. Before, if that action then failed, its undo was refused and the merge replayed (or the proposal showed, or the fork kept) a write whose action had failed. A merge and a proposal now wait for running actions (up to 4 seconds) and a fork leaves their writes out ([ADR 0033](docs/adr/0033-running-actions-hold-their-writes.md), #141).
-- The writes of an action whose process dies before the action ends (a killed task, a crashed LiveView) are taken back, as a database rolls back a dead connection's transaction. Before, they stayed in the branch and were merged (#141).
-- When an action failed after another process had written the same row in the branch, the undo dropped the other write from what reads saw but not from the log, so the merge wrote what the branch did not show. A second writer of a row is now refused with `:row_busy` until the first action ends (#141).
-- A branch process killed by `max_heap_size` could be loaded again from storage, which is behind it, before its watcher marked it: writes its callers were told succeeded were lost, and a merge in progress could be claimed a second time. Such a branch is now refused with `:branch_too_large` at once (#142).
 
 ## [0.4.3] - 2026-10-23
 
@@ -221,7 +231,8 @@ Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspec
 - A multitenant resource used with a tenant inside a branch is refused with `:multitenancy_unsupported` (the `ensure_untenanted/2` check), instead of mixing tenants in one overlay or failing at merge.
 - Stored branches no longer hold the `sensitive?` attributes of an actor that is an Ash record (they are stored as `nil`); other actors are stored as before.
 
-[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/agustinrojas1/ramal/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/agustinrojas1/ramal/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/agustinrojas1/ramal/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/agustinrojas1/ramal/compare/v0.4.1...v0.4.2
