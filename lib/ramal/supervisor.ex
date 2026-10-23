@@ -14,9 +14,19 @@ defmodule Ramal.Supervisor do
 
     * `:storage` - a `Ramal.Storage` module, default `Ramal.Storage.ETS`
     * `:idle_timeout` - milliseconds without a call before a branch persists and unloads, default five minutes
+    * `:max_active_branches` - the most open and proposed branches one domain may have, default `nil` (no limit).
+      `Ramal.branch/2` and `Ramal.fork/2` return `{:error, %Ramal.Error{reason: :limit_reached}}` at the limit. A soft
+      limit: callers that create at the same moment can pass it by their own number. Counting asks the storage
+      for a count (`c:Ramal.Storage.count/3`), so it costs one query with `Ramal.Storage.Postgres`.
+    * `:branch_rate` - `{count, milliseconds}`: the most branches (created or forked) one domain may get in a window,
+      default `nil`. Fixed windows, counted in memory on this node, and shared by `branch/2` and `fork/2`. Nodes do not
+      add up: a cluster allows the rate on each node.
     * `:max_heap_size` - the heap limit of each branch process in words, default 25 million (200 MB on a 64-bit
       machine). A branch exceeding it is killed and its last persisted state remains.
     * any other option is the storage config, for example `:repo` for the Postgres backend
+
+  Both limits are off by default, so adding them is the only change; see ADR 0016 for why they exist (a client that can
+  reach `Ramal.fork/2`, such as the inspector, can otherwise start a process and a stored row per call).
 
   `idle_timeout` and `max_heap_size` belong to the supervisor, not to a branch, because a per-branch value would be
   forgotten when the branch is unloaded and loaded again.
@@ -43,7 +53,8 @@ defmodule Ramal.Supervisor do
           storage: module,
           storage_config: keyword,
           idle_timeout: timeout,
-          max_heap_size: pos_integer
+          max_heap_size: pos_integer,
+          limits: %{max_active: pos_integer | nil, rate: {pos_integer, pos_integer} | nil}
         }
 
   @doc false
@@ -82,13 +93,21 @@ defmodule Ramal.Supervisor do
   """
   @spec build_config(keyword) :: config
   def build_config(opts) do
-    {known, storage_config} = Keyword.split(opts, [:storage, :idle_timeout, :max_heap_size])
+    {known, storage_config} =
+      Keyword.split(opts, [
+        :storage,
+        :idle_timeout,
+        :max_heap_size,
+        :max_active_branches,
+        :branch_rate
+      ])
 
     %{
       storage: Keyword.get(known, :storage, Ramal.Storage.ETS),
       storage_config: storage_config,
       idle_timeout: Keyword.get(known, :idle_timeout, @default_idle_timeout),
-      max_heap_size: Keyword.get(known, :max_heap_size, @default_max_heap_size)
+      max_heap_size: Keyword.get(known, :max_heap_size, @default_max_heap_size),
+      limits: Ramal.Limits.build(known)
     }
   end
 
@@ -108,6 +127,9 @@ defmodule Ramal.Supervisor do
          )}
     end
   end
+
+  @doc false
+  def table, do: __MODULE__
 
   @doc false
   def registry, do: @registry

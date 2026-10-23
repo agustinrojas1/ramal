@@ -57,7 +57,7 @@ defmodule RamalLive.InspectorLive do
 
     case Phoenix.Router.route_info(socket.router, "GET", path || "/", host) do
       %{ramal_inspector: config} ->
-        config
+        ensure_actor!(config)
 
       _other ->
         raise ArgumentError,
@@ -65,6 +65,24 @@ defmodule RamalLive.InspectorLive do
                 "RamalLive.InspectorLive reads its options from the route, so mount it with " <>
                 "`ramal_inspector path, domain: ..., pubsub: ...` and not with `live`"
     end
+  end
+
+  # The macro checks that `:actor` is given, but the module may not exist yet when the router compiles (it is the
+  # host's, and may depend on the router), so whether the function is there is checked when the page opens. A typo then
+  # stops the page with a message that names it, instead of failing on the first click.
+  defp ensure_actor!(%{actor: {module, function}} = config) do
+    if Code.ensure_loaded?(module) and function_exported?(module, function, 1) do
+      config
+    else
+      raise ArgumentError,
+            "ramal_inspector: the :actor option is #{inspect(module)}.#{function}/1, which does not exist. " <>
+              "Define it: it receives the socket and returns the actor, or nil when nobody is signed in"
+    end
+  end
+
+  defp ensure_actor!(_config) do
+    raise ArgumentError,
+          "ramal_inspector: the route has no :actor option. Pass actor: {module, function} to ramal_inspector/2"
   end
 
   defp start(socket, config) do
@@ -332,11 +350,8 @@ defmodule RamalLive.InspectorLive do
     end
   end
 
-  # With no `:actor` option nothing is recorded and a merge replays each write as the actor it was captured with. With
-  # one, the host has said that the page acts for somebody, so a function that returns `nil` (a session that ended, an
+  # `:actor` is required, so the page always acts for somebody: a function that returns `nil` (a session that ended, an
   # assign nobody set) means nobody is signed in and the page refuses to act rather than act as no one.
-  defp actor(%{assigns: %{config: %{actor: nil}}}), do: {:ok, nil}
-
   defp actor(%{assigns: %{config: %{actor: {module, function}}}} = socket) do
     case apply(module, function, [socket]) do
       nil -> :anonymous

@@ -31,14 +31,14 @@ defmodule RamalLive do
            pipe_through [:browser, :require_admin]
 
            live_session :admin, on_mount: [{MyAppWeb.UserAuth, :ensure_admin}] do
-             ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub
+             ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: {MyAppWeb.Inspector, :actor}
            end
          end
 
   ## Things to know
 
     * **Authorization is the host's.** Whoever can open the page can merge and discard any branch of the domain. Ramal
-      records who decided but never checks; `RamalLive.Router` has an `:actor` option to pass the current user along.
+      records who decided but never checks; `RamalLive.Router` requires an `:actor` option to pass the current user along.
     * **Fonts.** Headings ask for Barlow Condensed and data for IBM Plex Mono. The page does not load them, so a host that
       wants them adds the link tag to its root layout; otherwise the system's condensed and monospace fonts are used.
     * **Content security policy.** The CSS is an inline `<style>` element. A policy without `style-src 'unsafe-inline'`

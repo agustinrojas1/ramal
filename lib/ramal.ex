@@ -21,7 +21,7 @@ defmodule Ramal do
 
   """
 
-  alias Ramal.{Branch, Current, Error, Resource, Supervisor, Telemetry}
+  alias Ramal.{Branch, Current, Error, Limits, Resource, Supervisor, Telemetry}
   alias Ramal.Branch.Server
 
   @type branch_or_id :: Branch.t() | String.t()
@@ -36,7 +36,8 @@ defmodule Ramal do
 
   Returns `{:error, %Ramal.Error{reason: :not_started}}` when `Ramal.Supervisor` is not running, and
   `:no_branchable_resources` when no resource of the domain uses `Ramal.Resource` (or all of them opted out), since
-  such a branch could never change what a read returns.
+  such a branch could never change what a read returns, and `:limit_reached` when the supervisor's
+  `:max_active_branches` or `:branch_rate` is reached (both off by default, see `Ramal.Supervisor`).
 
   ## Example
 
@@ -48,6 +49,7 @@ defmodule Ramal do
   def branch(domain, opts \\ []) when is_atom(domain) do
     with {:ok, config} <- Supervisor.config(),
          :ok <- ensure_branchable(domain),
+         :ok <- Limits.check(domain, :branch, config),
          branch = Branch.new(domain, opts),
          :ok <- config.storage.put(branch, config.storage_config),
          {:ok, _pid} <- Server.start(branch, config) do
@@ -165,7 +167,8 @@ defmodule Ramal do
   Forks a branch: a new open branch, with its own process, that starts with the parent's overlay, log and base.
 
   The fork sees the parent's changes as of the moment of the fork and nothing after; the parent never sees the fork's.
-  Both share the same database. `metadata.forked_from` holds the parent's id.
+  Both share the same database. `metadata.forked_from` holds the parent's id. A fork counts against the same limits
+  as `branch/2` (`:limit_reached`), counted for the parent's domain.
 
   ## Options
 
@@ -184,6 +187,7 @@ defmodule Ramal do
     with {:ok, config} <- Supervisor.config(),
          {:ok, parent} <- Server.get(id_of(branch_or_id)),
          :ok <- ensure_open(parent),
+         :ok <- Limits.check(parent.domain, :fork, config),
          fork = Branch.fork(parent, opts),
          :ok <- config.storage.put(fork, config.storage_config),
          {:ok, _pid} <- Server.start(fork, config) do

@@ -46,10 +46,28 @@ defmodule Ramal.Storage.ETSTest do
     assert ETS.list(MyApp.Other, [], []) == {:ok, [other_domain]}
   end
 
+  test "count returns how many branches of one domain have one of the statuses" do
+    branches = [
+      Branch.new(MyApp.Farm),
+      %{Branch.new(MyApp.Farm) | status: :proposed},
+      %{Branch.new(MyApp.Farm) | status: :merged},
+      Branch.new(MyApp.Other)
+    ]
+
+    for branch <- branches, do: :ok = ETS.put(branch, [])
+
+    assert ETS.count(MyApp.Farm, [:open, :proposed], []) == {:ok, 2}
+    assert ETS.count(MyApp.Farm, [:merged], []) == {:ok, 1}
+    assert ETS.count(MyApp.Farm, [:discarded], []) == {:ok, 0}
+    assert ETS.count(MyApp.Farm, [], []) == {:ok, 0}
+    assert ETS.count(MyApp.Other, [:open], []) == {:ok, 1}
+  end
+
   @tag supervisor: false
   test "without Ramal.Supervisor the backend reports :storage instead of crashing" do
     assert {:error, %Error{reason: :storage}} = ETS.put(Branch.new(MyApp.Farm), [])
     assert {:error, %Error{reason: :storage}} = ETS.fetch("x", [])
     assert {:error, %Error{reason: :storage}} = ETS.delete("x", [])
+    assert {:error, %Error{reason: :storage}} = ETS.count(MyApp.Farm, [:open], [])
   end
 end

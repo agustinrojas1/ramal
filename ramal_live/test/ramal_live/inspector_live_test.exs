@@ -329,7 +329,7 @@ defmodule RamalLive.InspectorLiveTest do
       config = %{
         domain: RamalLive.Test.Farm,
         pubsub: RamalLive.Test.PubSub,
-        actor: nil,
+        actor: {RamalLive.Test.Inspector, :actor},
         debounce: 0
       }
 
@@ -494,15 +494,21 @@ defmodule RamalLive.InspectorLiveTest do
       assert {:ok, %{proposal: %{decision: %{by: %{name: "Marta"}}}}} = Ramal.get(branch.id)
     end
 
-    test "without an actor option the decision has no decider", %{conn: conn} do
-      branch = branch!("move R7")
-      {:ok, _} = Ramal.propose(branch)
-      {:ok, view, _html} = live(conn, "/ramal")
+    test "a route whose actor function does not exist stops the page when it opens" do
+      socket = %Phoenix.LiveView.Socket{
+        router: RamalLive.Test.Router,
+        assigns: %{__changed__: %{}, config: nil}
+      }
 
-      click(view, branch, "ask", "reject")
-      click(view, branch, "confirm", "reject")
-
-      assert {:ok, %{proposal: %{decision: %{by: nil}}}} = Ramal.get(branch.id)
+      assert_raise ArgumentError,
+                   ~r/RamalLive.Test.Inspector.no_such_function\/1, which does not exist/,
+                   fn ->
+                     RamalLive.InspectorLive.handle_params(
+                       %{},
+                       "http://localhost/ramal-typo",
+                       socket
+                     )
+                   end
     end
   end
 

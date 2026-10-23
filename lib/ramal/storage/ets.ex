@@ -68,6 +68,19 @@ defmodule Ramal.Storage.ETS do
     ArgumentError -> unavailable()
   end
 
+  @impl true
+  def count(_domain, [], _config), do: {:ok, 0}
+
+  def count(domain, statuses, _config) do
+    # `select_count` runs the match inside ETS, so the branches (whole overlays) are not copied into the caller.
+    guard =
+      Enum.reduce(statuses, false, fn status, acc -> {:orelse, {:"=:=", :"$1", status}, acc} end)
+
+    {:ok, :ets.select_count(table(), [{{:_, %{domain: domain, status: :"$1"}}, [guard], [true]}])}
+  rescue
+    ArgumentError -> unavailable()
+  end
+
   defp unavailable do
     {:error,
      Error.new(

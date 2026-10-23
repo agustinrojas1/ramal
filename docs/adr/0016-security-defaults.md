@@ -22,11 +22,25 @@ input of every captured write; and a malformed `state` column crashed the caller
   exception, rejects a module name that is not shaped like one before it reaches `:code.where_is_file/1`, and rejects a
   stored struct whose module has no `__struct__/0`.
 - **CI runs `mix hex.audit`** in the three projects.
+- **Follow-up, 2026-10-23: the inspector's `:actor` is required** (it was left optional above so that no host broke).
+  `ramal_inspector` raises `ArgumentError` at compile time without it, and the page raises when it opens if the function
+  does not exist (the module may not be compiled yet when the router is). There is no opt-out: a host with no users
+  passes a function that returns a constant.
+- **Follow-up, 2026-10-23: optional limits on creating branches.** `Ramal.Supervisor` takes `:max_active_branches` (open
+  and proposed branches per domain) and `:branch_rate` (`{count, milliseconds}`: creations per domain per fixed
+  window); `Ramal.branch/2` and `Ramal.fork/2` return `{:error, %Ramal.Error{reason: :limit_reached}}` past either and
+  emit `[:ramal, :limit, :reached]`. Both are off by default. Counting uses a new optional `c:Ramal.Storage.count/3`
+  (one query with Postgres, `list/3` for a backend without it). Limits are per domain, not per user, and the first is
+  soft under concurrency: user scoping stays with the host.
 - Not changed: the ETS tables stay `:public` (every branch process writes to them) and branch ids stay the only
   capability to a branch. Both are documented in `SECURITY.md` as the host's boundary.
 
 ## Consequences
 
+- A `ramal_inspector` call without `:actor` stops compiling until it names one. The inspector first ships in 0.2.0, so
+  no released version is affected.
+- A host that turns on a limit must handle `:limit_reached` from `Ramal.branch/2` and `Ramal.fork/2`; the inspector
+  already shows any error from a fork on the page.
 - An `:actor` function that legitimately returns `nil` for a service account must return a value for it instead.
 - Debugging a branch in IEx shows less; read `branch.log` and `branch.overlay` on purpose.
 - The inspector cannot show a sensitive value to someone who needs to review it. They can read it from the record.

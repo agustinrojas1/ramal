@@ -12,7 +12,7 @@ defmodule RamalLive.Router do
         pipe_through [:browser, :require_admin]
 
         live_session :admin, on_mount: [{MyAppWeb.UserAuth, :ensure_admin}] do
-          ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub
+          ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: {MyAppWeb.Inspector, :actor}
         end
       end
 
@@ -29,10 +29,13 @@ defmodule RamalLive.Router do
     * `:domain` - the Ash domain whose branches are shown. Required.
     * `:pubsub` - the host's `Phoenix.PubSub` name, which the page subscribes to for live updates. Required, and the same
       one given to `RamalLive.Broadcaster`.
-    * `:actor` - `{module, function}`, called as `module.function(socket)` when someone merges, approves or rejects, and
-      returning the actor (or `nil`). The actor is recorded as `:decided_by` and, for merge and approve, replays the log
-      as that actor (`:actor` of `Ramal.merge/2`). When it returns `nil` nobody is signed in and the page refuses every
-      action. Default: no function, so a merge replays each write as the actor it was captured with.
+    * `:actor` - `{module, function}`. Required. Called as `module.function(socket)` when someone forks, merges,
+      discards, approves or rejects, and returning the actor, or `nil` when nobody is signed in. The actor is recorded as
+      `:decided_by` and, for merge and approve, replays the log as that actor (`:actor` of `Ramal.merge/2`). When it
+      returns `nil` the page refuses every action. It is required because a page that acts for nobody lets whoever
+      reaches the route merge every branch with the actors the writes were captured with, and leaves the decision with no
+      decider (ADR 0016). A router that leaves it out does not compile, and a route mounted without it (with `live`)
+      raises when the page opens.
     * `:debounce` - milliseconds to wait, after a branch changes, before the page reads it again. A branch that writes
       in a loop causes one read per window instead of one per write. `0` reads at once. Default: `50`.
 
@@ -49,7 +52,7 @@ defmodule RamalLive.Router do
 
   ## Example
 
-      ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub
+      ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: {MyAppWeb.Inspector, :actor}
   """
   defmacro ramal_inspector(path, opts) do
     opts = Macro.expand_literals(opts, %{__CALLER__ | function: {:ramal_inspector, 2}})
@@ -72,7 +75,7 @@ defmodule RamalLive.Router do
   @spec __config__!(keyword) :: %{
           domain: module,
           pubsub: module,
-          actor: {module, atom} | nil,
+          actor: {module, atom},
           debounce: non_neg_integer
         }
   def __config__!(opts) when is_list(opts) do
@@ -88,7 +91,7 @@ defmodule RamalLive.Router do
     %{
       domain: atom!(opts, :domain),
       pubsub: atom!(opts, :pubsub),
-      actor: actor!(opts[:actor]),
+      actor: actor!(Keyword.fetch(opts, :actor)),
       debounce: debounce!(Keyword.get(opts, :debounce, @default_debounce))
     }
   end
@@ -112,12 +115,19 @@ defmodule RamalLive.Router do
     end
   end
 
-  defp actor!(nil), do: nil
-  defp actor!({module, function} = mf) when is_atom(module) and is_atom(function), do: mf
+  defp actor!({:ok, {module, function} = mf}) when is_atom(module) and is_atom(function), do: mf
 
-  defp actor!(other) do
+  defp actor!({:ok, other}) do
     raise ArgumentError,
           "ramal_inspector: :actor must be {module, function}, got: #{inspect(other)}"
+  end
+
+  defp actor!(:error) do
+    raise ArgumentError,
+          "ramal_inspector: the :actor option is required. Pass {module, function}: the page calls " <>
+            "module.function(socket) and uses what it returns as the actor of a merge or a decision, " <>
+            "or refuses to act when it returns nil. Without it, anyone who reaches the route would merge " <>
+            "every branch of the domain as nobody in particular. See SECURITY.md"
   end
 
   defp debounce!(ms) when is_integer(ms) and ms >= 0, do: ms

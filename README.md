@@ -99,7 +99,7 @@ mounted by your router inside your own `live_session`, so it uses your LiveView 
 pipeline. Ramal itself never depends on it.
 
 ```elixir
-ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub
+ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: {MyAppWeb.Inspector, :actor}
 ```
 
 To see it move before wiring it into an app, `elixir ramal_live/examples/farm_demo.exs` starts a seeded farm where one button
