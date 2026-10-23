@@ -104,6 +104,61 @@ defmodule Ramal.BulkTest do
       assert Map.delete(inside(branch, &heads/0), "B1") == @base
     end
 
+    # A bulk upsert needs `upsert_fields`. The bulk path sets `upsert?` for each changeset (ADR 0038), and each record
+    # then goes through the capture's lookup like a single upsert.
+    test "of an upsert action updates the base row and creates the missing one, and the merge replays both",
+         %{branch: branch, paddocks: paddocks} do
+      result =
+        inside(branch, fn ->
+          Ash.bulk_create(
+            [
+              %{name: "L07", hectares: 41.0, capacity_head: 120},
+              %{name: "NEW", hectares: 5.0, capacity_head: 9}
+            ],
+            Paddock,
+            :upsert_capacity,
+            authorize?: false,
+            return_errors?: true,
+            return_records?: true
+          )
+        end)
+
+      assert %Ash.BulkResult{status: :success, records: records} = result
+      assert records |> Enum.map(& &1.name) |> Enum.sort() == ["L07", "NEW"]
+
+      assert Paddock |> Ash.read!(authorize?: false) |> length() == 2
+      assert Ash.get!(Paddock, paddocks.l07.id, authorize?: false).capacity_head == 100
+
+      seen = inside(branch, fn -> Ash.read!(Paddock, authorize?: false) end)
+
+      assert seen |> Enum.map(&{&1.name, &1.capacity_head}) |> Enum.sort() ==
+               [{"L07", 120}, {"L18", 60}, {"NEW", 9}]
+
+      assert {:ok, %Result{replayed: 2}} = Ramal.merge(branch, authorize?: false)
+      assert Ash.get!(Paddock, paddocks.l07.id, authorize?: false).capacity_head == 120
+      assert Paddock |> Ash.read!(authorize?: false) |> length() == 3
+    end
+
+    test "of an upsert action with an upsert_condition is refused and writes nothing", %{
+      branch: branch
+    } do
+      result =
+        inside(branch, fn ->
+          Ash.bulk_create(
+            [%{name: "L07", hectares: 41.0, capacity_head: 120}],
+            Paddock,
+            :upsert_if_larger,
+            authorize?: false,
+            return_errors?: true,
+            upsert_fields: [:capacity_head]
+          )
+        end)
+
+      assert %Ash.BulkResult{status: :error, errors: [error | _]} = result
+      assert %Ramal.Error{reason: :upsert_unsupported} = Ramal.Error.find(error)
+      assert state(branch).overlay == %{}
+    end
+
     test "outside a branch still writes through the data layer's bulk insert" do
       result =
         Ash.bulk_create([%{name: "B1", head: 1}], Herd, :create,
