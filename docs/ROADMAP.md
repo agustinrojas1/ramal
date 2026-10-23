@@ -79,6 +79,13 @@ Done; released in 0.6.0.
 - `verification/`: a TLA+ model of the branch lifecycle checked with TLC, and Bend 2 proofs of the overlay and merge rules, both run by a CI workflow. It found three bugs, fixed with ADR 0033 and ADR 0035.
 - Not covered: the inspector, Postgres storage specifics, and the read paths of filters, sorts and relationships (tested by properties instead).
 
+## 0.7 Remaining limits
+
+[limits-plan.md](https://github.com/agustinrojas1/ramal/blob/main/docs/limits-plan.md) gives the root cause and a design for each remaining limit, in the order they are
+being implemented: bulk actions, `authorize_results`, upserts, paged and multi-hop relationship loads, aggregates,
+merge replay keys, database-generated keys, text collation, durable branches, relationship filter push-down, nested
+branches, an optional authorizer, and clusters.
+
 ## 1.0
 
 - Six months without a breaking change to the public API.
@@ -88,7 +95,5 @@ Done; released in 0.6.0.
 ## Not planned
 
 - Schema changes inside a branch.
-- Distributed branches across nodes.
-- Nested branches, bulk actions and upserts inside a branch, and database-generated keys. Each is refused with a clear error.
 - A query language or DSL of its own.
 - Any dependency on a specific LLM provider or agent framework. Ramal is below that layer.
