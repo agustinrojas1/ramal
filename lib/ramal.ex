@@ -23,6 +23,7 @@ defmodule Ramal do
 
   alias Ramal.{Branch, Current, Error, Limits, Resource, Supervisor, Telemetry}
   alias Ramal.Branch.Server
+  alias Ramal.Preparation.Related
 
   @type branch_or_id :: Branch.t() | String.t()
 
@@ -368,6 +369,16 @@ defmodule Ramal do
   # With overlay entries the database aggregates the rows outside the overlay and the branch reads only the overlaid
   # ones (Ramal.Aggregate). Without any, the base is the branch, so the data layer's answer is exact.
   defp in_branch(id, query, kind, field, opts) do
+    with {:ok, affected?} <- Related.affected?(query, id),
+         do: in_branch(affected?, id, query, kind, field, opts)
+  end
+
+  # A filter through a relationship the branch changed is judged by the base's rows in the database's part of the delta,
+  # so it reads every matching row through the patched path (ADR 0025).
+  defp in_branch(true, _id, query, kind, field, opts),
+    do: read_every_row(query, kind, field, opts)
+
+  defp in_branch(false, id, query, kind, field, opts) do
     case Server.keys(id, query.resource) do
       {:ok, []} ->
         outside_branch(query, kind, field, opts)
