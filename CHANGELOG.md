@@ -6,7 +6,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
-- `first` and `list` aggregates, `uniq?` on `count` and `list`, and `include_nil?` are now computed over the branch when a read loads them, instead of keeping the database's value. The field of a `first`, `list` or `count` can be a calculation. Only `custom` aggregates, join filters and custom read actions still emit `[:ramal, :read, :unpatched_aggregate]`. `Ramal.aggregate/4` takes `:first` and `:list` (with `uniq?:` and `include_nil?:`), and `Ramal.Aggregate.compute/5` takes the same options ([ADR 0037](docs/adr/0037-first-list-and-uniq-aggregates.md)).
+- `first` and `list` aggregates, `uniq?` on `count` and `list`, and `include_nil?` are now computed over the branch when a read loads them, instead of keeping the database's value. The field of a `first`, `list` or `count` can be a calculation. Only `custom` aggregates, join filters and custom read actions still emit `[:ramal, :read, :unpatched_aggregate]`. `Ramal.aggregate/4` takes `:first` and `:list` (with `uniq?:` and `include_nil?:`), and `Ramal.Aggregate.compute/5` takes the same options ([ADR 0039](docs/adr/0039-first-list-and-uniq-aggregates.md)).
+- **Upserts work inside a branch.** An upsert action (`upsert? true`, or `upsert?: true` given to `Ash.Changeset.for_create/4`) looks its row up by the upsert identity in the branch's view: a row of the base or one the branch created is updated (with the action's `upsert_fields`, or the attributes the call set, and the update defaults), and with none found the row is created. The merge replays the entry as an upsert with the identity and fields it had, so a row that appeared in the base meanwhile is updated rather than duplicated. An `upsert_condition` is still refused with `:upsert_unsupported`, and `upsert?: true` passed only to `Ash.create/2` at call time still acts as a create. ADR 0038.
+
+### Changed
+
+- Docs: `bench/README.md` and the README's benchmark figures come from a rerun of the full benchmark and `bench.memory` on 0.6.1, with the noise between two runs stated; the raw samples are in `bench/results/published/`.
+
+### Fixed
+
+- A sort through a relationship in a branch gives the branch's order when some row in the result has no related row. `Ash.load/3` evaluates a sort calculation in memory only when every record has the path loaded, and a nil relationship made it keep the database's value for the whole batch, so the rows came back in the base's order; a calculation that only reads attributes along to-one relationships is now evaluated directly from the loaded relationships, with nil last ascending and first descending as in Postgres. Filters through a relationship were not affected.
+- A relationship loaded with a page, a limit or an offset sees the branch: a has_many or many_to_many load whose destination (or join resource) the branch changed reads the rows of all the sources, tags each with its source records and pages each source on its own, so the page, `more?` and `count` agree with the patched rows, and `Ash.page!(page, :next)` works on it. A `limit` on a load used to return nothing for any source once a row of the destination had been created in the branch. ADR 0040.
+- A read inside a branch runs the action's `authorize_results` checks (the runtime half of a policy) on the patched rows, so a row the branch created or changed is judged like any other and a row the branch destroyed is not. They ran on the database's rows before the patch. ADR 0037.
 
 ## [0.6.1] - 2026-10-23
 

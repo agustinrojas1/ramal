@@ -18,7 +18,7 @@ defmodule Ramal.Preparation.Aggregates do
   #
   # `first` and `list` are the field of the first and of every related row in the order the aggregate's sort gave them,
   # `uniq?` deduplicates a `list` and counts distinct values in a `count`, and `include_nil?` keeps the `nil`s
-  # (ADR 0037). The field may also be a calculation of the related resource: it is loaded onto the related rows with the
+  # (ADR 0039). The field may also be a calculation of the related resource: it is loaded onto the related rows with the
   # query, so a row the branch changed is judged by its new values.
   #
   # What this cannot do keeps the data layer's value and emits `[:ramal, :read, :unpatched_aggregate]`: the kind

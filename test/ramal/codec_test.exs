@@ -29,6 +29,28 @@ defmodule Ramal.Storage.CodecTest do
     Codec.decode_state(columns(branch), state)
   end
 
+  test "an upsert's log entry comes back equal", %{paddocks: paddocks} do
+    {:ok, branch} = Ramal.branch(Farm)
+
+    Ramal.run!(branch, fn ->
+      Ash.create!(Paddock, %{name: paddocks.l07.name, capacity_head: 120},
+        action: :upsert,
+        authorize?: false
+      )
+
+      Ash.create!(Paddock, %{name: "L99", capacity_head: 5}, action: :upsert, authorize?: false)
+    end)
+
+    {:ok, stored} = Ramal.get(branch.id)
+    assert {:ok, restored} = round_trip(stored)
+    assert restored.log == stored.log
+
+    assert Enum.map(restored.log, &elem(&1, 5)[:upsert]) == [
+             {:unique_name, [:capacity_head], false},
+             {:unique_name, [:capacity_head], true}
+           ]
+  end
+
   test "a branch with writes of every kind comes back equal", %{herds: herds, paddocks: paddocks} do
     {:ok, branch} = Ramal.branch(Farm, name: "mixed", metadata: %{ticket: 42, tags: ["a", :b]})
 

@@ -48,5 +48,5 @@ diff is what you expect, and that the database changed after the merge. Fork one
 - Write to the database inside a branch, or call `merge` from agent code.
 - Nest `Ramal.run/2`, or start a process other than a `Task` inside it without calling `Ramal.run/2` there.
 - Build a changeset or form outside `Ramal.run/2` and submit it inside (or the reverse): it fails with `:branch_mismatch`.
-- Use bulk actions, upserts or database-generated keys inside a branch; they are refused.
+- Use bulk actions or database-generated keys inside a branch; they are refused. Upserts work, except with an `upsert_condition`.
 - Treat `owner:` as authorization. It filters `Ramal.list/2`; anyone with an id can act on the branch.

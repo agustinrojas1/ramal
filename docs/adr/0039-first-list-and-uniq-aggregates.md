@@ -1,4 +1,4 @@
-# 0037. `first`, `list` and `uniq?` aggregates are computed over the branch
+# 0039. `first`, `list` and `uniq?` aggregates are computed over the branch
 
 Status: accepted, 2026-10-23. Amends [ADR 0029](0029-declared-aggregates-in-branches.md).
 

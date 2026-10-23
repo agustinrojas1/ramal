@@ -302,16 +302,19 @@ Ramal is deliberately small, and it says what it does not do:
 - **Every resource of the domain is covered or opts out.** `Ramal.branch/2` refuses a domain with a resource that has
   write actions and neither uses `Ramal.Resource` nor sets `branchable? false`; a resource that opts out is written for
   real, from a branch too. Only the branch's domain is checked: a resource of another domain works in the branch if it uses `Ramal.Resource`, and is written for real if it does not. Build a changeset in the same `Ramal.run/2` that runs it. A query prepared outside a branch and read inside it is patched.
-- **Bulk actions and upserts are refused** inside a branch, resources whose primary key the database generates cannot be
+- **Bulk actions are refused** inside a branch, resources whose primary key the database generates cannot be
   created in one (use UUIDs), and notifications are dropped unless a resource opts in with `notify_in_branch? true`.
-- **`authorize_results` checks do not run on rows the branch added.** A read action's policy filters do; the checks Ash runs on results after the read cannot see overlay rows.
+- **Upserts work, with two exceptions.** An upsert looks its row up in the branch's view, so it updates a base row, a row
+  the branch created, or creates one. An `upsert_condition` is refused (`:upsert_unsupported`), and `upsert?: true` given
+  only to `Ash.create/2` at call time cannot be seen and acts as a create: set it on the action or pass it to
+  `Ash.Changeset.for_create/4`.
 - **A branch works in one tenant,** given at `Ramal.branch/2`.
 - **Reads fetch candidate rows and patch them in memory.** That is cheap for the rows a session touches and wrong for an
   analytics table: Ramal is meant for OLTP-sized working sets.
 - **Merge is slower than a SQL statement,** because it replays each change through your action. That is the price of
   merging through your own rules.
 - **Writes since the last save are lost if the node crashes.** A branch is saved at the moments listed above, not on every write.
-- **A few many-to-many cases stay unsupported:** `type: :append_and_remove` with a link to remove is refused, and a paged relationship load or a `through` path of several hops sees the base links.
+- **A few many-to-many cases stay unsupported:** `type: :append_and_remove` with a link to remove is refused, and a `through` path of several hops sees the base rows of its intermediate resources.
 - **Authorization is yours.** Anyone who holds a branch id can act on it. Ramal records who decided and never checks.
 - **Pre-1.0.** The public API may change before 1.0; the changelog says when it does.
 
@@ -339,11 +342,11 @@ a herd to a different paddock, and merging one makes the others stale. The
 
 ## Benchmark
 
-[`bench/`](https://github.com/agustinrojas1/ramal/tree/main/bench) is a separate project that runs the same work against Ramal and two plain-Postgres baselines (one table copied per fork, one shared delta table) on 20,000 rows. In the run published in [`bench/README.md`](https://github.com/agustinrojas1/ramal/blob/main/bench/README.md), on one shared sandbox with the database on localhost:
+[`bench/`](https://github.com/agustinrojas1/ramal/tree/main/bench) is a separate project that runs the same work against Ramal and two plain-Postgres baselines (one table copied per fork, one shared delta table) on 20,000 rows. In the run of 2026-10-23 on Ramal 0.6.1 published in [`bench/README.md`](https://github.com/agustinrojas1/ramal/blob/main/bench/README.md), on one shared sandbox with the database on localhost (which moves by tens of percent between runs):
 
-- **Fork** takes 0.04 ms against 20 ms for a table copy, because a fork copies a map.
-- **A tree search** (20 forks, 100 updates, 20 scorings) takes 183 ms against 586 ms for table copies and 172 ms for the delta table.
-- **Where it loses:** reading 2,000 rows inside a branch takes about 10 ms against about 1 ms for raw SQL, and merging replays every change through your action at about 0.7 ms each, against one SQL statement for the baseline.
+- **Fork** takes 0.05 ms against 31 ms for a table copy with an empty overlay, and 2.7 ms against 29 ms with 1,000 changes, because a fork copies a map.
+- **A tree search** (20 forks, 100 updates, 20 scorings) takes 280 ms against 873 ms for table copies and 279 ms for the delta table.
+- **Where it loses:** reading 2,000 rows inside a branch takes 9 to 18 ms (about 10 ms through Ash with no branch) against about 2 ms for raw SQL, `Ramal.aggregate/4` costs 8 ms with 100 changes and 32 ms with 1,000, and merging replays every change through your action at about 0.4 ms each, against one SQL statement for the baseline.
 
 The figures are indicative. Run `mix bench` on your own hardware before drawing a conclusion; the file also says how it differs from the DAPLab study quoted above.
 
