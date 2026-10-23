@@ -39,6 +39,11 @@ defmodule Ramal.Preparation do
       with the `full_count` context key, both honoured in `lib/ash/actions/read/read.ex` (Ash 3.37). Offset and keyset
       pages, `count`, `more?` and the cursors are those of the patched list (ADR 0030). Without overlay entries for the
       resource, and for a paged relationship load, the database pages as before.
+    * `authorize_results` checks (the runtime half of a policy, which `Ash.Can` adds when `strict_check` cannot decide)
+      run in the read action of Ash on the data layer's rows, before any `after_action` hook, so they would never see a row
+      the branch created and would judge a row the branch changed or destroyed by the database's values. While the
+      overlay touches the resource the last `before_action` hook takes them off the query and the `after_action` hook
+      runs them on the patched rows, in Ash's order (ADR 0037).
     * A query prepared outside a branch and read inside one is bound when it runs (ADR 0028): it carries a
       `before_transaction` hook, which Ash's atomic bulk update check ignores, and that hook installs the read hooks.
 
@@ -56,8 +61,6 @@ defmodule Ramal.Preparation do
       A filter or sort on an aggregate is judged on the branch's numbers too: when the branch changed a resource on the
       aggregate's path the conjunct is evaluated in Elixir like a filter through a changed relationship (ADR 0032), and
       the aggregate is computed for the overlay's records, and for the rows a sort orders, before it is used;
-    * overlay records are added without running the action's `authorize_results` checks, though the query's filter,
-      including any policy filter, is applied to them;
     * `Ash.load/3` onto a record the branch changed reselects the relationship's source attribute (for example
       `paddock_id`) from the data layer, and that reselect runs none of the read hooks (`reselect_and_load/6` in
       `lib/ash/actions/read/read.ex`), so a foreign key the branch changed is not seen and the load follows the
@@ -141,7 +144,7 @@ defmodule Ramal.Preparation do
   defp before_transaction(query, id) do
     query
     |> Ash.Query.set_context(%{ramal: %{calculations: query.calculations}})
-    |> Ash.Query.before_action(&page(&1, id))
+    |> Ash.Query.before_action(&last_hook(&1, id))
   end
 
   defp what(query), do: "the #{query.action.name} query of #{inspect(query.resource)}"
@@ -279,7 +282,7 @@ defmodule Ramal.Preparation do
   # it (a query with no limit after the `paginate` step, which an unpaginated read that `Ramal.Preparation.Paged` could
   # not tell apart is): then the whole list is the result.
   defp after_data_layer(%{context: %{ramal: %{paged?: true} = ramal}} = query, results, _id) do
-    if query.limit == nil, do: {:ok, ramal.whole}, else: {:ok, results}
+    authorize(query, if(query.limit == nil, do: ramal.whole, else: results))
   end
 
   defp after_data_layer(query, results, id) do
@@ -292,11 +295,10 @@ defmodule Ramal.Preparation do
 
     with {:ok, patched} <- patch_rows(query, results, overlay?, patch_limit, patch_offset, id),
          {:ok, patched} <- Aggregates.apply(patched, query, id) do
-      if links do
-        {:ok, ManyToMany.expand(patched, links, offset, limit)}
-      else
-        {:ok, patched}
-      end
+      authorize(
+        query,
+        if(links, do: ManyToMany.expand(patched, links, offset, limit), else: patched)
+      )
     end
   end
 
@@ -318,6 +320,40 @@ defmodule Ramal.Preparation do
       )
 
       {:ok, patched}
+    end
+  end
+
+  defp last_hook(query, id) do
+    query |> defer_authorize_results() |> page(id)
+  end
+
+  # `authorize_results` hooks run on the data layer's rows, before the `after_action` hooks (`do_read/5` in
+  # `lib/ash/actions/read/read.ex`, Ash 3.37), so they would judge the base rows and never see a record the overlay
+  # adds. They are taken off the query here, once every `before_action` hook has run, and `authorize/2` runs them on
+  # the patched rows. Without overlay entries for the resource nothing moves and Ash runs them as usual.
+  defp defer_authorize_results(
+         %{authorize_results: [_ | _] = checks, context: %{ramal: %{overlay?: true}}} = query
+       ) do
+    query
+    |> Ash.Query.set_context(%{ramal: %{authorize_results: checks}})
+    |> Map.put(:authorize_results, [])
+  end
+
+  defp defer_authorize_results(query), do: query
+
+  # The loop of `run_authorize_results/2` in `lib/ash/actions/read/read.ex` (Ash 3.37), over the patched rows: the
+  # checks in list order, each given the rows the one before it returned.
+  defp authorize(query, results) do
+    case query.context.ramal[:authorize_results] do
+      [_ | _] = checks -> Enum.reduce_while(checks, {:ok, results}, &run_check(&1, &2, query))
+      _none -> {:ok, results}
+    end
+  end
+
+  defp run_check(check, {:ok, results}, query) do
+    case check.(query, results) do
+      {:ok, results} -> {:cont, {:ok, results}}
+      {:error, error} -> {:halt, {:error, error}}
     end
   end
 
@@ -359,9 +395,11 @@ defmodule Ramal.Preparation do
     ramal = query.context.ramal
     private = query.context[:private] || %{}
 
+    # The checks run on the page, once, when this hook's list is the result (`after_data_layer/3`).
     whole = %{
       Ash.Query.unset(query, [:page, :limit, :offset])
-      | load: [],
+      | context: update_in(query.context, [:ramal], &Map.delete(&1, :authorize_results)),
+        load: [],
         calculations: ramal.calculations,
         before_action: [],
         after_action: [&after_data_layer(&1, &2, id)],
