@@ -175,7 +175,7 @@ defmodule Ramal.Branch.Server do
   Records the fingerprints of base rows a read returned (`Ramal.Branch.put_fingerprints/2`). Rejected unless the
   branch is open.
   """
-  @spec fingerprints(String.t(), map) :: :ok | {:error, Error.t()}
+  @spec fingerprints(String.t(), Enumerable.t()) :: :ok | {:error, Error.t()}
   def fingerprints(id, fingerprints) do
     with {:ok, :ok, _} <-
            write(id, fn branch -> {:ok, Branch.put_fingerprints(branch, fingerprints)} end) do
