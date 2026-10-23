@@ -79,8 +79,9 @@ Done; released in 0.3.0.
 
 Done; released in 0.6.0.
 
-- `verification/`: a TLA+ model of the branch lifecycle checked with TLC, and Bend 2 proofs of the overlay and merge rules, both run by a CI workflow. It found three bugs, fixed with ADR 0033 and ADR 0035.
-- Not covered: the inspector, Postgres storage specifics, and the read paths of filters, sorts and relationships (tested by properties instead).
+- `verification/`: a TLA+ model of the branch lifecycle checked with TLC, and Bend 2 proofs of the overlay and merge rules, both run by a CI workflow. It found three bugs, fixed with ADR 0033 and ADR 0035. Later models cover nested forks, a branch in a cluster, durable branches and actions that write several rows.
+- Kept in step with the code by `verification/model_map.exs`, which `mix ci` reads: a changed function a model stands for, a new module no model has classified, or a workflow `paths` that leaves a modelled file out fails the build until the model is checked ([ADR 0050](adr/0050-models-tied-to-the-code-by-a-map.md)).
+- Not covered: the inspector, multitenancy, and the read paths of filters, sorts and relationships (tested by properties instead).
 
 ## 0.7 Remaining limits
 

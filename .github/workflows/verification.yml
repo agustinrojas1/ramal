@@ -1,13 +1,15 @@
 name: Verification
 
 # The formal models under verification/: the TLA+ models of the branch lifecycle and of a branch in a cluster, checked with TLC, and the Bend proofs
-# of the overlay and merge rules. Runs when they or the code they model change.
+# of the overlay and merge rules. Runs when they or the code they model change. The `paths` below are checked against
+# verification/model_map.exs by test/ramal/model_map_test.exs, so a file a model reads cannot be left out (ADR 0050).
 on:
   push:
     branches: [main]
   pull_request:
     paths:
       - "verification/**"
+      - "lib/ramal.ex"
       - "lib/ramal/overlay.ex"
       - "lib/ramal/branch.ex"
       - "lib/ramal/branch/server.ex"
@@ -15,7 +17,9 @@ on:
       - "lib/ramal/merge.ex"
       - "lib/ramal/cluster.ex"
       - "lib/ramal/storage.ex"
-      - "lib/ramal/storage/**"
+      - "lib/ramal/storage/ets.ex"
+      - "lib/ramal/storage/postgres.ex"
+      - "lib/ramal/supervisor.ex"
       - ".github/workflows/verification.yml"
 
 # Nothing in CI writes to the repository, so the token can only read it.
