@@ -8,8 +8,15 @@ defmodule Ramal.Prefilter do
   #
   # The contract is one-sided: `possible?/2` returns `false` only when the filter surely rejects the record, so a
   # record it lets through is still tested by the real runtime and nothing the runtime would match is ever dropped.
-  # Everything that is not understood evaluates to `:unknown`, which lets the record through: relationship paths,
+  # Everything that is not understood may evaluate to anything, which lets the record through: relationship paths,
   # calculations, aggregates, functions, a `nil` or unloaded value, and values of different kinds.
+  #
+  # A term evaluates to the set of values the runtime can give it (`true`, `false`, `nil`), kept as three bits. The
+  # runtime's `and`, `or` and `not` are not SQL's three-valued logic, and `nil` and `false` are told apart by `not`
+  # (`lib/ash/filter/runtime.ex`, `resolve_expr/5`): `nil and x` is `nil` and `false and x` is `false`; `true or x` is
+  # `true` and otherwise `or` is the right side, `nil` included; `not nil` is `nil`. Ruling out on "false or nil" alone
+  # (treating both as "no match") is unsound under `not`: `not (nil and false)` is `nil` in the runtime but would be
+  # `true` if the inner term were taken as `false`.
   #
   # Confirmed against Ash 3.37 (`lib/ash/query/operator/*.ex`, `lib/comparable/comp.ex`): `Eq`, `NotEq`, `LessThan`,
   # `GreaterThan`, `LessThanOrEqual`, `GreaterThanOrEqual` and `In` return `{:known, nil}` for a `nil` side and
@@ -17,6 +24,8 @@ defmodule Ramal.Prefilter do
   # `IsNil` is `is_nil(value) == right`. The comparisons here are limited to two binaries, two integers or two atoms,
   # which is where `Comp` is the plain operator; a decimal, a date, a case-insensitive string or a float goes to the
   # runtime. A `MapSet` for `in` is used only when every member is the same kind as the value.
+
+  import Bitwise
 
   alias Ash.Query.{BooleanExpression, Not, Ref}
 
@@ -39,6 +48,12 @@ defmodule Ramal.Prefilter do
     LessThanOrEqual => :<=,
     GreaterThanOrEqual => :>=
   }
+
+  # The values the runtime can give a term for a record, as a set of bits.
+  @yes 1
+  @no 2
+  @null 4
+  @anything 7
 
   @typedoc "What `compile/1` returns: plain data, so it can be sent to the branch process."
   @type t ::
@@ -129,21 +144,36 @@ defmodule Ramal.Prefilter do
       true
   """
   @spec possible?(t, map) :: boolean
-  def possible?(plan, record), do: evaluate(plan, record) != false
+  def possible?(plan, record), do: (evaluate(plan, record) &&& @yes) != 0
 
-  # `true` and `false` are exact answers; `:unknown` is "ask the runtime".
-  defp evaluate(nil, _record), do: true
-  defp evaluate(boolean, _record) when is_boolean(boolean), do: boolean
-  defp evaluate(:unknown, _record), do: :unknown
+  defp evaluate(nil, _record), do: @yes
+  defp evaluate(true, _record), do: @yes
+  defp evaluate(false, _record), do: @no
+  defp evaluate(:unknown, _record), do: @anything
 
-  defp evaluate({:and, plans}, record), do: all(plans, record)
-  defp evaluate({:or, plans}, record), do: any(plans, record)
+  # `and` is the left side unless that is `true`, then the right side. The right side is not evaluated when the left
+  # can only be `nil` or `false`.
+  defp evaluate({:and, [left, right]}, record) do
+    left = evaluate(left, record)
 
+    if (left &&& @yes) != 0,
+      do: (left &&& (@no ||| @null)) ||| evaluate(right, record),
+      else: left
+  end
+
+  # `or` is `true` when the left side is, otherwise the right side.
+  defp evaluate({:or, [left, right]}, record) do
+    left = evaluate(left, record)
+
+    if (left &&& (@no ||| @null)) != 0,
+      do: (left &&& @yes) ||| evaluate(right, record),
+      else: left
+  end
+
+  # `not` swaps `true` and `false` and keeps `nil`.
   defp evaluate({:not, plan}, record) do
-    case evaluate(plan, record) do
-      :unknown -> :unknown
-      boolean -> not boolean
-    end
+    value = evaluate(plan, record)
+    (value &&& @null) ||| (value &&& @yes) <<< 1 ||| (value &&& @no) >>> 1
   end
 
   defp evaluate({:compare, operator, field, literal}, record) do
@@ -158,47 +188,30 @@ defmodule Ramal.Prefilter do
         compare(operator, value, literal)
 
       _other ->
-        :unknown
+        @anything
     end
   end
 
   defp evaluate({:in, field, kind, members}, record) do
     value = Map.get(record, field)
 
-    if kind(value) == kind, do: MapSet.member?(members, value), else: :unknown
+    if kind(value) == kind, do: bit(MapSet.member?(members, value)), else: @anything
   end
 
   defp evaluate({:nil?, field, is_nil?}, record) do
     case Map.get(record, field) do
-      %struct{} when struct in [Ash.NotLoaded, Ash.ForbiddenField] -> :unknown
-      value -> is_nil(value) == is_nil?
+      %struct{} when struct in [Ash.NotLoaded, Ash.ForbiddenField] -> @anything
+      value -> bit(is_nil(value) == is_nil?)
     end
   end
 
-  defp compare(:==, left, right), do: left == right
-  defp compare(:!=, left, right), do: left != right
-  defp compare(:<, left, right), do: left < right
-  defp compare(:>, left, right), do: left > right
-  defp compare(:<=, left, right), do: left <= right
-  defp compare(:>=, left, right), do: left >= right
+  defp bit(true), do: @yes
+  defp bit(false), do: @no
 
-  defp all(plans, record) do
-    Enum.reduce_while(plans, true, fn plan, acc ->
-      case evaluate(plan, record) do
-        false -> {:halt, false}
-        true -> {:cont, acc}
-        :unknown -> {:cont, :unknown}
-      end
-    end)
-  end
-
-  defp any(plans, record) do
-    Enum.reduce_while(plans, false, fn plan, acc ->
-      case evaluate(plan, record) do
-        true -> {:halt, true}
-        false -> {:cont, acc}
-        :unknown -> {:cont, :unknown}
-      end
-    end)
-  end
+  defp compare(:==, left, right), do: bit(left == right)
+  defp compare(:!=, left, right), do: bit(left != right)
+  defp compare(:<, left, right), do: bit(left < right)
+  defp compare(:>, left, right), do: bit(left > right)
+  defp compare(:<=, left, right), do: bit(left <= right)
+  defp compare(:>=, left, right), do: bit(left >= right)
 end

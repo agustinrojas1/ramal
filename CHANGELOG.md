@@ -14,6 +14,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - `ramal_live`: a UUID in a diff (the row key and the before and after cells) no longer wraps in the middle of a group in the narrow column. It keeps to one line, cut short with an ellipsis, and the whole id is the tooltip.
 - `distinct` on a calculation inside a branch is applied over the branch's view, as 0.3.0 did for attributes: the base query is read without it and the patched rows are made distinct in memory with `Ash.Query.apply_to/3`, so a row the branch changed counts under its new value, a row it created gets its group, and a destroyed row no longer stands for one. A query that selects only some attributes, or a distinct on an aggregate, keeps the data layer's distinct and does not see the branch.
+- A read inside a branch could miss a row the branch created or changed when the filter nested `not` over `and`/`or` and the row had a `nil` attribute. The test that rules overlay records out of a filter before the real runtime sees them (ADR 0020) treated `nil` and `false` alike, but Ash's runtime does not: `not (nil and false)` is `nil` there, so `not (not (head == 0 and name in ["a"]) or (name in [""] and (head == 0 or name == "a")))` matches a row with `head: nil, name: ""` that the test dropped. It now tracks the values `true`, `false` and `nil` the runtime can give each term.
 
 ## [0.3.0] - 2026-10-23
 

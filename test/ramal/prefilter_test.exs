@@ -199,6 +199,43 @@ defmodule Ramal.PrefilterTest do
       end
     end
 
+    # Found by the property above (seed 61): Ash's runtime is not SQL's three-valued logic. `nil and false` is `nil`,
+    # so `not (nil and false)` is `nil` there, not `true`, and `false or nil` is `nil` where `nil or false` is `false`.
+    test "nil under not, and and or is told apart from false like the runtime does" do
+      head_is_0 = operator(Operator.Eq, :head, 0)
+      name_in_a = operator(Operator.In, :name, MapSet.new(["a"]))
+      name_in_blank = operator(Operator.In, :name, MapSet.new([""]))
+      name_is_a = operator(Operator.Eq, :name, "a")
+      record = herd(head: nil, name: "")
+
+      expression =
+        Not.new(
+          BooleanExpression.new(
+            :or,
+            Not.new(BooleanExpression.new(:and, head_is_0, name_in_a)),
+            BooleanExpression.new(
+              :and,
+              name_in_blank,
+              BooleanExpression.new(:or, head_is_0, name_is_a)
+            )
+          )
+        )
+
+      filter = %Ash.Filter{resource: Herd, expression: expression}
+
+      assert {:ok, [_matched]} = Runtime.filter_matches(Farm, [record], filter)
+      assert Prefilter.possible?(Prefilter.compile(filter), record)
+    end
+
+    test "a record whose filter is surely false is still ruled out when another term is unknown" do
+      # `head > 3 and name == "a"`: the unknown (calculation-like) side cannot make a false side true
+      plan = {:and, [:unknown, {:compare, :==, :name, "a"}]}
+
+      refute Prefilter.possible?(plan, herd(name: "b"))
+      assert Prefilter.possible?(plan, herd(name: "a"))
+      refute Prefilter.possible?({:or, [{:compare, :==, :name, "a"}, false]}, herd(name: "b"))
+    end
+
     property "does rule records out, so it is not vacuous" do
       check all(
               value <- integer(-3..4),
