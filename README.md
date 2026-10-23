@@ -8,7 +8,7 @@
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ramal.svg)](https://hex.pm/packages/ramal) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal-blue.svg)](https://hexdocs.pm/ramal) [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fagustinrojas1%2Framal%2Fmain%2Fdemo%2Framal_tour.livemd)
 
-> **Status: 0.8, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, reads that agree with the branch (pages, aggregates, calculations), bulk actions and upserts, one tenant per branch, nested, durable and clustered branches, the LiveView inspector and the tools for AI agents work and are tested on Postgres. The branch lifecycle is [model-checked and its data rules are proved](#formally-verified). What is stable before 1.0 is on the [stability page](https://github.com/agustinrojas1/ramal/blob/main/docs/STABILITY.md).
+> **Status: 0.9, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, reads that agree with the branch (pages, aggregates, calculations), bulk actions and upserts, one tenant per branch, nested, durable and clustered branches, the LiveView inspector and the tools for AI agents work and are tested on Postgres. The branch lifecycle is [model-checked and its data rules are proved](#formally-verified). What is stable before 1.0 is on the [stability page](https://github.com/agustinrojas1/ramal/blob/main/docs/STABILITY.md).
 
 ## What it does
 
@@ -120,7 +120,7 @@ Ramal is on [Hex](https://hex.pm/packages/ramal), with docs on [HexDocs](https:/
 
 ```elixir
 def deps do
-  [{:ramal, "~> 0.8.0"}]
+  [{:ramal, "~> 0.9.0"}]
 end
 ```
 
