@@ -84,10 +84,10 @@ A taste of the output (colours omitted):
 
 `ramal_live` is a LiveView page that shows branches as columns, each with its diff, and buttons to fork, merge and discard.
 The farm demo for it opens four branches that each move R7 to a different paddock, and merging one makes the others stale.
-It reuses the Postgres container above:
+It finds the Postgres container above by itself (it tries port 5436, then 5435) and uses its own `ramal_dev` database:
 
 ```sh
-RAMAL_PG_PORT=5436 elixir ramal_live/examples/farm_demo.exs
+elixir ramal_live/examples/farm_demo.exs
 ```
 
 Open <http://localhost:4000> and press "Explore 4 alternatives". The first run compiles Phoenix on top of the dependencies

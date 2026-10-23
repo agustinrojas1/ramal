@@ -54,6 +54,19 @@ Ramal.run!(branch, fn ->
 end)
 ```
 
+## Try it
+
+A guided walkthrough runs on your machine in a few minutes: it opens branches of a small farm in Postgres, diffs and forks
+them, merges one, gets a stale one refused, and shows a merge that fails halfway and leaves the database untouched. It
+needs Elixir 1.18+ and Docker.
+
+```sh
+docker compose -f demo/docker-compose.yml up -d
+elixir demo/walkthrough.exs
+```
+
+See [`demo/`](https://github.com/agustinrojas1/ramal/tree/main/demo) for what each chapter shows, and for the browser view.
+
 ## Why
 
 Agents, planners and people who evaluate what-if scenarios need many cheap alternate states of the same data. Transactions give you one per connection and nothing that survives a request. Branching databases trade one need for the other: in a [2026 study from Columbia's DAPLab](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html), Neon ran into its cap on active branches, and Dolt created branches cheaply but read and joined slowly inside them. The authors conclude that agents "need databases that can support thousands of cheap alternate realities without giving up normal query performance", and add: "That system does not exist yet."

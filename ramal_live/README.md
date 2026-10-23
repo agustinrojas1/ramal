@@ -2,6 +2,7 @@
 
 A LiveView inspector for [Ramal](https://github.com/agustinrojas1/ramal) branches.
 
+<!-- Absolute URLs, because Hex and HexDocs cannot resolve relative paths. They return 404 while the repository is private. -->
 ![The inspector with four open branches, each moving herd R7 to a different paddock, shown as columns of before and after rows](https://raw.githubusercontent.com/agustinrojas1/ramal/main/assets/inspector.png)
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ramal_live.svg)](https://hex.pm/packages/ramal_live) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal__live-blue.svg)](https://hexdocs.pm/ramal_live)
@@ -63,13 +64,13 @@ For a development tool with no users, return a constant (`def actor(_socket), do
 
 ## Try it
 
-A runnable demo, the one the screenshot above and the animation below come from, lives in `examples/farm_demo.exs`. It is a single file that installs its own
+The [guided walkthrough in `demo/`](https://github.com/agustinrojas1/ramal/tree/main/demo) runs Ramal itself from a terminal and shares this demo's Postgres. A runnable demo of the inspector, the one the screenshot above and the animation below come from, lives in `examples/farm_demo.exs`. It is a single file that installs its own
 dependencies with `Mix.install` (so the first start compiles for a few minutes), runs a [Phoenix
 Playground](https://github.com/phoenixframework/phoenix_playground) app on a seeded farm in Postgres, and mounts the
 inspector with the `ramal_inspector` line above.
 
 ```bash
-docker compose up -d db                 # from the repository root: Postgres on port 5435
+docker compose -f demo/docker-compose.yml up -d    # from the repository root: Postgres on port 5436 (5435 from `docker compose up -d db` works too)
 elixir ramal_live/examples/farm_demo.exs
 ```
 

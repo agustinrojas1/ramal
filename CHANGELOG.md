@@ -15,6 +15,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- `ramal_live/examples/farm_demo.exs` finds Postgres on port 5436 (the `demo/` compose file) or 5435 by itself, and prints one line and exits when none answers instead of a Postgrex stack trace. The READMEs link to `demo/`.
 - The READMEs show a screenshot of the inspector running the farm demo, and the `ramal_live` README an animation of the columns filling in (`assets/inspector.png`, `assets/inspector.gif`), instead of saying there is none.
 - The install snippets in the READMEs and the `RamalLive` module doc point at Hex (`{:ramal, "~> 0.2.0"}`, `{:ramal_live, "~> 0.2.0"}`), with Hex and HexDocs badges.
 

@@ -240,4 +240,4 @@ chapter "Where the farm ended up" do
 end
 
 IO.puts(IO.ANSI.format([:bright, :green, "\nThat is the whole loop: branch, change, diff, fork, merge or discard.", :reset]))
-IO.puts("To watch branches as columns in a browser, run: elixir ramal_live/examples/farm_demo.exs (see demo/README.md).\n")
+IO.puts("To watch branches as columns in a browser, run this from the repository root, then open http://localhost:4000:\n  elixir ramal_live/examples/farm_demo.exs\n")
