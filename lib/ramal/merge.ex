@@ -40,6 +40,24 @@ defmodule Ramal.Merge do
   resources in `details.not_rolled_back`. `Ash.transact/3` runs the function as it is for such a data layer and returns
   its `{:error, _}` inside `{:ok, _}`, which the merge unwraps.
 
+  ## Nested forks
+
+  A branch made with `Ramal.fork(parent, nested: true)` merges into its parent instead of the database (ADR 0039). The
+  steps differ, and nothing reaches the database:
+
+    1. The fork is claimed as above.
+    2. The parent is copied with its `version` (`Server.merge_source/1`), after the actions running in it have ended.
+       A parent that is not open, or is being merged, refuses it: `:parent_not_open`.
+    3. Every row the fork read or wrote is compared with what the parent held when the fork first saw it
+       (`Ramal.Branch.stale_against/2`). `on_stale` decides what happens, as for the database.
+    4. The entries the fork wrote itself, not the ones it inherited, are replayed oldest first through the real actions in
+       a scratch copy of the parent (`Server.start_scratch/2`), so validations and policies see the parent's view and a
+       failed replay leaves the parent as it was.
+    5. The parent takes the scratch's overlay, log and base in one call, and persists, if its `version` is the one copied
+       (`Server.adopt/4`); otherwise steps 2 to 5 run once more, and then the merge is refused as `:stale`. The parent
+       remembers the fork's id, so that a fork whose own `:merged` status was lost (a crash after the parent persisted) is
+       found merged and not merged twice.
+
   Known limits, documented in `docs/adr/0007-merge.md`: a branch works in one tenant (ADR 0034) and the staleness check reads with it, a top-level action
   that targets a row created by a hook cannot be replayed, and changes made with `Ash.Changeset.change_attribute/3`
   outside the action's own inputs are not in the log.
@@ -50,8 +68,8 @@ defmodule Ramal.Merge do
   """
 
   alias Ash.Resource.Info
+  alias Ramal.{Branch, Current, Error, Overlay, Resource, Supervisor, Telemetry}
   alias Ramal.Branch.Server
-  alias Ramal.{Current, Error, Overlay, Resource, Supervisor, Telemetry}
   alias Ramal.Merge.Result
 
   @lock :for_update
@@ -175,6 +193,11 @@ defmodule Ramal.Merge do
       {:ok, result} ->
         {:ok, result, unmark(branch, config, :committed)}
 
+      # A fork the parent already holds the work of: its own `:merged` status was lost, so it is stored now.
+      {:error, %Error{reason: :not_open, details: %{status: :merged, parent: _}}} = error ->
+        Server.finish_merge(id, :merged)
+        error
+
       {:error, %Error{reason: :not_open, details: %{status: :merged}}} = error ->
         unmark(branch, config, :committed)
         Server.finish_merge(id, :stored)
@@ -219,6 +242,9 @@ defmodule Ramal.Merge do
   defp marks?(storage) do
     Code.ensure_loaded?(storage) and function_exported?(storage, :mark_merged, 2)
   end
+
+  defp merge(%Branch{parent: %{}} = branch, opts, config),
+    do: merge_nested(branch, opts, config, 1)
 
   defp merge(branch, opts, config) do
     entries = branch.log |> Enum.reverse() |> Enum.with_index()
@@ -268,19 +294,18 @@ defmodule Ramal.Merge do
   defp check_staleness(branch, opts) do
     {rows, fetched} = stale_rows(branch)
 
-    case {rows, Keyword.get(opts, :on_stale, :error)} do
-      {[], _} ->
-        {:ok, [], fetched}
-
-      {_, :ignore} ->
-        {:ok, rows, fetched}
-
-      {_, :error} ->
-        {:error, stale_error(rows)}
-
-      {_, fun} ->
-        if fun.(rows) == :continue, do: {:ok, rows, fetched}, else: {:error, stale_error(rows)}
+    with :ok <- resolve_stale(rows, Keyword.get(opts, :on_stale, :error), "the base") do
+      {:ok, rows, fetched}
     end
+  end
+
+  # What `on_stale` says to do with rows that changed under the branch.
+  defp resolve_stale([], _on_stale, _where), do: :ok
+  defp resolve_stale(_rows, :ignore, _where), do: :ok
+  defp resolve_stale(rows, :error, where), do: {:error, stale_error(rows, where)}
+
+  defp resolve_stale(rows, fun, where) do
+    if fun.(rows) == :continue, do: :ok, else: {:error, stale_error(rows, where)}
   end
 
   # The stale rows, and the rows as the transaction read them (by `{resource, key}`), which the replay reuses.
@@ -357,13 +382,126 @@ defmodule Ramal.Merge do
     end
   end
 
-  defp stale_error(rows) do
+  defp stale_error(rows, where) do
     Error.new(
       :stale,
-      "#{length(rows)} row(s) changed in the base since the branch first saw them: " <>
+      "#{length(rows)} row(s) changed in #{where} since the branch first saw them: " <>
         Enum.map_join(rows, ", ", &"#{inspect(&1.resource)} #{inspect(&1.key)} (#{&1.reason})") <>
         "; pass `on_stale: :ignore` to merge anyway",
       %{rows: rows}
+    )
+  end
+
+  # -- nested forks -------------------------------------------------------------------------------------------------
+
+  # ADR 0039. The fork's own entries are replayed in a copy of the parent, and the parent takes the copy if it did not
+  # change in the meantime. One retry, because a write to the parent during a replay is ordinary; two in a row is not.
+  defp merge_nested(branch, opts, config, attempt) do
+    parent_id = branch.parent.id
+
+    with {:ok, parent, version} <- merge_source(parent_id, branch),
+         :ok <- not_adopted(parent, branch),
+         stale = Branch.stale_against(branch, parent),
+         :ok <-
+           resolve_stale(
+             stale,
+             Keyword.get(opts, :on_stale, :error),
+             "parent branch #{inspect(parent_id)}"
+           ),
+         {:ok, scratch, records, replayed} <- replay_in_scratch(branch, parent, opts, config) do
+      case Server.adopt(parent_id, scratch, branch, version) do
+        :ok ->
+          {:ok,
+           %Result{
+             branch: %{branch | status: :merged},
+             records: records,
+             replayed: replayed,
+             stale: stale
+           }}
+
+        {:error, :moved} when attempt == 1 ->
+          merge_nested(branch, opts, config, 2)
+
+        {:error, :moved} ->
+          {:error, moved_error(branch, parent_id)}
+
+        {:error, %Error{reason: :not_open, details: %{status: :merged}} = error} ->
+          {:error, error}
+
+        {:error, %Error{reason: :not_open} = error} ->
+          {:error, parent_not_open(branch, parent_id, error)}
+
+        {:error, _} = error ->
+          error
+      end
+    end
+  end
+
+  defp merge_source(parent_id, branch) do
+    case Server.merge_source(parent_id) do
+      {:ok, parent, version} ->
+        {:ok, parent, version}
+
+      {:error, %Error{reason: :not_open} = error} ->
+        {:error, parent_not_open(branch, parent_id, error)}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  # A fork whose id the parent holds merged into it already. Its own status is stored as merged by the caller.
+  defp not_adopted(parent, branch) do
+    if branch.id in parent.merged_children do
+      {:error,
+       Error.new(
+         :not_open,
+         "branch #{inspect(branch.id)} already merged into branch #{inspect(parent.id)}",
+         %{id: branch.id, status: :merged, parent: parent.id}
+       )}
+    else
+      :ok
+    end
+  end
+
+  # The writes land in a copy of the parent that is never stored. Whatever happens, the copy is stopped.
+  defp replay_in_scratch(branch, parent, opts, config) do
+    scratch = Branch.scratch(parent)
+
+    with {:ok, _pid} <- Server.start_scratch(scratch, config) do
+      try do
+        replay_into(scratch.id, Branch.own_entries(branch), opts)
+      after
+        Server.stop_scratch(scratch.id)
+      end
+    end
+  end
+
+  defp replay_into(id, entries, opts) do
+    with {:ok, replayed} <- Ramal.run(id, fn -> replay(entries, %{}, opts) end),
+         {:ok, records, count} <- replayed,
+         {:ok, scratch} <- Server.get(id) do
+      {:ok, scratch, records, count}
+    end
+  end
+
+  defp parent_not_open(branch, parent_id, %Error{details: details}) do
+    status = Map.get(details, :status)
+
+    Error.new(
+      :parent_not_open,
+      "branch #{inspect(branch.id)} merges into branch #{inspect(parent_id)}, which is #{status}, not open; " <>
+        "discard the fork",
+      %{id: branch.id, parent: parent_id, status: status}
+    )
+  end
+
+  defp moved_error(branch, parent_id) do
+    Error.new(
+      :stale,
+      "parent branch #{inspect(parent_id)} was written to again while branch #{inspect(branch.id)} was merged into it; " <>
+        "merge again",
+      %{rows: [], parent: parent_id}
     )
   end
 

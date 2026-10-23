@@ -69,9 +69,9 @@ defmodule Ramal do
   @doc """
   Runs `fun` with the branch as the current branch of the calling process and returns `{:ok, result}`.
 
-  The previous state is restored when `fun` returns and also when it raises, throws or exits. Branches do not nest:
-  calling `run/2` inside another `run/2` returns `{:error, %Ramal.Error{reason: :nested_branch}}` without running
-  `fun`. Tasks started inside `fun` do not inherit the branch; call `run/2` inside the task with the same branch.
+  The previous state is restored when `fun` returns and also when it raises, throws or exits. `run/2` does not nest:
+  calling it inside another `run/2` returns `{:error, %Ramal.Error{reason: :nested_branch}}` without running `fun`. A
+  branch of a branch is a nested fork (`fork/2` with `nested: true`), and it is run on its own, not inside its parent. Tasks started inside `fun` do not inherit the branch; call `run/2` inside the task with the same branch.
 
   Returns `:not_found` for an unknown id and `:not_open` for a merged or discarded branch.
 
@@ -91,7 +91,7 @@ defmodule Ramal do
       {:error,
        Error.new(
          :nested_branch,
-         "Ramal.run/2 was called inside branch #{inspect(current)}; branches do not nest in 0.1",
+         "Ramal.run/2 was called inside branch #{inspect(current)}; use a nested fork (`Ramal.fork/2` with `nested: true`) for a branch of a branch",
          %{current: current, requested: id}
        )}
     else
@@ -260,11 +260,20 @@ defmodule Ramal do
   same writes again (`:not_open`, ADR 0007). The writes of actions still running in the parent are left out of the
   fork, because those actions may yet fail (ADR 0033).
 
+  A plain fork is a sibling: merging it replays its whole log, including what it inherited, into the database. A
+  nested fork (`nested: true`, ADR 0039) is a branch of the branch: `merge/2` replays only what it wrote itself into the
+  parent, through the real actions, and the parent merges to the database later, as one branch. The fork records what
+  it saw of the parent's rows, and the merge is refused as `:stale` when the parent holds one of them differently now
+  (`on_stale` applies as for the database). The parent can be forked this way again and again, and a nested fork can
+  have nested forks of its own. A fork merges into its parent once, and not at all into a parent that is no longer open
+  (`:parent_not_open`): when the parent was merged to the database or discarded, discard its forks.
+
   ## Options
 
     * `:name` - default: the parent's name
     * `:metadata` - default: the parent's metadata
     * `:owner` - default: the parent's owner
+    * `:nested` - make the fork a branch of the parent that merges into it, default `false`
 
   ## Example
 
@@ -272,6 +281,11 @@ defmodule Ramal do
       {:ok, fork} = Ramal.fork(branch, name: "variant")
       fork.metadata.forked_from == branch.id
       #=> true
+
+      {:ok, child} = Ramal.fork(branch, nested: true)
+      Ramal.run!(child, fn -> Ash.update!(herd, %{head: 31}, authorize?: false) end)
+      {:ok, %Ramal.Merge.Result{replayed: 1}} = Ramal.merge(child, authorize?: false)
+      # The change is in `branch` now, and still not in the database.
   """
   @spec fork(branch_or_id, keyword) :: {:ok, Branch.t()} | {:error, Error.t()}
   def fork(branch_or_id, opts \\ []) do
@@ -281,7 +295,7 @@ defmodule Ramal do
          fork = Branch.fork(parent, opts),
          :ok <- config.storage.put(fork, config.storage_config),
          {:ok, _pid} <- Server.start_forked(fork, config) do
-      Telemetry.branch(:fork, fork, %{parent_id: parent.id})
+      Telemetry.branch(:fork, fork, %{parent_id: parent.id, nested: opts[:nested] == true})
       {:ok, fork}
     end
   end
@@ -292,6 +306,12 @@ defmodule Ramal do
   Never queries the database: updated and deleted rows are compared with the copy the branch kept when it first wrote
   them. A row the branch changed and then changed back is left out. A fork's diff includes what it inherited.
 
+  ## Options
+
+    * `:against` - `:parent`, for a nested fork: only the rows the fork wrote itself, compared with what its parent holds
+      now (`Ramal.Branch.diff_against/3`), which is what merging it would change in the parent. A branch that is not a
+      nested fork returns `:no_parent`. Default: the database
+
   ## Example
 
       {:ok, [change]} = Ramal.diff(branch)
@@ -300,9 +320,31 @@ defmodule Ramal do
       change.changes
       #=> %{head: {30, 31}}
   """
-  @spec diff(branch_or_id) :: {:ok, [Ramal.Change.t()]} | {:error, Error.t()}
-  def diff(branch_or_id) do
-    branch_or_id |> id_of() |> Server.diff(attributes: &Resource.attributes/1)
+  @spec diff(branch_or_id, keyword) :: {:ok, [Ramal.Change.t()]} | {:error, Error.t()}
+  def diff(branch_or_id, opts \\ []) do
+    id = id_of(branch_or_id)
+
+    case Keyword.get(opts, :against) do
+      nil -> Server.diff(id, attributes: &Resource.attributes/1)
+      :parent -> diff_against_parent(id)
+    end
+  end
+
+  defp diff_against_parent(id) do
+    with {:ok, child} <- Server.get(id),
+         {:ok, parent} <- parent_of(child),
+         do: Branch.diff_against(child, parent, attributes: &Resource.attributes/1)
+  end
+
+  defp parent_of(%Branch{parent: %{id: parent_id}}), do: Server.get(parent_id)
+
+  defp parent_of(%Branch{id: id}) do
+    {:error,
+     Error.new(
+       :no_parent,
+       "branch #{inspect(id)} is not a nested fork, so it has no parent to diff against",
+       %{id: id}
+     )}
   end
 
   @doc """
@@ -503,6 +545,9 @@ defmodule Ramal do
   merge is refused unless `on_stale` allows it. Then the log is replayed oldest first with real validations and
   policies. If anything fails, nothing is written and the branch stays open. On success the branch is `:merged`, its
   process stops, and the result holds what the replay wrote. See `Ramal.Merge` for the details and the limits.
+
+  A nested fork (`fork/2` with `nested: true`) merges into its parent branch instead: the entries it wrote itself are
+  replayed there, and the database is not touched until the parent is merged.
 
   ## Options
 

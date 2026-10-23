@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runs every check under verification/: the Bend proofs, then TLC on the TLA+ model. Each regression config must fail
+# Runs every check under verification/: the Bend proofs, then TLC on the TLA+ models. Each regression config must fail
 # on the property it names, which shows the model still sees the bug its fix closed.
 #
 #   verification/check.sh            # both; needs java and bend, see README.md
@@ -32,8 +32,9 @@ grep -E "^[0-9,]+ states generated|No error has been found" tlc.out
 expect() {
   config=$1
   property=$2
+  module=${3:-MCRamal}
   echo "== TLC: $config (must violate $property)"
-  if $tlc -config "$config" MCRamal.tla > tlc.out 2>&1; then
+  if $tlc -config "$config" "$module.tla" > tlc.out 2>&1; then
     echo "expected $property to be violated, but every property held"
     exit 1
   fi
@@ -46,5 +47,13 @@ expect bug-overlay.cfg OverlayMatchesLog
 expect bug-marker.cfg OneMerger
 expect bug-mark-node-crash.cfg NoClaimAfterCommit
 expect bug-mark-merger-crash.cfg NoClaimAfterCommit
+
+echo "== TLC: MCNested.cfg (a nested fork merging into its parent; every property holds)"
+$tlc -config MCNested.cfg MCNested.tla > tlc.out 2>&1 || { tail -60 tlc.out; exit 1; }
+grep -E "^[0-9,]+ states generated|No error has been found" tlc.out
+
+expect bug-adopt-unversioned.cfg NoLostParentWrite MCNested
+expect bug-no-merged-children.cfg NoDoubleNestedMerge MCNested
+expect bug-no-reconcile.cfg ParentGetsChildWritesOnce MCNested
 rm -f tlc.out
 echo "== all checks passed"

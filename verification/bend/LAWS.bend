@@ -45,6 +45,17 @@ law branch_reads_replay:
   for +base: Maybe<&2, Nat>
   {M.view(base, M.branch(ops, base, M.Absent{})) == M.run(ops, base) : Maybe<&2, Nat>}
 
+# A nested merge replays a fork's own actions in a copy of its parent, so the
+# overlay entry the replay starts from is the parent's, any honest one. The copy
+# then shows what the actions do to what the parent showed.
+# branch_reads_replay is the case of a parent with no entry.
+law branch_reads_run:
+  for ops: List<&2, M.Op>
+  for +base: Maybe<&2, Nat>
+  for +s: M.Slot
+  for h: M.Honest(base, s)
+  {M.view(base, M.branch(ops, base, s)) == M.run(ops, M.view(base, s)) : Maybe<&2, Nat>}
+
 # Keys
 # ----
 
