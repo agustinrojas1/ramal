@@ -6,7 +6,9 @@ Ecto.Adapters.SQL.Sandbox.mode(Ramal.TestRepo, :manual)
 cluster? = Ramal.ClusterNodes.available?()
 
 if not cluster? and System.get_env("CI") do
-  raise "this VM cannot run distributed (is epmd available?), so the cluster tests cannot run"
+  raise "CI is set, so the cluster tests (test/ramal/cluster_nodes_test.exs) must run, but this VM cannot run " <>
+          "distributed: #{Ramal.ClusterNodes.unavailable_reason()}. Install Erlang with epmd (setup-beam does), " <>
+          "or unset CI to skip them."
 end
 
 ExUnit.start(exclude: if(cluster?, do: [], else: [:cluster]))

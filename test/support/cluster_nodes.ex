@@ -25,11 +25,25 @@ defmodule Ramal.ClusterNodes do
 
   # `epmd` is in the PATH where Erlang is installed by a package manager, and in erts's own bin where it is not.
   defp start_epmd do
-    erts_bin = Path.join([:code.root_dir(), "erts-#{:erlang.system_info(:version)}", "bin"])
-
-    case System.find_executable("epmd") || System.find_executable("epmd", erts_bin) do
+    case epmd() do
       nil -> :ok
       epmd -> System.cmd(epmd, ["-daemon"], stderr_to_stdout: true)
+    end
+  end
+
+  @doc "The path of the `epmd` executable this VM can start, or `nil`: erts's own bin first, then the PATH."
+  def epmd do
+    erts_epmd =
+      Path.join([:code.root_dir(), "erts-#{:erlang.system_info(:version)}", "bin", "epmd"])
+
+    if File.regular?(erts_epmd), do: erts_epmd, else: System.find_executable("epmd")
+  end
+
+  @doc "Why `available?/0` is false, for the message of a CI run that cannot skip the cluster tests."
+  def unavailable_reason do
+    case epmd() do
+      nil -> "epmd was not found in erts's bin directory or in the PATH"
+      epmd -> "epmd was found at #{epmd}, but Node.start/2 did not start a distributed node"
     end
   end
 
