@@ -49,6 +49,7 @@ defmodule Ramal.Storage.CodecTest do
              {:unique_name, [:capacity_head], false},
              {:unique_name, [:capacity_head], true}
            ]
+  end
 
   test "a nested fork comes back with its parent, what it saw and the forks merged into it", %{
     herds: herds

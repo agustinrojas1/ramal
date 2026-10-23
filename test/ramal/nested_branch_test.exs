@@ -289,6 +289,45 @@ defmodule Ramal.NestedBranchTest do
       assert {:ok, %{status: :merged}} = Ramal.get(child.id)
     end
 
+    test "an upsert in the fork is replayed in the parent as an upsert", %{
+      parent: parent,
+      child: child,
+      paddocks: paddocks
+    } do
+      upsert = fn name, capacity ->
+        Ash.create!(Paddock, %{name: name, capacity_head: capacity},
+          action: :upsert,
+          authorize?: false
+        )
+      end
+
+      inside(child, fn ->
+        upsert.(paddocks.l07.name, 120)
+        upsert.("L99", 5)
+      end)
+
+      assert {:ok, %{replayed: 2}} = merge(child)
+
+      capacities =
+        inside(parent, fn ->
+          Paddock |> Ash.read!(authorize?: false) |> Map.new(&{&1.name, &1.capacity_head})
+        end)
+
+      assert %{"L07" => 120, "L99" => 5} = capacities
+
+      assert Paddock
+             |> Ash.read!(authorize?: false)
+             |> Enum.find(&(&1.name == "L07"))
+             |> Map.fetch!(:capacity_head) == 100
+
+      assert {:ok, %{replayed: 2}} = merge(parent)
+
+      assert Paddock
+             |> Ash.read!(authorize?: false)
+             |> Enum.find(&(&1.name == "L07"))
+             |> Map.fetch!(:capacity_head) == 120
+    end
+
     test "approve of a proposed fork merges it into the parent", %{
       parent: parent,
       child: child,
