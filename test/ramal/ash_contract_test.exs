@@ -5,8 +5,7 @@ defmodule Ramal.AshContractTest do
   #
   # A failure means Ash changed a behaviour that Ramal relies on: look at the Ramal code named in the comment above the
   # test before a wrong row is written. Some assumptions are the other way round, and a failure there means a Ramal
-  # workaround may no longer be needed (the ones named "reselects" and "refuses"). Assumptions that turned out false
-  # on Ash 3.37 are tagged :skip and say what Ash does instead.
+  # workaround may no longer be needed (the ones named "reselects" and "refuses").
   use Ramal.DataCase, async: false
 
   @moduletag :ash_contract
@@ -303,39 +302,6 @@ defmodule Ramal.AshContractTest do
 
     assert Exception.message(error) =~
              "cannot atomically update a query if it has `before_action` hooks"
-  end
-
-  # Ramal: lib/ramal/preparation.ex prepare/3 and bind_late/1 (the before_transaction hook that installs the read hooks). Ash: deps/ash/lib/ash/actions/update/bulk.ex (no run_before_transaction_hooks call on the bulk path).
-  # FALSE on Ash 3.37, measured: with strategy [:atomic] or [:atomic, :stream] the bulk update runs as one statement and
-  # never runs the query's before_transaction hook, so the before_action it would add never runs either. Only the
-  # :stream strategy runs both (see the next test). Ramal's safety on that path rests on Ramal.Capture.atomic/3 refusing
-  # the atomic path while a branch is current, not on this hook.
-  @tag :skip
-  test "assumption: a before_transaction hook of a query runs before the atomic check of a bulk update, and a before_action it adds is then refused" do
-    pasture = pasture!("transaction hook")
-
-    query =
-      Pasture
-      |> Ash.Query.filter(id == ^pasture.id)
-      |> Ash.Query.before_transaction(fn query ->
-        Report.tell(:before_transaction_ran)
-
-        Ash.Query.before_action(query, fn query ->
-          Report.tell(:installed_before_action_ran)
-          query
-        end)
-      end)
-
-    result =
-      Ash.bulk_update(query, :update, %{name: "renamed"},
-        strategy: [:atomic],
-        authorize?: false,
-        return_errors?: true
-      )
-
-    assert_received :before_transaction_ran
-    assert result.status == :error
-    refute_received :installed_before_action_ran
   end
 
   # Ramal: lib/ramal/preparation.ex prepare/3 and bind_late/1 (a query prepared outside a branch installs its hooks when run). Ash: deps/ash/lib/ash/actions/read/read.ex run_before_transaction_hooks/1 (reached through the stream read).
