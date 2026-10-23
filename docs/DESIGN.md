@@ -73,7 +73,7 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
   snapshot (`put/2` of the branch without running actions' writes, which deletes the deltas up to its `wal`) after 100
   appends, after a load that applied deltas, on unload and on shutdown. A load is the snapshot with the deltas after
   its `wal` applied in `seq` order, the order the actions ended in. A `seq` is never reused: an append that errors may
-  have been stored, so the process gives it up and compacts at once. A nested fork of a durable parent is durable; `adopt/4` stores the parent whole, which is a snapshot covering its log. In a cluster the append and the read of the log are fenced by the epoch like `put/2` (ADR 0044): a refused append fails the action with `:fenced` and stops the process, and a load reads the log after its claim.
+  have been stored, so the process gives it up and compacts at once. A nested fork of a durable parent is durable; `adopt/4` stores the parent whole, which is a snapshot covering its log. In a cluster the append and the read of the log are fenced by the epoch like `put/2` (ADR 0044): a refused append fails the action with `:fenced` and stops the process, and a load reads the log after its claim. The fingerprints of rows the branch read and did not write since the last snapshot are not in any delta, so after a crash the merge cannot tell that such a row changed in the database; every row an action wrote keeps its fingerprint (ADR 0048, consequences).
 - Running actions: a captured write belongs to its action until the action ends. The server keeps its undo under the
   writer's pid and monitors it; a merge or a proposal waits for running actions, a fork leaves their writes out, another
   process's write to the same row is refused (`:row_busy`), and a writer that dies is undone (ADR 0033). `Ramal.branch/2`, `run/2`, `fork/1`, `diff/1`, `merge/2` and `discard/1` all accept a branch id and
@@ -344,6 +344,8 @@ This is the section that decides correctness. In a read action's preparation, wh
 `:multitenancy_unsupported`, `:tenant_mismatch`, `:partial_record`, `:branch_mismatch`, `:task_in_action`,
 `:unbranchable_resources`, `:row_busy`, `:limit_reached`. `lib/ramal/error.ex` holds the authoritative table.
 
+`Ramal.Ash` (public) is Ramal's contract with Ash: the Ash and AshPostgres versions the suite passes on, and the Ash internals Ramal relies on, so that a change in Ash has one place to look. `Ramal.Supervisor` compares the host's versions with it at boot and warns when they are outside the range. It never refuses to start.
+
 ### 5.1 Agent tools (ADR 0019)
 
 `Ramal.Tools` gives an LLM agent the branch calls as tools, with no dependency on an AI library:
@@ -381,9 +383,18 @@ backend reads `:repo` from it). Two implementations:
 A cluster (`Ramal.Supervisor` `cluster: true`, ADR 0044) names branch processes with `:global` (Ramal.Cluster, the `:via`
 module and the resolver that keeps the process with the higher epoch) and needs the optional `claim(id, config)`: it
 increments the branch's `epoch` and returns the stored branch carrying it. `put` and `mark_merged` of a branch that has an
-epoch are conditional on it and return `:fenced` otherwise; the process then emits `[:ramal, :branch, :fenced]` and stops.
+epoch are conditional on it and return `:fenced` otherwise; the process then emits `[:ramal, :branch, :fenced]` and stops. What that process held since its last save is lost and announced, unless the branch is durable: a durable branch appends each action before the action returns, so only an action the losing process cannot store fails (`:fenced`), and no acknowledged write is lost.
 The epoch is the `Ramal.Branch` field `epoch` (`nil` without a cluster), the `epoch` column of `ramal_branches`, and is
 never part of `state`. `verification/tla/Cluster.tla` models it.
+
+`:global` has a long record of trouble under partial network partitions, where nodes see different subsets of the
+cluster. OTP 25 turned on `prevent_overlapping_partitions` by default, which disconnects nodes to restore a fully
+connected view. By default a name clash after a split is settled by killing one of the two processes; Ramal's resolver
+asks the loser to stop through its own persist path instead, and the storage refuses any save that would overwrite the
+winner (Ramal.Cluster). Registration takes a cluster-wide lock, so it costs
+more as the cluster grows. Ramal accepts this because it does not rely on `:global` for safety: `:global` only decides
+which process serves a branch, and the storage's epoch decides which process may write. A process that `:global` gets
+wrong is refused at its next save (ADR 0044, `verification/tla/Cluster.tla`).
 
 Serialization is `Ramal.Storage.Codec`, a pure module any text-based backend can use. The branch columns hold `id`,
 `domain`, `name` and `status`; `state` holds the overlay (`resource`, `key`, `op`, `record`), the base (`resource`,

@@ -34,6 +34,7 @@ defmodule Ramal.DocsTest do
              "Mix.Tasks.Ramal.Gen.Migration",
              "Ramal",
              "Ramal.Aggregate",
+             "Ramal.Ash",
              "Ramal.Branch",
              "Ramal.Capture",
              "Ramal.Change",

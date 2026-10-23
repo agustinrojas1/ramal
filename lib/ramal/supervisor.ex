@@ -10,6 +10,9 @@ defmodule Ramal.Supervisor do
   It starts a `Registry` keyed by branch id, a `DynamicSupervisor` for the branch processes, and owns the ETS
   tables the library needs. There is one instance per node; its configuration lives in `:persistent_term`.
 
+  At start it logs a warning, once, when the host's Ash or AshPostgres is outside the versions `Ramal.Ash` is tested
+  with. It never refuses to start.
+
   A branch lives on one node. To let every node of a cluster use the same branches, see `:cluster` below.
 
   ## Options
@@ -31,9 +34,11 @@ defmodule Ramal.Supervisor do
       machine). A branch exceeding it is killed and its last persisted state remains.
     * `:durable` - `true` to make every branch durable unless `Ramal.branch/2` says otherwise, default `false`
       (ADR 0048). A durable branch appends the writes of each action that ends to the storage's write log before the
-      action returns, so a crash of the node loses none of them. The storage must define `c:Ramal.Storage.append/4` and
-      `c:Ramal.Storage.writes_after/2`, as `Ramal.Storage.ETS` and `Ramal.Storage.Postgres` do; the supervisor refuses
-      to start otherwise. It costs one storage write per action.
+      action returns, so a crash of the node loses none of them. The fingerprints of rows the branch read and did not
+      write since its last save are not in that log, so after a crash the merge cannot tell that such a row changed in
+      the database; every row an action wrote keeps its fingerprint. The storage must define `c:Ramal.Storage.append/4`
+      and `c:Ramal.Storage.writes_after/2`, as `Ramal.Storage.ETS` and `Ramal.Storage.Postgres` do; the supervisor
+      refuses to start otherwise. It costs one storage write per action.
     * any other option is the storage config, for example `:repo` for the Postgres backend
 
   Both limits are off by default, so adding them is the only change; see ADR 0016 for why they exist (a client that can
@@ -48,16 +53,29 @@ defmodule Ramal.Supervisor do
 
   When the network splits, each side can load the same branch, one process per side. Every load bumps the branch's
   epoch in the storage, and every write of a process is conditional on the epoch it loaded. The process that lost is
-  refused at its next save, emits `[:ramal, :branch, :fenced]` and stops: what it held since its last save is lost, and
-  nothing it holds overwrites the newer state. A merge it was running is refused too, inside the merge transaction.
-  When the nodes find each other again `:global` keeps the process with the higher epoch and stops the other.
+  refused at its next save: it emits `[:ramal, :branch, :fenced]` and stops, and nothing it holds overwrites the newer
+  state. A merge it was running is refused too, inside the merge transaction. When the nodes find each other again
+  `:global` keeps the process with the higher epoch and stops the other.
+
+  `:global` has a long record of trouble under partial network partitions, where nodes see different subsets of the
+  cluster. OTP 25 turned on `prevent_overlapping_partitions` by default, which disconnects nodes to restore a fully
+  connected view. By default a name clash after a split is settled by killing one of the two processes; Ramal's
+  resolver asks the loser to stop through its own persist path instead, and the storage refuses any save that would
+  overwrite the winner. Registration takes a cluster-wide lock, so it costs
+  more as the cluster grows. Ramal accepts this because it does not rely on `:global` for safety: `:global` only
+  decides which process serves a branch, and the storage's epoch decides which process may write. A process that
+  `:global` gets wrong is refused at its next save (ADR 0044).
+
+  The split loses writes. Without `durable: true`, what the losing process held since its last save is lost, and the
+  `:fenced` event announces it. A durable branch (`:durable`, ADR 0048) stores each action before the action returns, so
+  no acknowledged write is lost, and an action the losing process cannot store fails with `:fenced`. Another node loads
+  the branch with every action that ended.
 
   These stay on the node: the telemetry events (attach handlers on every node), the `:branch_rate` window, and the
   marks of a process killed for its heap, which the other nodes do not see (they load the last saved state, as they
-  would after the node crashed). Writes since the last save are lost when the node of the process crashes, as on one
-  node, unless the branch is durable (`:durable`, ADR 0048): the log of its actions is fenced by the epoch too, and
-  another node loads the branch with every action that ended. `ramal_live`'s inspector shows the events of its own node unless its broadcaster runs on every node over a
-  clustered `Phoenix.PubSub`.
+  would after the node crashed). A crash of the node that holds a branch loses its unsaved writes, as on one node,
+  unless the branch is durable. `ramal_live`'s inspector shows the events of its own node unless its broadcaster runs
+  on every node over a clustered `Phoenix.PubSub`.
 
   `idle_timeout` and `max_heap_size` belong to the supervisor, not to a branch, because a per-branch value would be
   forgotten when the branch is unloaded and loaded again.
@@ -71,6 +89,8 @@ defmodule Ramal.Supervisor do
   """
 
   use Supervisor
+
+  require Logger
 
   alias Ramal.Error
   alias Ramal.Storage.ETS
@@ -105,6 +125,7 @@ defmodule Ramal.Supervisor do
     config = build_config(opts)
     check_cluster!(config)
     check_durable!(config)
+    check_ash_versions()
     :persistent_term.put(@config_key, config)
 
     children = [
@@ -135,6 +156,20 @@ defmodule Ramal.Supervisor do
   end
 
   defp check_durable!(_config), do: :ok
+
+  # Ramal runs on Ash internals (Ramal.Ash), so a version outside the range it is tested with may break a branch without
+  # a sign. Warn once per start. Never refuse: the host may be ahead of the range, and the warning is the signal.
+  defp check_ash_versions do
+    for app <- [:ash, :ash_postgres] do
+      case Ramal.Ash.check_version(app, Ramal.Ash.installed_version(app)) do
+        :ok ->
+          :ok
+
+        {:untested, version, range} ->
+          Logger.warning(Ramal.Ash.untested_message(app, version, range))
+      end
+    end
+  end
 
   defp create_table(name, type \\ :set) do
     if :ets.whereis(name) == :undefined do

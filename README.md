@@ -8,7 +8,7 @@
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ramal.svg)](https://hex.pm/packages/ramal) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal-blue.svg)](https://hexdocs.pm/ramal) [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fagustinrojas1%2Framal%2Fmain%2Fdemo%2Framal_tour.livemd)
 
-> **Status: 0.7, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, reads that agree with the branch (pages, aggregates, calculations), bulk actions and upserts, one tenant per branch, nested, durable and clustered branches, the LiveView inspector and the tools for AI agents work and are tested on Postgres. The branch lifecycle is [model-checked and its data rules are proved](#formally-verified). The API may still change before 1.0.
+> **Status: 0.7, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, reads that agree with the branch (pages, aggregates, calculations), bulk actions and upserts, one tenant per branch, nested, durable and clustered branches, the LiveView inspector and the tools for AI agents work and are tested on Postgres. The branch lifecycle is [model-checked and its data rules are proved](#formally-verified). What is stable before 1.0 is on the [stability page](https://github.com/agustinrojas1/ramal/blob/main/docs/STABILITY.md).
 
 ## What it does
 
@@ -124,7 +124,8 @@ def deps do
 end
 ```
 
-Requires Elixir 1.18+ and Ash 3.x. AshPostgres is optional and only needed for the Postgres storage backend.
+Requires Elixir 1.18+ and Ash 3.36 or later. CI tests Ash 3.36, 3.37, the latest 3.x and Ash's main branch, and Ramal
+warns at boot when the host's Ash is outside the range it is tested with (`Ramal.Ash`). AshPostgres is optional and only needed for the Postgres storage backend.
 
 **1. Add the extension to each resource a branch should see.**
 
@@ -238,22 +239,19 @@ A branch of a multitenant application works in one tenant: `Ramal.branch(MyApp.F
 inside it must carry that tenant (`:tenant_mismatch` otherwise), other tenants' rows never enter its overlay, and the
 merge checks and replays in the tenant. Both the attribute and the schema-per-tenant strategies work.
 
-### Per-tenant branches
-
-A branch of a multitenant application works in one tenant: `Ramal.branch(MyApp.Farm, tenant: "acme")`. Reads and writes
-inside it must carry that tenant (`:tenant_mismatch` otherwise), other tenants' rows never enter its overlay, and the
-merge checks and replays in the tenant. Both the attribute and the schema-per-tenant strategies work.
-
-### Per-tenant branches
-
-A branch of a multitenant application works in one tenant: `Ramal.branch(MyApp.Farm, tenant: "acme")`. Reads and writes
-inside it must carry that tenant (`:tenant_mismatch` otherwise), other tenants' rows never enter its overlay, and the
-merge checks and replays in the tenant. Both the attribute and the schema-per-tenant strategies work.
-
 ### Per-user branches
 
 Pass `owner:` to `Ramal.branch/2` and `Ramal.list(domain, owner: user_id)` shows each user their own. It is a filter, not
 access control; the [security notes](https://github.com/agustinrojas1/ramal/blob/main/SECURITY.md) say where the line is.
+
+### Branches in a cluster
+
+With `Ramal.Storage.Postgres` (after `mix ramal.gen.migration`) and `cluster: true` on `Ramal.Supervisor`, every node
+serves the same branches: `:global` gives each branch one process, and the storage refuses the saves of a process that
+no longer holds the branch. A netsplit can still lose writes. The process on the losing side is fenced at its next save:
+it emits `[:ramal, :branch, :fenced]` and stops, and unless the branch is durable (`durable: true`) what it held since its
+last save is lost. A durable branch stores each action before the action returns, so no acknowledged write is lost, and
+an action on the losing side fails with `:fenced`. `Ramal.Supervisor` says what stays per node.
 
 ### For AI agents
 
@@ -283,7 +281,7 @@ and what is and is not tested.
 
 - **Real actions inside a branch.** Validations, policies, hooks, defaults and managed relationships run as they do outside.
 - **Fork, diff, merge, discard** as ordinary function calls, plus **proposals** with a recorded proposer and decider.
-- **Persistent.** With `Ramal.Storage.Postgres` a branch is saved when it is created, proposed, discarded, unloaded or when the supervisor shuts down, so it survives restarts; idle branches unload from memory and come back on demand. With `durable: true` the writes of every action that ended are stored before the action returns, so a crash of the node loses none of them.
+- **Persistent.** With `Ramal.Storage.Postgres` a branch is saved when it is created, proposed, discarded, unloaded or when the supervisor shuts down, so it survives restarts; idle branches unload from memory and come back on demand. With `durable: true` the writes of every action that ended are stored before the action returns, so a crash of the node loses none of them. A durable branch does not store the fingerprint of a row it only read since its last save, so after a crash the merge cannot tell that such a row changed in the database; every row an action wrote keeps its fingerprint.
 - **Staleness detection** at merge, with a choice of what to do about it.
 - **Exact aggregates** for a branch without scanning the table, and loaded, filtered and sorted aggregates that agree with the branch.
 - **Pages, prepared queries and module calculations** that see the branch.
@@ -297,61 +295,17 @@ and what is and is not tested.
 - **A LiveView inspector** in a separate package, [`ramal_live`](#inspector).
 - **No Phoenix in core, AshPostgres optional.** The library adds one supervisor to your tree and nothing else.
 
-## Honest limits
+## Limits
 
-Ramal is deliberately small, and it says what it does not do:
+Ramal is comprehensive, and [docs/limits.md](https://github.com/agustinrojas1/ramal/blob/main/docs/limits.md) lists every limit it has. Reads fetch candidate rows and patch them in memory, so Ramal is meant for OLTP-sized working sets. Merge replays each change through your actions, so it is slower than a SQL statement. Authorization is yours.
 
-- **Not a database branch.** No schema changes inside a branch, no branch-local indexes, and a branch lives on one node. `Ramal.run/2` cannot be nested: a branch of a branch is a nested fork (`Ramal.fork(branch, nested: true)`), run on its own and merged into its parent, which is merged to the database as one branch ([ADR 0043](https://github.com/agustinrojas1/ramal/blob/main/docs/adr/0043-nested-branches-merge-into-their-parent.md)).
-- **Aggregates loaded inside a branch are recomputed from the branch's rows,** which reads the related rows of each
-  returned row where the database would sum them in one query. `custom` aggregates (data-layer SQL),
-  a join filter and a custom read action keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
-  test can notice. A filter or sort on an aggregate sees the branch too, and when the branch changed a resource on its path
-  that reads the aggregate for every row the rest of the filter matches. For one total over a large table,
-  `Ramal.aggregate/4` is cheaper.
-- **Use `Ramal.load/3` to load onto a record the branch changed.** `Ash.load/3` reselects the foreign key from the
-  database without running any hook, so after a herd moved paddock in the branch it still follows the old one. A load
-  inside a read (`Ash.Query.load/2`) is patched.
-- **A filter or sort through a relationship the branch changed can read more.** Ramal checks that part of the filter in
-  memory on the rows the database returns for the rest, so keep attribute predicates next to it to narrow the read. A
-  filter through one `belongs_to` or `has_one` is narrowed in the database too, except under `not`; `exists`, longer
-  paths and `has_many` paths read every row the rest of the filter allows.
-- **Text sorts inside a branch follow the database's collation.** Once the branch has changed a resource, its reads are
-  sorted in Elixir; for a text key Ramal asks Postgres in one read-only query how it orders the distinct values (the
-  column's collation, `lower` for `citext`), so `apple` comes before `Banana` as it does after the merge. `:min` and `:max`
-  of a string do the same. A `C` column, a resource on another data layer, and every key that is not text keep their own
-  order. Two things still compare bytes: a keyset cursor on a text sort (page it by offset) and a comparison filter on text
-  (`name > "b"`) for the branch's rows ([ADR 0045](docs/adr/0045-text-sorted-by-the-databases-collation.md)).
-- **Every resource of the domain is covered or opts out.** `Ramal.branch/2` refuses a domain with a resource that has
-  write actions and neither uses `Ramal.Resource` nor sets `branchable? false`; a resource that opts out is written for
-  real, from a branch too. Only the branch's domain is checked: a resource of another domain works in the branch if it uses `Ramal.Resource`, and is written for real if it does not. Build a changeset in the same `Ramal.run/2` that runs it. A query prepared outside a branch and read inside it is patched.
-- **Notifications are dropped** unless a resource opts in with `notify_in_branch? true`.
-- **A key the database generates is a placeholder until the merge.** A row created with a `generated? true` integer or
-  UUID primary key (`integer_primary_key`, `gen_random_uuid()`) gets a key from a range no real key uses (integers from
-  `-2_147_483_648` up), and the merge renames it to the key the database gives the row, in the input of the later
-  actions too. `Ramal.Merge.Result.keys` maps each placeholder to its real key. A placeholder that a hook stores outside
-  the action's input, such as inside a JSON blob, is not renamed, and a `smallint` key is not supported. Other key
-  types, and composite keys, are still refused (`:database_generated_key`).
-- **Upserts work, with two exceptions.** An upsert looks its row up in the branch's view, so it updates a base row, a row
-  the branch created, or creates one. An `upsert_condition` is refused (`:upsert_unsupported`), and `upsert?: true` given
-  only to `Ash.create/2` at call time cannot be seen and acts as a create: set it on the action or pass it to
-  `Ash.Changeset.for_create/4`.
-- **A branch works in one tenant,** given at `Ramal.branch/2`.
-- **Reads fetch candidate rows and patch them in memory.** That is cheap for the rows a session touches and wrong for an
-  analytics table: Ramal is meant for OLTP-sized working sets.
-- **Merge is slower than a SQL statement,** because it replays each change through your action. That is the price of
-  merging through your own rules.
-- **Writes since the last save are lost if the node crashes,** unless the branch is durable (`Ramal.branch(domain, durable: true)`, or `durable: true` on `Ramal.Supervisor`). A durable branch appends what each action wrote to a write log in the storage before the action returns; that is one storage write per action (1.1 to 1.7 ms with Postgres on the same host, [measured](https://github.com/agustinrojas1/ramal/blob/main/bench/README.md#durable-branches)), an action whose append fails fails with `:storage`, and the writes of an action that has not ended are never stored. On Postgres the action's own transaction holds a connection while the log is written over another, so the pool needs room for both (or give the storage a repo of its own), and the SQL sandbox, which shares one connection, cannot do it: test durable branches with the ETS storage. The fingerprints of rows the branch read and did not write since its last save are not in the log. A branch that is not durable is saved at the moments listed above, not on every write.
-- **A branch lives on one node unless you run a cluster** (`cluster: true`, Postgres storage). Then one process serves
-  it for every node and the storage refuses the saves of a process that lost the branch after a netsplit, so state is
-  never overwritten, but what that process held since its last save is lost and announced (`[:ramal, :branch, :fenced]`). A durable branch (`durable: true`) in a cluster also stores each action's writes under the same epoch, so a crash of the node loses none of them and the process that lost the branch cannot store one more.
-  Telemetry, rate limits and the heap-kill marks stay per node. See `Ramal.Supervisor`.
-- **Bulk actions run record by record** inside a branch, each one captured like a single action, so they cost what a loop costs. A bulk update or destroy of a query must allow `strategy: [:atomic, :stream]`.
-- **A `through` path with a many_to_many hop** (`through: [:herds, :vets]`) is left to the database, which returns nothing for it with or without a branch (AshPostgres 2.15 ignores the join resource). A `through` path of has_many and belongs_to hops sees the branch.
-- **Authorization is yours.** Anyone who holds a branch id can act on it. Ramal records who decided and never checks.
-- **Pre-1.0.** The public API may change before 1.0; the changelog says when it does.
+## Stability
 
-The complete list, with the reasons, is in the [design document](https://github.com/agustinrojas1/ramal/blob/main/docs/DESIGN.md)
-and the [ADRs](https://github.com/agustinrojas1/ramal/tree/main/docs/adr).
+From 0.8.0, the calls `branch/2`, `run/2`, `fork/2`, `diff/2`, `merge/2`, `propose/2`, `approve/2`, `reject/2` and
+`discard/1` keep their names, required arguments and return shapes through 0.x and into 1.0. A change to one of them
+comes with a deprecation warning for at least one minor release first. Everything else may change in a minor release
+before 1.0, and the changelog says when it does. The [stability page](https://github.com/agustinrojas1/ramal/blob/main/docs/STABILITY.md)
+lists what is stable, what is extended, and when releases come.
 
 ## Inspector
 

@@ -86,6 +86,13 @@ Done; released in 0.7.0.
 
 [limits-plan.md](https://github.com/agustinrojas1/ramal/blob/main/docs/limits-plan.md) gave the root cause and a design for each limit, and each one is closed by the ADR listed under Releases: bulk actions, `authorize_results`, upserts, paged and multi-hop relationship loads, aggregates, merge replay keys, database-generated keys, text collation, durable branches, relationship filter push-down, nested branches and clusters. The optional authorizer is not done: authorization stays the host's.
 
+## Stability
+
+The promise for the public API, and what may still change before 1.0, is in [STABILITY.md](STABILITY.md). From 0.8.0 nine
+calls (`branch`, `run`, `fork`, `diff`, `merge`, `propose`, `approve`, `reject` and `discard`) keep their names, arguments
+and return shapes through 0.x and into 1.0. Releases come when there is something worth releasing, a fix a user needs or
+a set of features, not after every merge.
+
 ## 1.0
 
 - Six months without a breaking change to the public API.

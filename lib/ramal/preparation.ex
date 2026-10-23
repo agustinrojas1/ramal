@@ -99,8 +99,10 @@ defmodule Ramal.Preparation do
     case Current.bind(query.context) do
       # A query prepared outside a branch may still be read inside one. `before_action` and `after_action` hooks
       # cannot be installed here: Ash refuses an atomic bulk update or destroy of a query that has one
-      # (`lib/ash/actions/update/bulk.ex`, 3.37). A `before_transaction` hook is not on that list, and it runs before the
-      # query's `before_action` hooks are read, so it installs them when it finds a branch current (ADR 0026).
+      # (`lib/ash/actions/update/bulk.ex`, 3.37). A `before_transaction` hook is not on that list. A read, or a bulk
+      # action that streams the query, runs it before the query's `before_action` hooks are read, so it installs them
+      # when it finds a branch current (ADR 0026). An atomic bulk update never runs it, which is safe because inside a
+      # branch `Ramal.Capture.atomic/3` refuses the atomic strategy (tripwires in test/ramal/ash_contract_test.exs).
       :none ->
         Ash.Query.before_transaction(query, &bind_late/1)
 

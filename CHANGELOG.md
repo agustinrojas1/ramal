@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **A stability promise.** From 0.8.0, `branch`, `run`, `fork`, `diff`, `merge`, `propose`, `approve`, `reject` and `discard` keep their names, required arguments and return shapes through 0.x and into 1.0, and a change to one of them gets a deprecation warning for at least one minor release first. Everything else is listed as extended. Releases now come when there is something worth releasing, not after every merge. See `docs/STABILITY.md`.
+- **`Ramal.Ash`, the tested Ash range.** Ramal is tested with Ash `~> 3.36.0 or ~> 3.37.0` and AshPostgres `~> 2.15.0`, and `Ramal.Supervisor` logs a warning at start when the host runs a version outside that range. It never refuses to start. The module doc lists every Ash internal Ramal relies on.
+- **Tripwire tests** (`test/ramal/ash_contract_test.exs`): one test per Ash internal Ramal relies on, checked against Ash alone, so a change in Ash fails CI with the assumption's name. CI now also runs the suite on Ash 3.36, 3.37, the latest 3.x and Ash `main` (allowed to fail).
+
+### Changed
+
+- **Every limit is on one page,** `docs/limits.md`, one line each with a link to the full explanation; the README keeps the three that matter most. The netsplit loss of a cluster and the staleness gap of a durable branch after a crash are now stated where those features are documented, and the cluster docs say what `:global` is known for and why Ramal does not depend on it for safety.
+
 ## [0.7.0] - 2026-10-23
 
 The remaining known limits are gone: bulk actions, upserts, database-generated keys, relationship pages, multi-hop `through` paths, more aggregates and text collation now work inside a branch, and branches can be nested, durable and shared by a cluster of nodes. Read **Upgrading from 0.6** first.
