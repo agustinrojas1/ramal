@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-23
+
+Documentation only: the README, the design document and the other guides on Hex and HexDocs now describe 0.6. No code changes.
+
 ### Changed
 
 - Docs: the README, design document, roadmap, verification README and security policy describe 0.6 (the verification is now a section of the README, the limits list matches what is left, and a branch in one tenant is documented). The ADR index lists every decision. `Ramal.Error` documents `:not_started`.
