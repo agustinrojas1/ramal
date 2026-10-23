@@ -19,7 +19,8 @@ defmodule Ramal.Error do
   | `:upsert_unsupported` | an upsert inside a branch |
   | `:atomic_unsupported` | an atomic update whose expression cannot be evaluated in Elixir inside a branch (`details.attribute`) |
   | `:partial_record` | an update or destroy of a record read with `Ash.Query.select/2`, whose full row could not be read inside the branch |
-  | `:multitenancy_unsupported` | a multitenant resource used with a tenant inside a branch |
+  | `:multitenancy_unsupported` | a multitenant resource used with a tenant inside a branch that has none (create it with `tenant:`) |
+  | `:tenant_mismatch` | a multitenant resource used with a tenant other than the branch's (`details.tenant`, `branch_tenant`) |
   | `:branch_too_large` | the branch process exceeded `max_heap_size` and was stopped |
   | `:no_branchable_resources` | the domain has no resource that opted in with `Ramal.Resource` |
   | `:branch_mismatch` | a changeset or query was built under one branch (or none) and run under another (`details.built`, `current`) |
@@ -50,6 +51,7 @@ defmodule Ramal.Error do
           | :upsert_unsupported
           | :atomic_unsupported
           | :multitenancy_unsupported
+          | :tenant_mismatch
           | :partial_record
           | :branch_too_large
           | :no_branchable_resources

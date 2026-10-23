@@ -15,6 +15,7 @@ defmodule Ramal.Branch do
   * `metadata` - a map the host uses freely; Ramal only adds `forked_from` to a fork
   * `owner` - who the host says the branch belongs to, `nil` unless given at `branch/2` or `fork/2`. Ramal never
     interprets it: `Ramal.list/2` can filter by it (ADR 0018) and nothing else reads it
+  * `tenant` - the one tenant the branch works in, `nil` unless given at `branch/2` (ADR 0033). A fork keeps it
   * `proposal` - `nil` until `Ramal.propose/2`; then `t:proposal/0`
 
   Nothing here touches a process or storage, so it is tested with plain data.
@@ -87,6 +88,7 @@ defmodule Ramal.Branch do
           inserted_at: DateTime.t(),
           metadata: map,
           owner: term,
+          tenant: term,
           proposal: proposal | nil
         }
 
@@ -107,6 +109,7 @@ defmodule Ramal.Branch do
     log: [],
     metadata: %{},
     owner: nil,
+    tenant: nil,
     proposal: nil
   ]
 
@@ -118,12 +121,14 @@ defmodule Ramal.Branch do
     * `:name` - a label for people, default `nil`
     * `:metadata` - a map for the host, default `%{}`
     * `:owner` - who the branch belongs to, any term, default `nil` (see `Ramal.list/2`)
+    * `:tenant` - the tenant the branch works in, default `nil`: the branch then refuses multitenant resources used with
+      a tenant (ADR 0033)
 
   ## Example
 
-      iex> branch = Ramal.Branch.new(MyApp.Farm, owner: 7)
-      iex> {branch.domain, branch.name, branch.log, branch.owner}
-      {MyApp.Farm, nil, [], 7}
+      iex> branch = Ramal.Branch.new(MyApp.Farm, owner: 7, tenant: "acme")
+      iex> {branch.domain, branch.name, branch.log, branch.owner, branch.tenant}
+      {MyApp.Farm, nil, [], 7, "acme"}
   """
   @spec new(module, keyword) :: t
   def new(domain, opts \\ []) when is_atom(domain) do
@@ -133,7 +138,8 @@ defmodule Ramal.Branch do
       domain: domain,
       inserted_at: DateTime.utc_now(),
       metadata: Keyword.get(opts, :metadata, %{}),
-      owner: opts[:owner]
+      owner: opts[:owner],
+      tenant: opts[:tenant]
     }
   end
 
@@ -418,7 +424,7 @@ defmodule Ramal.Branch do
   end
 
   @doc """
-  A new open branch that starts as a copy of `parent`: same domain, overlay, log and base.
+  A new open branch that starts as a copy of `parent`: same domain, tenant, overlay, log and base.
 
   Overlays, logs and the base are immutable, so the copy shares structure with the parent and neither sees the
   other's later changes. `metadata` gets `forked_from: parent.id`.

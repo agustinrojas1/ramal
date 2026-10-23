@@ -102,7 +102,7 @@ defmodule Ramal.Preparation do
   end
 
   defp install(query, id, origin) do
-    case Resource.ensure_untenanted(query.resource, query.tenant) do
+    case Resource.ensure_tenant(query.resource, query.tenant, id) do
       :ok ->
         query
         |> Ash.Query.set_context(Current.shared_context(id))
@@ -475,7 +475,13 @@ defmodule Ramal.Preparation do
       {:ok, records}
     else
       load = %{Ash.Query.new(query.resource) | calculations: expressions}
-      Ash.load(records, load, domain: query.domain, reuse_values?: true, authorize?: false)
+
+      Ash.load(records, load,
+        domain: query.domain,
+        tenant: query.tenant,
+        reuse_values?: true,
+        authorize?: false
+      )
     end
   end
 
@@ -626,6 +632,7 @@ defmodule Ramal.Preparation do
 
     Ash.load(rows, load,
       domain: query.domain,
+      tenant: query.tenant,
       authorize?: false,
       reuse_values?: true,
       context: Map.take(query.context, [:shared])
@@ -656,6 +663,7 @@ defmodule Ramal.Preparation do
       load ->
         Ash.load(records, load,
           domain: query.domain,
+          tenant: query.tenant,
           authorize?: false,
           reuse_values?: true,
           context: Map.take(query.context, [:shared])

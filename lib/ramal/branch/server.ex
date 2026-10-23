@@ -225,6 +225,13 @@ defmodule Ramal.Branch.Server do
   def slice(id, resource), do: call(id, {:slice, resource})
 
   @doc """
+  The tenant the branch works in (`nil` for none). Read when a query or changeset on a multitenant resource carries a
+  tenant, to check it is the branch's (ADR 0033).
+  """
+  @spec tenant(String.t()) :: {:ok, term} | {:error, Error.t()}
+  def tenant(id), do: call(id, :tenant)
+
+  @doc """
   The overlay entries of `resource` for `keys` only (`Ramal.load/3`), as `key => {kind, record} | :deleted`. Rejected
   unless the branch is open.
   """
@@ -428,6 +435,8 @@ defmodule Ramal.Branch.Server do
   def handle_call(:status, _from, state), do: reply(state, {:ok, state.branch.status})
 
   def handle_call(:domain, _from, state), do: reply(state, {:ok, state.branch.domain})
+
+  def handle_call(:tenant, _from, state), do: reply(state, {:ok, state.branch.tenant})
 
   def handle_call({:diff, opts}, _from, state), do: reply(state, Branch.diff(state.branch, opts))
 

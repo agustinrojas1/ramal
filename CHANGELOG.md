@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **A branch can work in one tenant**: `Ramal.branch(domain, tenant: tenant)`. Reads and writes of multitenant resources inside it must carry that tenant (`:tenant_mismatch` otherwise), the other tenants' rows never enter its overlay, the merge staleness check reads with the tenant, and a fork keeps it. A branch without a tenant still refuses multitenant resources used with one (`:multitenancy_unsupported`), now with a message that says to create it with `tenant:`. `Ramal.Resource.ensure_untenanted/2` (internal) became `ensure_tenant/3`. ADR 0033.
+
 ## [0.5.0] - 2026-10-23
 
 Branch reads now agree with the branch in more places: pagination, aggregates (loaded, filtered and sorted), prepared queries and module calculations. Read **Upgrading from 0.4** first.

@@ -102,7 +102,7 @@ defmodule Ramal.Capture do
   end
 
   defp install(changeset, id, origin) do
-    case Resource.ensure_untenanted(changeset.resource, changeset.tenant) do
+    case Resource.ensure_tenant(changeset.resource, changeset.tenant, id) do
       :ok ->
         changeset
         |> Ash.Changeset.set_context(Current.shared_context(id))

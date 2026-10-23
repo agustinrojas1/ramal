@@ -37,6 +37,9 @@ defmodule Ramal do
     * `:metadata` - a map the host uses freely
     * `:owner` - who the branch belongs to, so that `list/2` can show a user only their own (ADR 0018). Any term, but an
       id or a string, not a record: it is stored with the branch and compared with `==`. Default `nil`
+    * `:tenant` - the one tenant the branch works in (ADR 0033). Reads and writes of a multitenant resource inside the
+      branch must carry it (`:tenant_mismatch` otherwise); the merge reads the staleness rows with it. A branch without a
+      tenant refuses multitenant resources used with a tenant (`:multitenancy_unsupported`). Default `nil`
 
   Returns `{:error, %Ramal.Error{reason: :not_started}}` when `Ramal.Supervisor` is not running, and
   `:no_branchable_resources` when no resource of the domain uses `Ramal.Resource` (or all of them opted out), since
