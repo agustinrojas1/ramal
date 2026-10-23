@@ -226,7 +226,7 @@ Ramal.run!(branch, fn ->
 end)
 ```
 
-It supports `:count`, `:exists`, `:sum`, `:min`, `:max` and `:avg`.
+It supports `:count`, `:exists`, `:sum`, `:min`, `:max`, `:avg`, `:first` and `:list`. The last two follow the query's sort and accept `uniq?:` and `include_nil?:`.
 
 ### Per-tenant branches
 
@@ -287,8 +287,8 @@ Ramal is deliberately small, and it says what it does not do:
 
 - **Not a database branch.** No schema changes inside a branch, no branch-local indexes, and a branch lives on one node. `Ramal.run/2` cannot be nested.
 - **Aggregates loaded inside a branch are recomputed from the branch's rows,** which reads the related rows of each
-  returned row where the database would sum them in one query. `first`, `list` and `custom` aggregates, `uniq?`, and
-  an aggregate query with a limit keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
+  returned row where the database would sum them in one query. `custom` aggregates (data-layer SQL),
+  a join filter and a custom read action keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
   test can notice. A filter or sort on an aggregate sees the branch too, and when the branch changed a resource on its path
   that reads the aggregate for every row the rest of the filter matches. For one total over a large table,
   `Ramal.aggregate/4` is cheaper.

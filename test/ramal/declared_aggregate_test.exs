@@ -13,7 +13,12 @@ defmodule Ramal.DeclaredAggregateTest do
     :big_herd_count,
     :has_herds,
     :biggest_head,
-    :average_head
+    :average_head,
+    :first_herd_name,
+    :biggest_herd_name,
+    :herd_names,
+    :distinct_head_list,
+    :distinct_heads
   ]
 
   setup do
@@ -153,6 +158,207 @@ defmodule Ramal.DeclaredAggregateTest do
     end
   end
 
+  describe "first, list and uniq? aggregates" do
+    @shapes [
+      :first_herd_name,
+      :biggest_herd_name,
+      :herd_names,
+      :herd_sizes,
+      :distinct_head_list,
+      :distinct_heads
+    ]
+
+    defp shapes do
+      for paddock <- read_paddocks(@shapes), into: %{} do
+        {paddock.name, Map.take(paddock, @shapes)}
+      end
+    end
+
+    test "the database computes them outside a branch" do
+      assert %{
+               "L07" => %{
+                 first_herd_name: "R7",
+                 biggest_herd_name: "R8",
+                 herd_names: ["R7", "R8"],
+                 herd_sizes: ["large", "large"],
+                 distinct_head_list: [30, 35],
+                 distinct_heads: 2
+               },
+               "L18" => %{
+                 first_herd_name: "R9",
+                 biggest_herd_name: "R9",
+                 herd_names: ["R9"],
+                 herd_sizes: ["small"],
+                 distinct_head_list: [25],
+                 distinct_heads: 1
+               }
+             } = shapes()
+    end
+
+    test "a herd updated in the branch changes which one is first and what is listed", %{
+      branch: branch,
+      herds: h
+    } do
+      Ramal.run!(branch, fn ->
+        Ash.update!(h.r7, %{name: "R0", head: 90}, authorize?: false)
+
+        assert %{
+                 first_herd_name: "R0",
+                 biggest_herd_name: "R0",
+                 herd_names: ["R0", "R8"],
+                 herd_sizes: ["large", "large"],
+                 distinct_head_list: [35, 90],
+                 distinct_heads: 2
+               } = shapes()["L07"]
+      end)
+    end
+
+    test "a herd created in the branch is listed, and a duplicate value counts once", %{
+      branch: branch,
+      paddocks: p
+    } do
+      Ramal.run!(branch, fn ->
+        Ash.create!(Herd, %{name: "R1", head: 30, paddock_id: p.l07.id}, authorize?: false)
+        Ash.create!(Herd, %{name: "R2", head: 20, paddock_id: p.l07.id}, authorize?: false)
+
+        assert %{
+                 first_herd_name: "R1",
+                 herd_names: ["R1", "R2", "R7", "R8"],
+                 herd_sizes: ["large", "small", "large", "large"],
+                 distinct_head_list: [20, 30, 35],
+                 distinct_heads: 3
+               } = shapes()["L07"]
+      end)
+    end
+
+    test "a herd destroyed or moved away in the branch leaves the list", %{
+      branch: branch,
+      paddocks: p,
+      herds: h
+    } do
+      Ramal.run!(branch, fn ->
+        Ash.destroy!(h.r8, authorize?: false)
+        Ash.update!(h.r9, %{paddock_id: p.l07.id}, authorize?: false)
+
+        assert %{
+                 "L07" => %{herd_names: ["R7", "R9"], biggest_herd_name: "R7", distinct_heads: 2},
+                 "L18" => %{
+                   first_herd_name: nil,
+                   biggest_herd_name: nil,
+                   herd_names: [],
+                   herd_sizes: [],
+                   distinct_head_list: [],
+                   distinct_heads: 0
+                 }
+               } = shapes()
+      end)
+    end
+
+    test "a paddock created in the branch has the empty values", %{branch: branch} do
+      Ramal.run!(branch, fn ->
+        Ash.create!(Paddock, %{name: "New", capacity_head: 10}, authorize?: false)
+
+        assert %{
+                 first_herd_name: nil,
+                 herd_names: [],
+                 herd_sizes: [],
+                 distinct_head_list: [],
+                 distinct_heads: 0
+               } = shapes()["New"]
+      end)
+    end
+
+    test "what the branch computed is what the database computes after the merge", %{
+      branch: branch,
+      paddocks: p,
+      herds: h
+    } do
+      inside =
+        Ramal.run!(branch, fn ->
+          Ash.update!(h.r7, %{name: "R0", head: 90}, authorize?: false)
+          Ash.create!(Herd, %{name: "R1", head: 25, paddock_id: p.l07.id}, authorize?: false)
+          Ash.create!(Herd, %{name: "R2", head: 25, paddock_id: p.l07.id}, authorize?: false)
+          Ash.destroy!(h.r9, authorize?: false)
+          shapes()
+        end)
+
+      assert shapes() != inside
+      assert {:ok, _} = Ramal.merge(branch, authorize?: false)
+      assert shapes() == inside
+    end
+
+    test "a calculation is evaluated on the branch's version of the herd", %{
+      branch: branch,
+      herds: h
+    } do
+      Ramal.run!(branch, fn ->
+        Ash.update!(h.r8, %{head: 5}, authorize?: false)
+        assert %{herd_sizes: ["large", "small"]} = shapes()["L07"]
+      end)
+    end
+
+    test "include_nil? keeps the nil values of the related rows, in order", %{
+      branch: branch,
+      paddocks: p,
+      herds: h
+    } do
+      loads = [:origins, :origins_with_nil, :first_origin]
+
+      read = fn ->
+        Herd
+        |> Ash.Query.filter(id == ^h.r7.id)
+        |> Ash.Query.load(loads)
+        |> Ash.read_one!(authorize?: false)
+      end
+
+      move = fn from, day ->
+        Ash.create!(
+          Move,
+          %{herd_id: h.r7.id, from_paddock_id: from, to_paddock_id: p.l18.id, moved_on: day},
+          authorize?: false
+        )
+      end
+
+      assert %{origins: [], origins_with_nil: [], first_origin: nil} = read.()
+
+      inside =
+        Ramal.run!(branch, fn ->
+          move.(nil, ~D[2026-01-01])
+          move.(p.l07.id, ~D[2026-01-02])
+          move.(nil, ~D[2026-01-03])
+
+          assert %{origins: origins, origins_with_nil: with_nil, first_origin: nil} = read.()
+          assert origins == [p.l07.id]
+          assert with_nil == [nil, p.l07.id, nil]
+          Map.take(read.(), loads)
+        end)
+
+      assert {:ok, _} = Ramal.merge(branch, authorize?: false)
+      assert Map.take(read.(), loads) == inside
+    end
+
+    test "are not reported as unpatched", %{branch: branch, herds: h} do
+      test = self()
+      id = "patched-shapes-#{inspect(test)}"
+
+      :telemetry.attach(
+        id,
+        [:ramal, :read, :unpatched_aggregate],
+        fn _, _, meta, _ -> send(test, {:unpatched, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(id) end)
+
+      Ramal.run!(branch, fn ->
+        Ash.update!(h.r7, %{head: 1}, authorize?: false)
+        shapes()
+      end)
+
+      refute_receive {:unpatched, _}, 50
+    end
+  end
+
   describe "the unpatched_aggregate event" do
     test "is emitted for a kind the preparation cannot compute, with the database's value", %{
       branch: branch,
@@ -173,8 +379,13 @@ defmodule Ramal.DeclaredAggregateTest do
       Ramal.run!(branch, fn ->
         Ash.update!(p.l07, %{name: "L07x"}, authorize?: false)
 
-        names = read_paddocks([:first_herd_name]) |> Enum.map(& &1.first_herd_name)
-        assert names == ["R7", "R9"]
+        # The custom aggregate is SQL, so a branch keeps the database's value (the order inside string_agg is the
+        # database's).
+        csv =
+          read_paddocks([:herd_name_csv])
+          |> Enum.map(&(&1.herd_name_csv |> String.split(",") |> Enum.sort()))
+
+        assert csv == [["R7", "R8"], ["R9"]]
       end)
 
       assert_receive {:unpatched, %{branch_id: id, resource: Paddock}} when id == branch.id
@@ -311,6 +522,8 @@ defmodule Ramal.DeclaredAggregateTest do
         assert paddock.has_herds == (mine != [])
         assert paddock.biggest_head == Aggregate.compute(:max, :head, mine, Herd)
         assert close?(paddock.average_head, Aggregate.compute(:avg, :head, mine, Herd))
+
+        assert_first_and_list_match(paddock, mine)
       end
 
       counts =
@@ -324,6 +537,25 @@ defmodule Ramal.DeclaredAggregateTest do
     end)
 
     :ok = Ramal.discard(branch)
+  end
+
+  # `first`, `list` and `uniq?` over the herds the paddock has in the branch, each in the order its aggregate sorts by.
+  defp assert_first_and_list_match(paddock, mine) do
+    by_name = Enum.sort_by(mine, & &1.name)
+    by_head = Enum.sort_by(mine, & &1.head)
+
+    assert paddock.first_herd_name == Aggregate.compute(:first, :name, by_name, Herd)
+    assert paddock.herd_names == Aggregate.compute(:list, :name, by_name, Herd)
+
+    # Herds with the same head tie, and the aggregate's sort does not say which comes first.
+    top = Enum.max(Enum.map(mine, & &1.head), fn -> nil end)
+    tied = for herd <- mine, herd.head == top, do: herd.name
+    assert paddock.biggest_herd_name in if(mine == [], do: [nil], else: tied)
+
+    assert paddock.distinct_head_list ==
+             Aggregate.compute(:list, :head, by_head, Herd, uniq?: true)
+
+    assert paddock.distinct_heads == Aggregate.compute(:count, :head, mine, Herd, uniq?: true)
   end
 
   # A filter and a sort on the aggregate judge the same numbers a loaded one shows.

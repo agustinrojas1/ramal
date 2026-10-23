@@ -60,7 +60,8 @@ defmodule Ramal.Preparation do
       expression (the data layer computes those too); a calculation with only `calculate/3` runs in Elixir on the
       patched rows already;
     * an aggregate the read loads is recomputed from the branch's rows after the patch (lib/ramal/preparation/aggregates.ex,
-      ADR 0029). The kinds and shapes it cannot do keep the database's value and emit `[:ramal, :read, :unpatched_aggregate]`.
+      ADR 0029). The kinds and shapes it cannot do (`custom`, a join filter, a custom read action) keep the database's value and emit
+      `[:ramal, :read, :unpatched_aggregate]`.
       A filter or sort on an aggregate is judged on the branch's numbers too: when the branch changed a resource on the
       aggregate's path the conjunct is evaluated in Elixir like a filter through a changed relationship (ADR 0032), and
       the aggregate is computed for the overlay's records, and for the rows a sort orders, before it is used;
