@@ -21,7 +21,12 @@ defmodule Ramal.Test.Paged.Item do
 
     read :read do
       primary?(true)
-      pagination(required?: true, default_limit: 2, offset?: true)
+      pagination(required?: true, default_limit: 2, offset?: true, keyset?: true, countable: true)
+    end
+
+    # A keyset-only action, so that a page without a cursor is a keyset page.
+    read :keyset do
+      pagination(keyset?: true, countable: true, required?: false)
     end
   end
 

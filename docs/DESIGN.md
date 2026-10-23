@@ -146,10 +146,19 @@ This is the section that decides correctness. In a read action's preparation, wh
    data layer on the base rows. Expression calculations are evaluated in memory on the rows the branch created or changed.
    `Ramal.aggregate/4` (ADR 0011, ADR 0013) gives one total over a query: the database aggregates the rows the overlay does
    not touch and the branch reads only the ones it does.
-5. **Pagination:** Ash adds a page's limit and offset after the `before_action` hooks, so a paginated read is paged
-   by the database and patched afterwards. Deleted rows shorten a page, rows created in the branch can be missing
-   from or misplaced across pages, and `count` is the database's. 0.1 documents this. Patching the whole list and
-   paging it in Elixir is possible but means rebuilding `Ash.Page` values, and is left to a later version.
+5. **Pagination:** Ash adds a page's limit and offset (or its keyset filter) after the `before_action` hooks, counts in
+   the database and decides `more?` from the database's rows, so the database cannot page a list the overlay changed.
+   When the overlay touches the resource, the last `before_action` hook (added from a `before_transaction` hook, so it
+   runs after the hooks of every preparation and of the action) reads the whole patched list with the action's own read
+   preparation, cuts the page out of it in Elixir and hands the rows to Ash with `Ash.Query.set_result/2`, one more than
+   the page so Ash can set `more?`, and the count with the `full_count` context key (`paginate/3`, `fetch_count/5` and
+   `run_query/4` in `lib/ash/actions/read/read.ex`, Ash 3.37). A row created in the branch is on the page its sort
+   position puts it, a deleted row shortens nothing, `count` is the patched count, and `after`/`before` cursors walk the
+   patched list: a keyset filter is judged by `Ash.Filter.Runtime` on the patched rows, so the cursor of a row the
+   branch deleted still finds its place. `Ash.stream!/2` pages the same way. The cost is a read of every row the filter
+   matches for each page, as for an unpaged read; when the overlay has no entry for the resource the database pages as
+   usual. A paged relationship load keeps being paged by the database and patched afterwards
+   ([ADR 0030](adr/0030-pages-cut-from-the-patched-list.md)).
 6. **Policies:** the query's filter, including one a policy added, is applied to overlay records. Checks that act on
    results (`authorize_results`) run before the `after_action` hooks and so do not see overlay records.
 7. **Many-to-many:** the join resource is a resource like any other and gets its own overlay entries, keyed by its
@@ -491,3 +500,4 @@ action (ADR 0016).
 | 28 | Hooks check the branch again when the action runs; tasks started with `Task` inherit the branch through `$callers` | The branch was decided once, at build time, and lived in one process, so a changeset built elsewhere, a bulk task and a host task wrote for real. Ash 3.37 has no ambient context to set. [ADR 0023](adr/0026-branch-checked-at-execution.md) |
 | 29 | `Ramal.branch/2` refuses a domain with a resource that has write actions and neither uses `Ramal.Resource` nor opts out | A write to such a resource reached the database from inside a branch with no signal. [ADR 0024](adr/0027-domain-coverage.md) |
 | 30 | An aggregate a read loads is recomputed after the patch from the related records read through the branch; kinds and shapes it cannot do keep the database's value and emit the unpatched event | The database's aggregate never saw the overlay, and a row the branch changed came back with `Ash.NotLoaded`. The cost is a read of the related rows per recomputed row. [ADR 0028](adr/0029-declared-aggregates-in-branches.md) |
+| 31 | A paginated read of a resource the overlay touches reads the whole patched list, cuts the page in Elixir and gives Ash the rows with `set_result` and the count with `full_count` | The database cannot page rows it does not have, and Ash fixes `more?` and `count` from the database before any hook after the data layer can speak. The cost is a read of every matching row per page. [ADR 0030](adr/0030-pages-cut-from-the-patched-list.md) |
