@@ -63,6 +63,81 @@ defmodule Ramal.Storage.ETSTest do
     assert ETS.count(MyApp.Other, [:open], []) == {:ok, 1}
   end
 
+  describe "the write log" do
+    defp durable(wal \\ 0), do: %{Branch.new(MyApp.Farm, durable: true) | wal: wal}
+    defp delta(n), do: %{overlay: %{}, gone: [{Herd, n}], base: %{}, log: []}
+
+    defp append_all(branch, seqs),
+      do: for(seq <- seqs, do: :ok = ETS.append(branch, seq, delta(seq), []))
+
+    test "the deltas after the branch's wal come back oldest first" do
+      branch = durable()
+      append_all(branch, [3, 1, 2, 10])
+
+      assert ETS.writes_after(branch, []) ==
+               {:ok, [{1, delta(1)}, {2, delta(2)}, {3, delta(3)}, {10, delta(10)}]}
+
+      assert ETS.writes_after(%{branch | wal: 2}, []) == {:ok, [{3, delta(3)}, {10, delta(10)}]}
+      assert ETS.writes_after(%{branch | wal: 10}, []) == {:ok, []}
+    end
+
+    test "the deltas of other branches are not returned" do
+      one = durable()
+      other = durable()
+      append_all(one, [1, 2])
+      append_all(other, [1])
+
+      assert ETS.writes_after(one, []) == {:ok, [{1, delta(1)}, {2, delta(2)}]}
+      assert ETS.writes_after(other, []) == {:ok, [{1, delta(1)}]}
+    end
+
+    test "putting a durable branch deletes the deltas its wal covers, and only those" do
+      branch = durable()
+      append_all(branch, [1, 2, 3])
+
+      assert ETS.put(%{branch | wal: 2}, []) == :ok
+
+      assert ETS.writes_after(branch, []) == {:ok, [{3, delta(3)}]}
+      assert {:ok, %{wal: 2}} = ETS.fetch(branch.id, [])
+    end
+
+    test "putting a branch that is not durable leaves the log alone" do
+      branch = %{durable() | durable: false}
+      append_all(branch, [1])
+
+      assert ETS.put(%{branch | wal: 5}, []) == :ok
+      assert ETS.writes_after(branch, []) == {:ok, [{1, delta(1)}]}
+    end
+
+    test "deleting a branch deletes its log" do
+      branch = durable()
+      other = durable()
+      append_all(branch, [1, 2])
+      append_all(other, [1])
+      :ok = ETS.put(branch, [])
+
+      assert ETS.delete(branch.id, []) == :ok
+
+      assert ETS.writes_after(branch, []) == {:ok, []}
+      assert ETS.writes_after(other, []) == {:ok, [{1, delta(1)}]}
+    end
+
+    test "listing and counting see branches only" do
+      branch = durable()
+      :ok = ETS.put(branch, [])
+      append_all(branch, [1, 2])
+
+      assert ETS.list(MyApp.Farm, [], []) == {:ok, [branch]}
+      assert ETS.count(MyApp.Farm, [:open], []) == {:ok, 1}
+    end
+
+    @tag supervisor: false
+    test "without Ramal.Supervisor it reports :storage too" do
+      assert {:error, %Error{reason: :storage}} = ETS.append(durable(), 1, delta(1), [])
+      assert {:error, %Error{reason: :storage}} = ETS.writes_after(durable(), [])
+    end
+  end
+
   @tag supervisor: false
   test "without Ramal.Supervisor the backend reports :storage instead of crashing" do
     assert {:error, %Error{reason: :storage}} = ETS.put(Branch.new(MyApp.Farm), [])

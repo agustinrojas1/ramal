@@ -124,6 +124,115 @@ defmodule Ramal.Storage.PostgresTest do
     end
   end
 
+  describe "the write log" do
+    alias Ecto.Adapters.SQL
+
+    defp durable(wal \\ 0), do: branch(durable: true, wal: wal)
+    defp delta(n), do: %{overlay: %{}, gone: [{Herd, n}], base: %{}, log: []}
+
+    defp stored_seqs(branch) do
+      {:ok, id} = Ecto.UUID.dump(branch.id)
+
+      %{rows: rows} =
+        SQL.query!(
+          TestRepo,
+          "SELECT seq FROM ramal_branch_writes WHERE branch_id = $1 ORDER BY seq",
+          [id]
+        )
+
+      List.flatten(rows)
+    end
+
+    defp stored(branch) do
+      branch = branch
+      :ok = Postgres.put(branch, @config)
+      branch
+    end
+
+    defp append_all(branch, seqs),
+      do: for(seq <- seqs, do: :ok = Postgres.append(branch, seq, delta(seq), @config))
+
+    test "the deltas after the branch's wal come back oldest first, decoded" do
+      branch = stored(durable())
+      append_all(branch, [3, 1, 2])
+
+      assert Postgres.writes_after(branch, @config) ==
+               {:ok, [{1, delta(1)}, {2, delta(2)}, {3, delta(3)}]}
+
+      assert Postgres.writes_after(%{branch | wal: 2}, @config) == {:ok, [{3, delta(3)}]}
+      assert Postgres.writes_after(%{branch | wal: 3}, @config) == {:ok, []}
+    end
+
+    test "the deltas of another branch are not returned" do
+      one = stored(durable())
+      other = stored(durable())
+      append_all(one, [1, 2])
+      append_all(other, [1])
+
+      assert {:ok, [{1, _}, {2, _}]} = Postgres.writes_after(one, @config)
+      assert {:ok, [{1, _}]} = Postgres.writes_after(other, @config)
+    end
+
+    test "a delta is not stored twice under one number" do
+      branch = stored(durable())
+      append_all(branch, [1])
+
+      assert {:error, %Error{reason: :storage}} = Postgres.append(branch, 1, delta(1), @config)
+      assert stored_seqs(branch) == [1]
+    end
+
+    test "putting a durable branch deletes the deltas its wal covers, and only those" do
+      branch = stored(durable())
+      append_all(branch, [1, 2, 3])
+
+      assert Postgres.put(%{branch | wal: 2}, @config) == :ok
+
+      assert stored_seqs(branch) == [3]
+      assert {:ok, %{wal: 2, durable: true}} = Postgres.fetch(branch.id, @config)
+    end
+
+    test "putting a branch that is not durable does not touch the table" do
+      branch = stored(durable())
+      append_all(branch, [1])
+
+      assert Postgres.put(%{branch | durable: false, wal: 5}, @config) == :ok
+      assert stored_seqs(branch) == [1]
+    end
+
+    test "deleting a branch deletes its log" do
+      branch = stored(durable())
+      other = stored(durable())
+      append_all(branch, [1, 2])
+      append_all(other, [1])
+
+      assert Postgres.delete(branch.id, @config) == :ok
+
+      assert stored_seqs(branch) == []
+      assert stored_seqs(other) == [1]
+    end
+
+    test "a delta of a branch that is not stored is refused" do
+      assert {:error, %Error{reason: :storage}} = Postgres.append(durable(), 1, delta(1), @config)
+    end
+
+    test "a delta that cannot be stored fails and stores nothing" do
+      branch = stored(durable())
+      entry = {:create, Herd, :create, %{pid: self()}, nil, [key: "k"], DateTime.utc_now()}
+      bad = %{overlay: %{}, gone: [], base: %{}, log: [entry]}
+
+      assert {:error, %Error{reason: :storage}} = Postgres.append(branch, 1, bad, @config)
+      assert stored_seqs(branch) == []
+    end
+
+    test "a missing :repo or a branch id that is not a UUID is a :storage error" do
+      assert {:error, %Error{reason: :storage, message: message}} =
+               Postgres.append(durable(), 1, delta(1), [])
+
+      assert message =~ "repo: MyApp.Repo"
+      assert {:error, %Error{reason: :storage}} = Postgres.writes_after(branch(id: "b1"), @config)
+    end
+  end
+
   describe "the owner column" do
     alias Ecto.Adapters.SQL
 
@@ -344,13 +453,24 @@ defmodule Ramal.Storage.PostgresTest do
     end
   end
 
-  # Starts another BEAM on the same compiled code, so nothing is loaded in it but what the fetch itself loads.
-  defp fetch_in_new_vm(id) do
+  # Starts another BEAM on the same compiled code, so nothing is loaded in it but what the fetch itself loads. With
+  # `log: true` it also applies the write log, as a branch process loads a durable branch.
+  defp fetch_in_new_vm(id, log \\ false) do
     script = """
     {:ok, _} = Application.ensure_all_started(:ecto_sql)
     {:ok, _} = Application.ensure_all_started(:postgrex)
     {:ok, _} = Ramal.TestRepo.start_link()
-    {:ok, branch} = Ramal.Storage.Postgres.fetch("#{id}", repo: Ramal.TestRepo)
+    config = [repo: Ramal.TestRepo]
+    {:ok, branch} = Ramal.Storage.Postgres.fetch("#{id}", config)
+
+    branch =
+      if #{log} do
+        {:ok, deltas} = Ramal.Storage.Postgres.writes_after(branch, config)
+        Enum.reduce(deltas, branch, fn {seq, delta}, acc -> Ramal.Branch.apply_delta(acc, seq, delta) end)
+      else
+        branch
+      end
+
     IO.puts("RAMAL_BRANCH:" <> Base.encode64(:erlang.term_to_binary(branch)))
     """
 

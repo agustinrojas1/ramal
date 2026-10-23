@@ -17,6 +17,11 @@ defmodule Ramal.Branch do
     interprets it: `Ramal.list/2` can filter by it (ADR 0018) and nothing else reads it
   * `tenant` - the one tenant the branch works in, `nil` unless given at `branch/2` (ADR 0034). A fork keeps it
   * `proposal` - `nil` until `Ramal.propose/2`; then `t:proposal/0`
+  * `durable` - whether the branch appends the writes of every action that ends to the storage's write log, so a crash
+    loses none of them (ADR 0048). Set at `branch/2` and kept by a fork
+  * `wal` - the sequence number of the last delta of the write log this struct includes. Storage deletes the deltas up
+    to it when the branch is stored as a snapshot, and a load applies the ones after it. `0` for a branch that never
+    appended
 
   Nothing here touches a process or storage, so it is tested with plain data.
 
@@ -89,7 +94,21 @@ defmodule Ramal.Branch do
           metadata: map,
           owner: term,
           tenant: term,
-          proposal: proposal | nil
+          proposal: proposal | nil,
+          durable: boolean,
+          wal: non_neg_integer
+        }
+
+  @typedoc """
+  What one action added to the branch (ADR 0048), as `delta/2` builds it and `apply_delta/2` applies it: the overlay
+  entries and base rows of the rows the action wrote as they stand when it ends, the rows whose entry is gone (a created
+  row the action then destroyed), and the action's log entries, oldest first.
+  """
+  @type delta :: %{
+          overlay: %{optional(ref) => Overlay.entry()},
+          gone: [ref],
+          base: %{optional(ref) => base_row},
+          log: [log_entry]
         }
 
   # `inspect/1` shows the branch's identity and nothing it holds. The log keeps the raw input of every captured action
@@ -110,7 +129,9 @@ defmodule Ramal.Branch do
     metadata: %{},
     owner: nil,
     tenant: nil,
-    proposal: nil
+    proposal: nil,
+    durable: false,
+    wal: 0
   ]
 
   @doc """
@@ -123,6 +144,8 @@ defmodule Ramal.Branch do
     * `:owner` - who the branch belongs to, any term, default `nil` (see `Ramal.list/2`)
     * `:tenant` - the tenant the branch works in, default `nil`: the branch then refuses multitenant resources used with
       a tenant (ADR 0034)
+    * `:durable` - append every action's writes to the storage's write log when the action ends, default `false`
+      (ADR 0048)
 
   ## Example
 
@@ -139,7 +162,8 @@ defmodule Ramal.Branch do
       inserted_at: DateTime.utc_now(),
       metadata: Keyword.get(opts, :metadata, %{}),
       owner: opts[:owner],
-      tenant: opts[:tenant]
+      tenant: opts[:tenant],
+      durable: Keyword.get(opts, :durable, false)
     }
   end
 
@@ -424,7 +448,8 @@ defmodule Ramal.Branch do
   end
 
   @doc """
-  A new open branch that starts as a copy of `parent`: same domain, tenant, overlay, log and base.
+  A new open branch that starts as a copy of `parent`: same domain, tenant, overlay, log and base. It has no write log of
+  its own yet (`wal` is `0`): the storage holds the fork as a snapshot of everything it copied.
 
   Overlays, logs and the base are immutable, so the copy shares structure with the parent and neither sees the
   other's later changes. `metadata` gets `forked_from: parent.id`.
@@ -434,6 +459,7 @@ defmodule Ramal.Branch do
     * `:name` - default: the parent's name
     * `:metadata` - default: the parent's metadata
     * `:owner` - default: the parent's owner
+    * `:durable` - default: the parent's
 
   ## Example
 
@@ -454,7 +480,9 @@ defmodule Ramal.Branch do
         name: Keyword.get(opts, :name, parent.name),
         inserted_at: DateTime.utc_now(),
         metadata: metadata,
-        owner: Keyword.get(opts, :owner, parent.owner)
+        owner: Keyword.get(opts, :owner, parent.owner),
+        durable: Keyword.get(opts, :durable, parent.durable),
+        wal: 0
     }
   end
 
@@ -529,4 +557,58 @@ defmodule Ramal.Branch do
 
   defp restore(map, ref, :none), do: Map.delete(map, ref)
   defp restore(map, ref, value), do: Map.put(map, ref, value)
+
+  @doc """
+  What the writes described by `undos` (newest first, as the process holds them) added to the branch: the delta a
+  durable branch appends to the storage's write log when their action ends (ADR 0048).
+
+  The delta holds the overlay entry and base row each written row has now, not the writes one by one, so it is as small
+  as the rows the action touched. That is the action's own rows only: no running action writes a row another running
+  action wrote (`:row_busy`), so nothing in it belongs to an action that has not ended.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> entry = {:create, MyApp.Herd, :create, %{}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
+      iex> {branch, undo} = Ramal.Branch.put_write(branch, :created, {MyApp.Herd, 1}, %{id: 1}, nil, entry)
+      iex> delta = Ramal.Branch.delta(branch, [undo])
+      iex> {delta.overlay, delta.gone, delta.base, delta.log == [entry]}
+      {%{{MyApp.Herd, 1} => {:created, %{id: 1}}}, [], %{}, true}
+  """
+  @spec delta(t, [undo]) :: delta
+  def delta(%__MODULE__{} = branch, undos) do
+    refs = undos |> Enum.map(& &1.ref) |> Enum.uniq()
+
+    %{
+      overlay: Map.take(branch.overlay, refs),
+      gone: Enum.reject(refs, &is_map_key(branch.overlay, &1)),
+      base: Map.take(branch.base, refs),
+      log: undos |> Enum.map(& &1.entry) |> Enum.reverse()
+    }
+  end
+
+  @doc """
+  The branch with `delta` applied, as the write log of storage is read back: the entries of its rows replace the
+  branch's, its log entries go on the log, and `wal` becomes `seq`. Deltas are applied in `seq` order, which is the order
+  their actions ended in.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> entry = {:create, MyApp.Herd, :create, %{}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
+      iex> {written, undo} = Ramal.Branch.put_write(branch, :created, {MyApp.Herd, 1}, %{id: 1}, nil, entry)
+      iex> delta = Ramal.Branch.delta(written, [undo])
+      iex> Ramal.Branch.apply_delta(branch, 1, delta) == %{written | wal: 1}
+      true
+  """
+  @spec apply_delta(t, pos_integer, delta) :: t
+  def apply_delta(%__MODULE__{} = branch, seq, delta) do
+    %{
+      branch
+      | overlay: branch.overlay |> Map.drop(delta.gone) |> Map.merge(delta.overlay),
+        base: Map.merge(branch.base, delta.base),
+        log: Enum.reduce(delta.log, branch.log, &[&1 | &2]),
+        wal: seq
+    }
+  end
 end

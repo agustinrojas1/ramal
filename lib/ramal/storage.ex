@@ -3,7 +3,9 @@ defmodule Ramal.Storage do
   Where branches are kept while no process holds them.
 
   A branch process persists its state here when it unloads (after `idle_timeout`), when the supervisor shuts down,
-  and when a branch is created, merged or discarded. Writes between two of those moments live only in the process.
+  and when a branch is created, merged or discarded. Writes between two of those moments live only in the process,
+  unless the branch is durable (`durable: true` at `Ramal.branch/2`, ADR 0048): then the writes of every action that
+  ends are appended to a write log here before the action returns, and a load reads the snapshot with the log applied.
   The process loads from here on demand, so the host never needs to know whether a branch is in memory.
 
   Every callback receives the storage config as its last argument: whatever options were given to `Ramal.Supervisor`
@@ -13,7 +15,7 @@ defmodule Ramal.Storage do
   | backend | where | lifetime |
   |---|---|---|
   | `Ramal.Storage.ETS` | an ETS table owned by `Ramal.Supervisor` | until the supervisor stops |
-  | `Ramal.Storage.Postgres` | the `ramal_branches` table | durable |
+  | `Ramal.Storage.Postgres` | the `ramal_branches` table, and the `ramal_branch_writes` table for the write log | durable |
 
   ## Example
 
@@ -25,13 +27,17 @@ defmodule Ramal.Storage do
 
   @type config :: keyword
 
-  @doc "Stores the branch, replacing any earlier copy with the same id."
+  @doc """
+  Stores the branch, replacing any earlier copy with the same id. A durable branch (`durable: true`) is stored with
+  the `wal` it includes, and this also deletes the deltas of its write log up to that `wal`, which the snapshot covers
+  (ADR 0048). The snapshot is written first: a failure in between leaves deltas that `c:writes_after/2` ignores.
+  """
   @callback put(Branch.t(), config) :: :ok | {:error, Error.t()}
 
   @doc "The branch with that id, or `{:error, %Ramal.Error{reason: :not_found}}`."
   @callback fetch(id :: String.t(), config) :: {:ok, Branch.t()} | {:error, Error.t()}
 
-  @doc "Removes the branch. Removing a missing id is not an error."
+  @doc "Removes the branch, and its write log if it has one. Removing a missing id is not an error."
   @callback delete(id :: String.t(), config) :: :ok | {:error, Error.t()}
 
   @doc """
@@ -65,7 +71,64 @@ defmodule Ramal.Storage do
   """
   @callback mark_merged(Branch.t(), config) :: :ok | {:error, Error.t()}
 
-  @optional_callbacks count: 3, mark_merged: 2
+  @doc """
+  Appends one delta to the write log of a durable branch (ADR 0048): what one action that ended added to the branch,
+  as `Ramal.Branch.delta/2` builds it. `seq` is the delta's place in the log, one more than the one before it, and
+  is never reused for the branch. Returns `:ok` once the delta is stored, because the action that made it returns
+  only then; a failure is `{:error, %Ramal.Error{reason: :storage}}` and the action fails with it.
+
+  Optional; a branch can be `durable: true` only on a storage that defines this and `c:writes_after/2`. `branch` is the
+  branch as the process holds it; a backend needs its `id` (and, where it fences writers, more of it).
+
+  The delta is a term. A backend that keeps text encodes it with `Ramal.Storage.Codec.encode_delta/1`.
+  """
+  @callback append(Branch.t(), seq :: pos_integer, Branch.delta(), config) ::
+              :ok | {:error, Error.t()}
+
+  @doc """
+  The deltas of the write log with a `seq` above `branch.wal`, oldest first, as `{seq, delta}`. A load applies them to
+  the snapshot `c:fetch/2` returned, in this order (`Ramal.Branch.apply_delta/3`), which is the order their actions
+  ended in. `branch` is the snapshot.
+
+  Optional, with `c:append/4`. A stored snapshot makes the deltas it covers (`seq <= wal`) dead: `c:put/2` deletes
+  them, and this callback never returns them, even if the delete did not happen.
+  """
+  @callback writes_after(Branch.t(), config) ::
+              {:ok, [{pos_integer, Branch.delta()}]} | {:error, Error.t()}
+
+  @optional_callbacks count: 3, mark_merged: 2, append: 4, writes_after: 2
+
+  @doc """
+  Whether `storage` can keep the write log of a durable branch: it defines `c:append/4` and `c:writes_after/2`.
+
+  ## Example
+
+      iex> Ramal.Storage.durable?(Ramal.Storage.ETS)
+      true
+  """
+  @spec durable?(module) :: boolean
+  def durable?(storage) do
+    Code.ensure_loaded?(storage) and function_exported?(storage, :append, 4) and
+      function_exported?(storage, :writes_after, 2)
+  end
+
+  @doc """
+  The error for a durable branch on a storage that cannot keep its write log.
+
+  ## Example
+
+      iex> Ramal.Storage.durability_unsupported(MyApp.Storage).reason
+      :durability_unsupported
+  """
+  @spec durability_unsupported(module) :: Error.t()
+  def durability_unsupported(storage) do
+    Error.new(
+      :durability_unsupported,
+      "#{inspect(storage)} cannot keep the write log of a durable branch: it defines neither append/4 nor " <>
+        "writes_after/2 (Ramal.Storage). Use Ramal.Storage.Postgres, add the two callbacks, or drop durable: true",
+      %{storage: storage}
+    )
+  end
 
   @doc """
   The error `c:mark_merged/2` returns for a branch the storage already holds as merged.

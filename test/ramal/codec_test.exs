@@ -71,6 +71,86 @@ defmodule Ramal.Storage.CodecTest do
     assert round_trip(stored) == {:ok, stored}
   end
 
+  describe "the write log of a durable branch (ADR 0048)" do
+    # The undos a delta is built from, for the writes in the log of a branch: the delta reads their refs and entries.
+    defp undos(branch) do
+      for {_type, resource, _action, _params, _actor, opts, _at} = entry <- branch.log,
+          do: %{ref: {resource, opts[:key]}, entry: entry}
+    end
+
+    defp delta_round_trip(delta) do
+      {:ok, stored} = Codec.encode_delta(delta)
+      Codec.decode_delta("b1", stored |> Jason.encode!() |> Jason.decode!())
+    end
+
+    test "a delta of writes of every kind comes back equal", %{herds: herds, paddocks: paddocks} do
+      {:ok, branch} = Ramal.branch(Farm, durable: true)
+
+      Ramal.run!(branch, fn ->
+        created = Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false)
+        Ash.update!(herds.r7, %{head: 31}, authorize?: false)
+        Ash.destroy!(herds.r9, authorize?: false)
+        Ash.destroy!(created, authorize?: false)
+        Ash.create!(Paddock, %{name: "L99", capacity_head: 5}, action: :upsert, authorize?: false)
+
+        Ash.update!(herds.r8, %{to_paddock_id: paddocks.l18.id},
+          action: :move,
+          actor: %{role: :admin}
+        )
+      end)
+
+      {:ok, stored} = Ramal.get(branch.id)
+      delta = Branch.delta(stored, undos(stored))
+
+      assert delta.overlay != %{} and delta.base != %{} and delta.gone != []
+      assert delta_round_trip(delta) == {:ok, delta}
+    end
+
+    test "the state of a durable branch names its write log, in a version an earlier release refuses" do
+      branch = %{Branch.new(Farm, durable: true) | wal: 7}
+
+      {:ok, state} = Codec.encode_state(branch)
+      assert {state["version"], state["durable"], state["wal"]} == {4, true, 7}
+      assert round_trip(branch) == {:ok, branch}
+    end
+
+    test "the state of a branch that is not durable is what it always was" do
+      {:ok, state} = Codec.encode_state(Branch.new(Farm))
+
+      assert state["version"] == 2
+      refute Map.has_key?(state, "durable")
+      refute Map.has_key?(state, "wal")
+      assert {:ok, %Branch{durable: false, wal: 0}} = round_trip(Branch.new(Farm))
+    end
+
+    test "a value that cannot be stored fails the delta and names it" do
+      entry = {:create, Herd, :create, %{nested: [self()]}, nil, [key: "k"], DateTime.utc_now()}
+      delta = %{overlay: %{}, gone: [], base: %{}, log: [entry]}
+
+      assert {:error, %Error{reason: :storage, details: %{path: path}}} =
+               Codec.encode_delta(delta)
+
+      assert path == ["log", "Ramal.Test.Farm.Herd", "create", "params", "nested"]
+    end
+
+    test "a delta from a newer version or a module that is not there is refused" do
+      assert {:error, %Error{reason: :storage, message: message}} =
+               Codec.decode_delta("b1", %{"version" => 99})
+
+      assert message =~ "version 99"
+
+      stored = %{
+        "version" => 2,
+        "overlay" => [],
+        "base" => [],
+        "log" => [],
+        "gone" => [%{"resource" => "Elixir.Nope.Nothing", "key" => 1}]
+      }
+
+      assert {:error, %Error{reason: :storage}} = Codec.decode_delta("b1", stored)
+    end
+  end
+
   test "terms of every shape in action input, actor and metadata survive" do
     now = DateTime.utc_now()
 
@@ -462,9 +542,9 @@ defmodule Ramal.Storage.CodecTest do
       branch = Branch.new(Farm)
 
       assert {:error, %Error{reason: :storage, message: message}} =
-               Codec.decode_state(columns(branch), %{"version" => 3})
+               Codec.decode_state(columns(branch), %{"version" => 99})
 
-      assert message =~ "version 3"
+      assert message =~ "version 99"
     end
 
     test "refuses a module that is not on the code path" do

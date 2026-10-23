@@ -13,6 +13,10 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     filter of `Ramal.list/2`; nothing writes it, and it is `NULL` for an unowned branch. A table made by 0.3.0 or
     earlier gets it from the second migration `mix ramal.gen.migration` writes; until then everything but the `owner:`
     filter works.
+    The write log of a durable branch (ADR 0048) is in `ramal_branch_writes`: one row per action that ended, with the
+    branch's `id`, the `seq` of the delta and the delta (jsonb) as `Ramal.Storage.Codec.encode_delta/1` writes it. The
+    third migration `mix ramal.gen.migration` writes creates it, with the branch id as a foreign key that cascades, so
+    deleting a branch deletes its log. Without the table everything but `durable: true` works.
     The branch process calls this module from its own process, so the repo's pool serves it like any other
     caller. The module exists only when Ecto SQL is a dependency of the host.
 
@@ -29,6 +33,7 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     alias Ramal.Storage.Codec
 
     @table "ramal_branches"
+    @writes "ramal_branch_writes"
     @columns "id, domain, name, status, state"
 
     @doc """
@@ -68,8 +73,53 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
                state,
                DateTime.to_naive(branch.inserted_at)
              ]) do
+        drop_covered(repo, id, branch)
+      end
+    end
+
+    # The snapshot is written first and the deltas it covers deleted after it, so a failure between the two leaves
+    # deltas that `writes_after/2` ignores (`seq <= wal`) and the next snapshot deletes. Nothing is read or deleted for
+    # a branch that is not durable, or has not appended yet, so they need not have the table.
+    defp drop_covered(repo, id, %Branch{durable: true, wal: wal}) when wal > 0 do
+      with {:ok, _result} <-
+             query(repo, "DELETE FROM #{@writes} WHERE branch_id = $1 AND seq <= $2", [id, wal]) do
         :ok
       end
+    end
+
+    defp drop_covered(_repo, _id, _branch), do: :ok
+
+    @impl true
+    def append(%Branch{} = branch, seq, delta, config) do
+      with {:ok, repo} <- repo(config),
+           {:ok, id} <- dump_id(branch.id),
+           {:ok, encoded} <- Codec.encode_delta(delta),
+           {:ok, _result} <-
+             query(repo, "INSERT INTO #{@writes} (branch_id, seq, delta) VALUES ($1, $2, $3)", [
+               id,
+               seq,
+               encoded
+             ]) do
+        :ok
+      end
+    end
+
+    @impl true
+    def writes_after(%Branch{} = branch, config) do
+      with {:ok, repo} <- repo(config),
+           {:ok, id} <- dump_id(branch.id),
+           {:ok, result} <-
+             query(
+               repo,
+               "SELECT seq, delta FROM #{@writes} WHERE branch_id = $1 AND seq > $2 ORDER BY seq",
+               [id, branch.wal]
+             ) do
+        result.rows |> Enum.map(&decode_write(branch.id, &1)) |> collect()
+      end
+    end
+
+    defp decode_write(id, [seq, stored]) do
+      with {:ok, delta} <- Codec.decode_delta(id, stored), do: {:ok, {seq, delta}}
     end
 
     # The WHERE of DO UPDATE leaves a row that is already merged as it is and returns nothing for it: the check and the
@@ -253,7 +303,7 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     defp failed(exception) do
       Error.new(
         :storage,
-        "Postgres storage failed: #{Exception.message(exception)}; is the ramal_branches table migrated (mix ramal.gen.migration writes what is missing, the owner column included)?",
+        "Postgres storage failed: #{Exception.message(exception)}; are the ramal_branches table and, for a durable branch, the ramal_branch_writes table migrated (mix ramal.gen.migration writes what is missing)?",
         %{exception: exception}
       )
     end
