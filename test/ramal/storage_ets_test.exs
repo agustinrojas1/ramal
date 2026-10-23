@@ -65,7 +65,7 @@ defmodule Ramal.Storage.ETSTest do
 
   describe "the write log" do
     defp durable(wal \\ 0), do: %{Branch.new(MyApp.Farm, durable: true) | wal: wal}
-    defp delta(n), do: %{overlay: %{}, gone: [{Herd, n}], base: %{}, log: []}
+    defp delta(n), do: %{overlay: %{}, gone: [{Herd, n}], base: %{}, log: [], next_placeholder: 0}
 
     defp append_all(branch, seqs),
       do: for(seq <- seqs, do: :ok = ETS.append(branch, seq, delta(seq), []))

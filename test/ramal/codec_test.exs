@@ -125,7 +125,7 @@ defmodule Ramal.Storage.CodecTest do
 
     test "a value that cannot be stored fails the delta and names it" do
       entry = {:create, Herd, :create, %{nested: [self()]}, nil, [key: "k"], DateTime.utc_now()}
-      delta = %{overlay: %{}, gone: [], base: %{}, log: [entry]}
+      delta = %{overlay: %{}, gone: [], base: %{}, log: [entry], next_placeholder: 0}
 
       assert {:error, %Error{reason: :storage, details: %{path: path}}} =
                Codec.encode_delta(delta)
@@ -171,6 +171,18 @@ defmodule Ramal.Storage.CodecTest do
         log: [
           {:create, Herd, :create, input, %{id: 1, role: :admin}, [key: "k", tenant: nil], now}
         ]
+    }
+
+    assert round_trip(branch) == {:ok, branch}
+  end
+
+  test "the root and the attributes a caller set outside the input survive a round trip" do
+    forced = %{head: 99, name: "R7b", moved_on: ~D[2026-01-02]}
+    opts = [key: "k", tenant: nil, nested?: false, root: 221_097_288_452_740, forced: forced]
+
+    branch = %{
+      Branch.new(Farm)
+      | log: [{:update, Herd, :update, %{}, nil, opts, DateTime.utc_now()}]
     }
 
     assert round_trip(branch) == {:ok, branch}

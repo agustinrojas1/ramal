@@ -17,6 +17,8 @@ defmodule Ramal.Branch do
     interprets it: `Ramal.list/2` can filter by it (ADR 0018) and nothing else reads it
   * `tenant` - the one tenant the branch works in, `nil` unless given at `branch/2` (ADR 0034). A fork keeps it
   * `proposal` - `nil` until `Ramal.propose/2`; then `t:proposal/0`
+  * `next_placeholder` - how many placeholder keys the branch handed out for rows whose key the database generates
+    (ADR 0042). A fork keeps the count, and its placeholders are its own
   * `durable` - whether the branch appends the writes of every action that ends to the storage's write log, so a crash
     loses none of them (ADR 0048). Set at `branch/2` and kept by a fork
   * `wal` - the sequence number of the last delta of the write log this struct includes. Storage deletes the deltas up
@@ -65,8 +67,10 @@ defmodule Ramal.Branch do
 
   @typedoc """
   A captured write: `{action_type, resource, action_name, input, actor, opts, at}`. `input` is the params the action
-  was called with, `opts` carries `:key` (the primary key written), `:tenant` and `:nested?` (the write was made by
-  a hook of another captured action, so replaying that action reproduces it).
+  was called with, `opts` carries `:key` (the primary key written), `:tenant`, `:nested?` (the write was made by
+  a hook of another captured action, so replaying that action reproduces it), `:upsert` (`{identity, fields, found?}`
+  for a create that was an upsert, ADR 0037) and `:generated_key?` (the key is a placeholder for one the database
+  generates, ADR 0042).
   """
   @type log_entry ::
           {Ash.Resource.Actions.action_type(), module, atom, map, term, keyword, DateTime.t()}
@@ -95,6 +99,7 @@ defmodule Ramal.Branch do
           owner: term,
           tenant: term,
           proposal: proposal | nil,
+          next_placeholder: non_neg_integer,
           durable: boolean,
           wal: non_neg_integer
         }
@@ -102,13 +107,15 @@ defmodule Ramal.Branch do
   @typedoc """
   What one action added to the branch (ADR 0048), as `delta/2` builds it and `apply_delta/2` applies it: the overlay
   entries and base rows of the rows the action wrote as they stand when it ends, the rows whose entry is gone (a created
-  row the action then destroyed), and the action's log entries, oldest first.
+  row the action then destroyed), the action's log entries, oldest first, and `next_placeholder`, the count of
+  placeholder keys the branch had handed out (ADR 0042), so that a recovered branch does not hand out one again.
   """
   @type delta :: %{
           overlay: %{optional(ref) => Overlay.entry()},
           gone: [ref],
           base: %{optional(ref) => base_row},
-          log: [log_entry]
+          log: [log_entry],
+          next_placeholder: non_neg_integer
         }
 
   # `inspect/1` shows the branch's identity and nothing it holds. The log keeps the raw input of every captured action
@@ -130,6 +137,7 @@ defmodule Ramal.Branch do
     owner: nil,
     tenant: nil,
     proposal: nil,
+    next_placeholder: 0,
     durable: false,
     wal: 0
   ]
@@ -166,6 +174,37 @@ defmodule Ramal.Branch do
       durable: Keyword.get(opts, :durable, false)
     }
   end
+
+  @placeholder_base -2_147_483_648
+
+  @doc """
+  A placeholder key for a row whose key the database generates, and the branch that has handed it out.
+
+  An integer key gets `-2_147_483_648 + n` for the branch's `n`th placeholder: it fits `int4` and `int8`, so a filter on
+  it reaches Postgres without overflowing, and a generated key is positive, so it cannot be mistaken for a real one.
+  A UUID key gets a fresh UUID. Any other type has no placeholder (`:error`).
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> {:ok, key, branch} = Ramal.Branch.placeholder(branch, Ash.Type.Integer)
+      iex> {key, branch.next_placeholder}
+      {-2_147_483_647, 1}
+      iex> Ramal.Branch.placeholder(branch, Ash.Type.String)
+      :error
+  """
+  @spec placeholder(t, module) :: {:ok, term, t} | :error
+  def placeholder(%__MODULE__{} = branch, Ash.Type.Integer) do
+    n = branch.next_placeholder + 1
+    {:ok, @placeholder_base + n, %{branch | next_placeholder: n}}
+  end
+
+  def placeholder(%__MODULE__{} = branch, type) when type in [Ash.Type.UUID, Ash.Type.UUIDv7] do
+    n = branch.next_placeholder + 1
+    {:ok, Ash.UUID.generate(), %{branch | next_placeholder: n}}
+  end
+
+  def placeholder(%__MODULE__{}, _type), do: :error
 
   @doc """
   Whether the branch still accepts reads, writes and merges.
@@ -572,8 +611,8 @@ defmodule Ramal.Branch do
       iex> entry = {:create, MyApp.Herd, :create, %{}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
       iex> {branch, undo} = Ramal.Branch.put_write(branch, :created, {MyApp.Herd, 1}, %{id: 1}, nil, entry)
       iex> delta = Ramal.Branch.delta(branch, [undo])
-      iex> {delta.overlay, delta.gone, delta.base, delta.log == [entry]}
-      {%{{MyApp.Herd, 1} => {:created, %{id: 1}}}, [], %{}, true}
+      iex> {delta.overlay, delta.gone, delta.base, delta.log == [entry], delta.next_placeholder}
+      {%{{MyApp.Herd, 1} => {:created, %{id: 1}}}, [], %{}, true, 0}
   """
   @spec delta(t, [undo]) :: delta
   def delta(%__MODULE__{} = branch, undos) do
@@ -583,7 +622,8 @@ defmodule Ramal.Branch do
       overlay: Map.take(branch.overlay, refs),
       gone: Enum.reject(refs, &is_map_key(branch.overlay, &1)),
       base: Map.take(branch.base, refs),
-      log: undos |> Enum.map(& &1.entry) |> Enum.reverse()
+      log: undos |> Enum.map(& &1.entry) |> Enum.reverse(),
+      next_placeholder: branch.next_placeholder
     }
   end
 
@@ -608,6 +648,7 @@ defmodule Ramal.Branch do
       | overlay: branch.overlay |> Map.drop(delta.gone) |> Map.merge(delta.overlay),
         base: Map.merge(branch.base, delta.base),
         log: Enum.reduce(delta.log, branch.log, &[&1 | &2]),
+        next_placeholder: max(branch.next_placeholder, delta.next_placeholder),
         wal: seq
     }
   end

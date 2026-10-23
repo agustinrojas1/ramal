@@ -4,7 +4,7 @@ defmodule Ramal.Storage.Codec do
   in a `jsonb` column).
 
   `encode_state/1` covers what the table has no column for: overlay, base (fingerprints and snapshots), log, metadata,
-  the owner and the proposal. `decode_state/2` takes that map and the columns and gives the branch back, equal to the one encoded.
+  the owner, the proposal and the count of placeholder keys. `decode_state/2` takes that map and the columns and gives the branch back, equal to the one encoded.
 
   How values are written, confirmed against Ash 3.37 (`lib/ash/type/type.ex`):
 
@@ -64,7 +64,15 @@ defmodule Ramal.Storage.Codec do
     "rejected" => :rejected,
     "discarded" => :discarded
   }
-  @opt_names %{"key" => :key, "tenant" => :tenant, "nested?" => :nested?, "upsert" => :upsert}
+  @opt_names %{
+    "key" => :key,
+    "tenant" => :tenant,
+    "nested?" => :nested?,
+    "upsert" => :upsert,
+    "root" => :root,
+    "forced" => :forced,
+    "generated_key?" => :generated_key?
+  }
 
   @doc """
   The JSON-safe state of `branch`: overlay, base, log, metadata, owner, tenant and `inserted_at`.
@@ -87,7 +95,8 @@ defmodule Ramal.Storage.Codec do
        "owner" => term(branch.owner, ["owner"]),
        "tenant" => term(branch.tenant, ["tenant"]),
        "inserted_at" => term(branch.inserted_at, ["inserted_at"]),
-       "proposal" => proposal(branch.proposal)
+       "proposal" => proposal(branch.proposal),
+       "next_placeholder" => branch.next_placeholder
      }
      |> durable_fields(branch)
      |> dedupe_extras()}
@@ -109,12 +118,12 @@ defmodule Ramal.Storage.Codec do
 
   ## Example
 
-      iex> {:ok, delta} = Ramal.Storage.Codec.encode_delta(%{overlay: %{}, gone: [], base: %{}, log: []})
+      iex> {:ok, delta} = Ramal.Storage.Codec.encode_delta(%{overlay: %{}, gone: [], base: %{}, log: [], next_placeholder: 0})
       iex> {delta["overlay"], delta["gone"], delta["log"]}
       {[], [], []}
   """
   @spec encode_delta(Branch.delta()) :: {:ok, map} | {:error, Error.t()}
-  def encode_delta(%{overlay: overlay, gone: gone, base: base, log: log}) do
+  def encode_delta(%{overlay: overlay, gone: gone, base: base, log: log} = delta) do
     {:ok,
      dedupe_extras(%{
        "version" => @version,
@@ -127,7 +136,8 @@ defmodule Ramal.Storage.Codec do
            }
          end),
        "base" => Enum.map(base, &base_entry(&1, overlay)),
-       "log" => Enum.map(log, &log_entry/1)
+       "log" => Enum.map(log, &log_entry/1),
+       "next_placeholder" => delta.next_placeholder
      })}
   catch
     {:codec, message, path} ->
@@ -139,9 +149,9 @@ defmodule Ramal.Storage.Codec do
 
   ## Example
 
-      iex> {:ok, stored} = Ramal.Storage.Codec.encode_delta(%{overlay: %{}, gone: [], base: %{}, log: []})
+      iex> {:ok, stored} = Ramal.Storage.Codec.encode_delta(%{overlay: %{}, gone: [], base: %{}, log: [], next_placeholder: 0})
       iex> Ramal.Storage.Codec.decode_delta("b1", stored)
-      {:ok, %{overlay: %{}, gone: [], base: %{}, log: []}}
+      {:ok, %{overlay: %{}, gone: [], base: %{}, log: [], next_placeholder: 0}}
   """
   @spec decode_delta(String.t(), map) :: {:ok, Branch.delta()} | {:error, Error.t()}
   def decode_delta(id, %{"version" => version} = stored) when version in @readable_versions do
@@ -156,7 +166,8 @@ defmodule Ramal.Storage.Codec do
            {module!(resource), unterm(key)}
          end),
        base: Map.new(stored["base"], &decode_base_entry(&1, overlay)),
-       log: Enum.map(stored["log"], &decode_log_entry/1)
+       log: Enum.map(stored["log"], &decode_log_entry/1),
+       next_placeholder: stored["next_placeholder"] || 0
      }}
   rescue
     exception ->
@@ -229,6 +240,7 @@ defmodule Ramal.Storage.Codec do
        base: Map.new(state["base"], &decode_base_entry(&1, overlay)),
        log: Enum.map(state["log"], &decode_log_entry/1),
        proposal: decode_proposal(state["proposal"]),
+       next_placeholder: state["next_placeholder"] || 0,
        durable: state["durable"] == true,
        wal: state["wal"] || 0
      }}

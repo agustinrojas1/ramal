@@ -128,7 +128,7 @@ defmodule Ramal.Storage.PostgresTest do
     alias Ecto.Adapters.SQL
 
     defp durable(wal \\ 0), do: branch(durable: true, wal: wal)
-    defp delta(n), do: %{overlay: %{}, gone: [{Herd, n}], base: %{}, log: []}
+    defp delta(n), do: %{overlay: %{}, gone: [{Herd, n}], base: %{}, log: [], next_placeholder: 0}
 
     defp stored_seqs(branch) do
       {:ok, id} = Ecto.UUID.dump(branch.id)
@@ -218,7 +218,7 @@ defmodule Ramal.Storage.PostgresTest do
     test "a delta that cannot be stored fails and stores nothing" do
       branch = stored(durable())
       entry = {:create, Herd, :create, %{pid: self()}, nil, [key: "k"], DateTime.utc_now()}
-      bad = %{overlay: %{}, gone: [], base: %{}, log: [entry]}
+      bad = %{overlay: %{}, gone: [], base: %{}, log: [entry], next_placeholder: 0}
 
       assert {:error, %Error{reason: :storage}} = Postgres.append(branch, 1, bad, @config)
       assert stored_seqs(branch) == []

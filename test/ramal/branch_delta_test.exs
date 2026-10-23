@@ -169,6 +169,24 @@ defmodule Ramal.BranchDeltaTest do
     assert length(delta.log) == 2
   end
 
+  test "the placeholder count travels with the delta, so a recovered branch hands out no placeholder twice" do
+    start = Branch.new(MyApp.Farm, durable: true)
+    {:ok, key, branch} = Branch.placeholder(start, Ash.Type.Integer)
+
+    {branch, create} =
+      Branch.put_write(branch, :created, {Herd, key}, %{id: key}, nil, entry(:create, key))
+
+    delta = Branch.delta(branch, [create])
+    assert delta.next_placeholder == 1
+
+    replica = Branch.apply_delta(start, 1, delta)
+    assert replica.next_placeholder == 1
+    assert {:ok, next, _branch} = Branch.placeholder(replica, Ash.Type.Integer)
+    assert next == key + 1
+    # An older delta never takes the count back.
+    assert Branch.apply_delta(replica, 2, %{delta | next_placeholder: 0}).next_placeholder == 1
+  end
+
   test "a fork starts with an empty write log and keeps the parent's durability" do
     parent = %{Branch.new(MyApp.Farm, durable: true) | wal: 12}
 

@@ -46,6 +46,46 @@ defmodule Ramal.AggregateTest do
       assert Aggregate.compute(:min, :text, texts, Note) == "a"
     end
 
+    test "first takes the first value, list every value, and both skip nil unless asked" do
+      records = [%{head: nil}, %{head: 30}, %{head: 12}, %{head: 30}, %{head: nil}]
+
+      assert Aggregate.compute(:first, :head, records, Herd) == 30
+      assert Aggregate.compute(:first, :head, records, Herd, include_nil?: true) == nil
+      assert Aggregate.compute(:first, :head, [], Herd) == nil
+      assert Aggregate.compute(:first, :head, [], Herd, include_nil?: true) == nil
+
+      assert Aggregate.compute(:list, :head, records, Herd) == [30, 12, 30]
+      assert Aggregate.compute(:list, :head, records, Herd, uniq?: true) == [30, 12]
+
+      assert Aggregate.compute(:list, :head, records, Herd, include_nil?: true) ==
+               [nil, 30, 12, 30, nil]
+
+      assert Aggregate.compute(:list, :head, records, Herd, include_nil?: true, uniq?: true) ==
+               [nil, 30, 12]
+
+      assert Aggregate.compute(:list, :head, [], Herd) == []
+    end
+
+    test "count with uniq? counts distinct values that are not nil" do
+      records = [%{head: nil}, %{head: 30}, %{head: 12}, %{head: 30}]
+
+      assert Aggregate.compute(:count, :head, records, Herd, uniq?: true) == 2
+      assert Aggregate.compute(:count, nil, records, Herd, uniq?: true) == 4
+      assert Aggregate.compute(:count, :head, [], Herd, uniq?: true) == 0
+    end
+
+    test "uniq? treats decimals that are equal as one value, as numeric does" do
+      records = [
+        %{score: Decimal.new("1.0")},
+        %{score: Decimal.new("1.00")},
+        %{score: Decimal.new("2")}
+      ]
+
+      assert Aggregate.compute(:count, :score, records, Note, uniq?: true) == 2
+      assert [first, _second] = Aggregate.compute(:list, :score, records, Note, uniq?: true)
+      assert Decimal.equal?(first, 1)
+    end
+
     test "refuses an unknown kind and a field that is not an attribute" do
       assert_raise ArgumentError, ~r/unknown aggregate kind :median/, fn ->
         Aggregate.compute(:median, :head, [], Herd)
@@ -170,6 +210,64 @@ defmodule Ramal.AggregateTest do
       end)
 
       assert Ramal.aggregate!(Herd, :sum, :head, authorize?: false) == 90
+    end
+
+    test "first and list follow the query's sort, outside a branch and inside", %{
+      branch: branch,
+      herds: herds
+    } do
+      by_head = Ash.Query.sort(Herd, head: :desc)
+      assert Ramal.aggregate(by_head, :first, :name, authorize?: false) == {:ok, "R8"}
+
+      assert Ramal.aggregate(by_head, :list, :name, authorize?: false) ==
+               {:ok, ["R8", "R7", "R9"]}
+
+      assert Ramal.aggregate(Herd, :list, :head, uniq?: true, authorize?: false)
+             |> elem(1)
+             |> Enum.sort() == [25, 30, 35]
+
+      Ramal.run!(branch, fn ->
+        Ash.update!(herds.r9, %{head: 99}, authorize?: false)
+        Ash.create!(Herd, %{name: "R10", head: 30}, authorize?: false)
+
+        assert Ramal.aggregate(by_head, :first, :name, authorize?: false) == {:ok, "R9"}
+
+        assert Ramal.aggregate(by_head, :list, :name, authorize?: false) ==
+                 {:ok, ["R9", "R8", "R7", "R10"]}
+
+        assert {:ok, heads} =
+                 Ramal.aggregate(by_head, :list, :head, uniq?: true, authorize?: false)
+
+        assert heads == [99, 35, 30]
+      end)
+
+      assert Ramal.aggregate(by_head, :first, :name, authorize?: false) == {:ok, "R8"}
+    end
+
+    test "first keeps a nil and list drops it unless asked, in a branch as outside", %{
+      branch: branch,
+      paddocks: paddocks
+    } do
+      by_name = Ash.Query.sort(Paddock, name: :asc)
+      assert Ramal.aggregate(by_name, :first, :hectares, authorize?: false) == {:ok, 40.0}
+
+      Ramal.run!(branch, fn ->
+        Ash.update!(paddocks.l07, %{hectares: nil}, authorize?: false)
+
+        assert Ramal.aggregate(by_name, :first, :hectares, authorize?: false) == {:ok, nil}
+        assert Ramal.aggregate(by_name, :list, :hectares, authorize?: false) == {:ok, [25.5]}
+
+        assert Ramal.aggregate(by_name, :list, :hectares, include_nil?: true, authorize?: false) ==
+                 {:ok, [nil, 25.5]}
+      end)
+
+      # The same questions outside a branch, with the data the branch just made.
+      assert {:ok, _} = Ramal.merge(branch, authorize?: false)
+      assert Ramal.aggregate(by_name, :first, :hectares, authorize?: false) == {:ok, nil}
+      assert Ramal.aggregate(by_name, :list, :hectares, authorize?: false) == {:ok, [25.5]}
+
+      assert Ramal.aggregate(by_name, :list, :hectares, include_nil?: true, authorize?: false) ==
+               {:ok, [nil, 25.5]}
     end
 
     test "honours the filter of the query", %{branch: branch, paddocks: paddocks} do

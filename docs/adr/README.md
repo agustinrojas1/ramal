@@ -27,8 +27,8 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0021](0021-owner-column.md) | The owner is a generated column with an index | accepted |
 | [0022](0022-compact-state.md) | The stored state is compact (version 2) | accepted |
 | [0023](0023-merge-commit-is-final.md) | A merge whose transaction committed is never reported as failed | accepted |
-| [0024](0024-text-sort-order.md) | A text sort inside a branch is byte order, and Ramal does not guess a collation | accepted |
-| [0025](0025-relationship-filters-in-elixir.md) | A filter or sort through a relationship the branch changed is evaluated in Elixir | accepted |
+| [0024](0024-text-sort-order.md) | A text sort inside a branch is byte order, and Ramal does not guess a collation | superseded by 0045 |
+| [0025](0025-relationship-filters-in-elixir.md) | A filter or sort through a relationship the branch changed is evaluated in Elixir | accepted, amended by 0047 |
 | [0026](0026-branch-checked-at-execution.md) | The branch is checked when the action runs, and tasks inherit it | accepted |
 | [0027](0027-domain-coverage.md) | A domain a branch cannot cover is refused | accepted |
 | [0028](0028-late-binding-queries.md) | A query prepared outside a branch is bound when it runs | accepted |
@@ -39,7 +39,14 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0033](0033-running-actions-hold-their-writes.md) | A running action's writes are its own until it ends | accepted |
 | [0034](0034-one-tenant-per-branch.md) | One tenant per branch | accepted |
 | [0035](0035-merged-status-in-the-merge-transaction.md) | The merge's transaction stores the merged status | accepted |
+| [0036](0036-bulk-actions-record-by-record.md) | Bulk actions run record by record inside a branch | accepted |
 | [0037](0037-result-checks-run-on-the-patched-rows.md) | Result checks run on the patched rows | accepted |
 | [0038](0038-upserts-in-the-branch-view.md) | Upserts are decided in the branch's view | accepted |
+| [0039](0039-first-list-and-uniq-aggregates.md) | `first`, `list` and `uniq?` aggregates are computed over the branch | accepted |
 | [0040](0040-relationship-pages-cut-per-source.md) | A relationship page is cut from the patched rows, per source record | accepted |
+| [0041](0041-replay-keeps-hook-keys-and-caller-attributes.md) | Replay keeps hook-created keys and caller-set attributes | accepted |
+| [0042](0042-placeholder-keys-for-generated-primary-keys.md) | Placeholder keys for database-generated primary keys | accepted |
+| [0045](0045-text-sorted-by-the-databases-collation.md) | Text sorted in a branch follows the database's collation | accepted |
+| [0046](0046-through-paths-walked-over-the-branch.md) | A `through` path of several hops is walked over the branch's rows | accepted |
+| [0047](0047-relationship-filter-narrowing.md) | A filter through a changed to-one relationship is narrowed in the data-layer query | accepted |
 | [0048](0048-durable-branches.md) | Durable branches store each action that ended | accepted |

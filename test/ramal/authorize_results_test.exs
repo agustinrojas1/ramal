@@ -67,11 +67,11 @@ defmodule Ramal.AuthorizeResultsTest do
     {:ok, branch} = Ramal.branch(Farm)
 
     Ramal.run!(branch, fn ->
-      Ash.create!(Herd, %{name: "a big", head: 300}, authorize?: false)
-      Ash.create!(Herd, %{name: "b small", head: 30}, authorize?: false)
+      Ash.create!(Herd, %{name: "aa big", head: 300}, authorize?: false)
+      Ash.create!(Herd, %{name: "bb small", head: 30}, authorize?: false)
 
       query = Herd |> Ash.Query.sort(:name) |> Ash.Query.filter(head >= 30) |> Ash.Query.limit(2)
-      assert checked(query) == ["b small"]
+      assert checked(query) == ["bb small"]
     end)
   end
 
@@ -80,8 +80,8 @@ defmodule Ramal.AuthorizeResultsTest do
     {:ok, branch} = Ramal.branch(Farm)
 
     Ramal.run!(branch, fn ->
-      Ash.create!(Herd, %{name: "a big", head: 300}, authorize?: false)
-      Ash.create!(Herd, %{name: "b small", head: 30}, authorize?: false)
+      Ash.create!(Herd, %{name: "aa big", head: 300}, authorize?: false)
+      Ash.create!(Herd, %{name: "bb small", head: 30}, authorize?: false)
 
       page =
         Herd
@@ -90,7 +90,7 @@ defmodule Ramal.AuthorizeResultsTest do
         |> Ash.read!(page: [limit: 2, offset: 0, count: true])
 
       # The page is cut from the patched list, then checked, as the database pages and then checks.
-      assert Enum.map(page.results, & &1.name) == ["b small"]
+      assert Enum.map(page.results, & &1.name) == ["bb small"]
       assert page.count == 4
     end)
   end

@@ -415,14 +415,19 @@ defmodule Ramal do
   check (ADR 0013): a branch that only aggregated a row and never read or wrote it does not go stale when that row
   changes.
 
-  `kind` is `:count`, `:exists`, `:sum`, `:min`, `:max` or `:avg`; `field` is an attribute (not needed for `:count` and
-  `:exists`). `opts` go to the read: `:actor`, `:authorize?`, `:tenant`, `:domain`, `:context`. A branch carried only by
+  `kind` is `:count`, `:exists`, `:sum`, `:min`, `:max`, `:avg`, `:first` or `:list`; `field` is an attribute (not needed
+  for `:count` and `:exists`). `:first` is the field of the first row of the query, `nil` included, as `Ash.first/3`;
+  `:list` is the field of every row in the query's order, without `nil`s unless `include_nil?: true`, and with each value
+  once, keeping the first, if `uniq?: true`, as `Ash.list/3`. Both depend on the order of the rows, so they are answered
+  by reading every matching row, and sort the query when the order matters. `opts` go to the read: `:actor`,
+  `:authorize?`, `:tenant`, `:domain`, `:context`. A branch carried only by
   `context: Ramal.context(branch)`, in `opts` or in the query's context, counts as a current branch, as it does for
   reads. Returns `{:ok, value}` or the error Ash returned. Raises `ArgumentError` for an unknown kind or a field that is
   not an attribute, in a branch or not.
 
-  `:min` and `:max` over strings compare bytes for the branch's rows, and the database compares by its collation for the
-  rest, so they can disagree on mixed-case text (ADR 0024).
+  `:min` and `:max` over strings of an AshPostgres resource compare by the collation of the column, for the branch's
+  rows as for the database's, so `"apple"` is the minimum of `"apple"` and `"Banana"` under `en_US.UTF-8`
+  (ADR 0045). The comparison is one read-only query for the values that need ordering.
 
   Confirmed against Ash 3.37 (`lib/ash.ex`): `Ash.count/2` takes no field, and the others take `(query, field, opts)`.
 
@@ -443,12 +448,14 @@ defmodule Ramal do
       when is_atom(kind) and (is_atom(field) or is_nil(field)) and is_list(opts) do
     query = Ash.Query.new(query)
     Ramal.Aggregate.validate!(kind, field, query.resource)
+    {shape, opts} = Keyword.split(opts, [:uniq?, :include_nil?])
+    spec = {kind, field, shape}
 
     # The hooks resolve the branch from the process and from the query's context, so this does too: an agent or MCP
     # caller carries it only in `context: Ramal.context(branch)` or in the query's context.
     case Current.resolve(query.context) || Current.resolve(opts[:context] || %{}) do
-      nil -> outside_branch(query, kind, field, opts)
-      id -> in_branch(id, query, kind, field, opts)
+      nil -> outside_branch(query, spec, opts)
+      id -> in_branch(id, query, spec, opts)
     end
   end
 
@@ -469,26 +476,28 @@ defmodule Ramal do
 
   # With overlay entries the database aggregates the rows outside the overlay and the branch reads only the overlaid
   # ones (Ramal.Aggregate). Without any, the base is the branch, so the data layer's answer is exact.
-  defp in_branch(id, query, kind, field, opts) do
+  defp in_branch(id, query, spec, opts) do
     with {:ok, affected?} <- Related.affected?(query, id),
-         do: in_branch(affected?, id, query, kind, field, opts)
+         do: in_branch(affected?, id, query, spec, opts)
+  rescue
+    # `:min` and `:max` of a string ask the database for its collation (ADR 0045), which can fail like any query.
+    error in Ramal.Error -> {:error, error}
   end
 
   # A filter through a relationship the branch changed is judged by the base's rows in the database's part of the delta,
   # so it reads every matching row through the patched path (ADR 0025).
-  defp in_branch(true, _id, query, kind, field, opts),
-    do: read_every_row(query, kind, field, opts)
+  defp in_branch(true, _id, query, spec, opts), do: read_every_row(query, spec, opts)
 
-  defp in_branch(false, id, query, kind, field, opts) do
+  defp in_branch(false, id, query, {kind, field, _shape} = spec, opts) do
     case Server.keys(id, query.resource) do
       {:ok, []} ->
-        outside_branch(query, kind, field, opts)
+        outside_branch(query, spec, opts)
 
       {:ok, keys} ->
-        if Ramal.Aggregate.applies?(query, length(keys)) do
+        if kind not in [:first, :list] and Ramal.Aggregate.applies?(query, length(keys)) do
           Ramal.Aggregate.delta(query, kind, field, opts, keys)
         else
-          read_every_row(query, kind, field, opts)
+          read_every_row(query, spec, opts)
         end
 
       {:error, error} ->
@@ -496,15 +505,24 @@ defmodule Ramal do
     end
   end
 
-  defp read_every_row(query, kind, field, opts) do
+  # `Ash.first/3` takes the first row's value whatever it is, so `:first` keeps `nil`s here too.
+  defp read_every_row(query, {kind, field, shape}, opts) do
+    shape = if kind == :first, do: [include_nil?: true], else: shape
+    shape = [tenant: opts[:tenant] || query.tenant] ++ shape
+
     with {:ok, records} <- Resource.read_all(query, opts) do
-      {:ok, Ramal.Aggregate.compute(kind, field, records, query.resource)}
+      {:ok, Ramal.Aggregate.compute(kind, field, records, query.resource, shape)}
     end
   end
 
-  defp outside_branch(query, :count, _field, opts), do: Ash.count(query, opts)
-  defp outside_branch(query, :exists, _field, opts), do: Ash.exists(query, opts)
-  defp outside_branch(query, kind, field, opts), do: apply(Ash, kind, [query, field, opts])
+  defp outside_branch(query, {:count, _field, _shape}, opts), do: Ash.count(query, opts)
+  defp outside_branch(query, {:exists, _field, _shape}, opts), do: Ash.exists(query, opts)
+
+  defp outside_branch(query, {:list, field, shape}, opts),
+    do: Ash.list(query, field, shape ++ opts)
+
+  defp outside_branch(query, {kind, field, _shape}, opts),
+    do: apply(Ash, kind, [query, field, opts])
 
   @doc """
   Merges a branch into the database by replaying its log through the application's own actions, in one transaction.

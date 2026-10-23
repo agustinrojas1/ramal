@@ -111,6 +111,28 @@ defmodule Ramal.DurableTest do
     end
   end
 
+  describe "a row whose key the database generates" do
+    alias Ramal.Test.Capture.Ticket
+
+    test "keeps its placeholder across a crash, and the next one is another" do
+      {:ok, branch} = Ramal.branch(Capture, durable: true)
+      one = Ramal.run!(branch, fn -> Ash.create!(Ticket, %{title: "one"}, authorize?: false) end)
+      two = Ramal.run!(branch, fn -> Ash.create!(Ticket, %{title: "two"}, authorize?: false) end)
+      assert one.id != two.id
+
+      crash(branch.id)
+
+      assert state(branch.id).next_placeholder == 2
+
+      three =
+        Ramal.run!(branch, fn -> Ash.create!(Ticket, %{title: "three"}, authorize?: false) end)
+
+      assert three.id not in [one.id, two.id]
+      assert {:ok, changes} = Ramal.diff(branch)
+      assert length(changes) == 3
+    end
+  end
+
   describe "an action that does not end well" do
     test "that fails leaves no delta" do
       {:ok, branch} = Ramal.branch(Capture, durable: true)

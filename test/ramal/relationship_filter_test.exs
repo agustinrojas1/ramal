@@ -266,6 +266,14 @@ defmodule Ramal.RelationshipFilterPropertyTest do
     update_in(model.herds, &Map.delete(&1, id))
   end
 
+  # The position of each name in the database's order.
+  defp database_order(names) do
+    %{rows: rows} =
+      Ramal.TestRepo.query!("SELECT n FROM unnest($1::text[]) AS t(n) ORDER BY n", [names])
+
+    rows |> List.flatten() |> Enum.with_index() |> Map.new()
+  end
+
   property "filters, sorts and aggregates through a relationship give the exact answer", %{
     paddocks: paddocks,
     herds: herds
@@ -320,11 +328,17 @@ defmodule Ramal.RelationshipFilterPropertyTest do
           |> Ash.read!(authorize?: false)
           |> Enum.map(& &1.name)
 
-        expected_sorted =
+        # Herd names mix `R7` and `h123`, which the database orders by its collation and not by bytes (ADR 0045).
+        matching =
           model.herds
           |> Map.values()
           |> Enum.filter(&(shape == :none or matches?(shape, &1, model)))
-          |> Enum.sort_by(&{paddock_name(&1, model), &1.name})
+
+        order = database_order(Enum.map(matching, & &1.name))
+
+        expected_sorted =
+          matching
+          |> Enum.sort_by(&{paddock_name(&1, model), Map.fetch!(order, &1.name)})
           |> Enum.map(& &1.name)
 
         assert sorted == expected_sorted

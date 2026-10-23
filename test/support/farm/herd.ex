@@ -81,6 +81,34 @@ defmodule Ramal.Test.Farm.Herd do
       end)
     end
 
+    # The same move with its hook before the write: the Move is created by a before_action hook, so the log holds it
+    # ahead of the update that caused it.
+    update :move_early do
+      require_atomic?(false)
+      accept([])
+
+      argument(:to_paddock_id, :uuid, allow_nil?: false)
+
+      change(set_attribute(:paddock_id, arg(:to_paddock_id)))
+
+      change(fn changeset, _context ->
+        Ash.Changeset.before_action(changeset, fn changeset ->
+          Ash.create!(
+            Move,
+            %{
+              herd_id: changeset.data.id,
+              from_paddock_id: changeset.data.paddock_id,
+              to_paddock_id: Ash.Changeset.get_argument(changeset, :to_paddock_id),
+              moved_on: Date.utc_today()
+            },
+            authorize?: false
+          )
+
+          changeset
+        end)
+      end)
+    end
+
     # The three ways a host manages the many_to_many through the join resource. `:append_and_remove` unrelates the
     # missing vets with a bulk destroy on the join resource, which a branch refuses (see Ramal.ManyToManyTest).
     update :add_vets do
@@ -122,7 +150,7 @@ defmodule Ramal.Test.Farm.Herd do
       authorize_if(Checks.SmallHerd)
     end
 
-    policy action([:read, :list, :keyset_list, :create, :update, :destroy]) do
+    policy action([:read, :list, :keyset_list, :create, :update, :destroy, :move_early]) do
       authorize_if(always())
     end
   end
@@ -142,6 +170,23 @@ defmodule Ramal.Test.Farm.Herd do
     # Calculations with their own module: one has an expression (the data layer computes it), one runs in Elixir.
     calculate(:doubled, :integer, Ramal.Test.Farm.Calculations.Doubled, public?: true)
     calculate(:shouted, :string, Ramal.Test.Farm.Calculations.Shouted, public?: true)
+  end
+
+  aggregates do
+    # `from_paddock_id` can be nil, so these show what `include_nil?` keeps.
+    list(:origins, :moves, :from_paddock_id, public?: true, sort: [moved_on: :asc])
+
+    list(:origins_with_nil, :moves, :from_paddock_id,
+      public?: true,
+      include_nil?: true,
+      sort: [moved_on: :asc]
+    )
+
+    first(:first_origin, :moves, :from_paddock_id,
+      public?: true,
+      include_nil?: true,
+      sort: [moved_on: :asc]
+    )
   end
 
   relationships do

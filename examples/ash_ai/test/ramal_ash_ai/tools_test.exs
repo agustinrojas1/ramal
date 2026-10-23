@@ -2,8 +2,6 @@ defmodule RamalAshAiExample.ToolsTest do
   # Ramal.Supervisor is one per node and named, and the ETS table is shared, so this suite cannot run concurrently.
   use ExUnit.Case, async: false
 
-  import ExUnit.CaptureLog
-
   alias Ash.DataLayer.Ets
   alias AshAi.Mcp.Router
   alias RamalAshAiExample.{BranchPlug, Farm, Herd}
@@ -119,31 +117,25 @@ defmodule RamalAshAiExample.ToolsTest do
       assert stored() == before
     end
 
-    # AshAi 1.4.0 runs an update tool with Ash.bulk_update! (Tool.Execution.run_update/7), which a branch refuses.
-    test "an AshAi update tool is refused in a branch and writes nothing", %{
+    # AshAi 1.4.0 runs an update tool with Ash.bulk_update! on a `limit(1)` query (Tool.Execution.run_update/7). The ETS
+    # data layer cannot update a query, so Ash streams it, and inside a branch each record is captured (ADR 0036).
+    test "an AshAi update tool writes the branch and not the data layer", %{
       branch: branch,
       r7: r7
     } do
       before = stored()
 
-      result =
-        capture_log(fn ->
-          send(
-            self(),
-            {:result,
-             AshAi.Tools.execute(
-               tool(:update_herd),
-               %{"input" => %{"paddock" => "L18"}, "id" => r7.id},
-               %{context: Ramal.context(branch)}
-             )}
-          )
-        end)
-
-      assert result =~ "bulk"
-      assert_received {:result, {:error, _message}}
+      assert {:ok, _text, _raw} =
+               AshAi.Tools.execute(
+                 tool(:update_herd),
+                 %{"input" => %{"paddock" => "L18"}, "id" => r7.id},
+                 %{context: Ramal.context(branch)}
+               )
 
       assert stored() == before
-      assert {:ok, []} = Ramal.diff(branch)
+
+      assert {:ok, [%Ramal.Change{kind: :updated, changes: %{paddock: {_, "L18"}}}]} =
+               Ramal.diff(branch)
     end
   end
 
