@@ -195,7 +195,7 @@ This is the section that decides correctness. In a read action's preparation, wh
    like any bulk action ([ADR 0036](adr/0036-bulk-actions-record-by-record.md)).
 8. **Text sort order:** once the overlay touches a resource the whole patched list is sorted in Elixir, where strings
    compare as bytes, but Postgres orders text by the collation of the column (`apple` before `Banana` in `en_US.UTF-8`).
-   `Ramal.Collation` (internal) closes the gap: for a sort on a text attribute of an AshPostgres resource it reads the
+   Ramal.Collation (internal, lib/ramal/collation.ex) closes the gap: for a sort on a text attribute of an AshPostgres resource it reads the
    column's collation from `pg_attribute.attcollation` (cached in `:persistent_term`, not for a tenant schema), asks
    Postgres in one query for the `dense_rank()` of the distinct values under that collation (`lower(v)` for `citext`),
    and the in-memory sort orders by those ranks, so ties fall to the next sort key. The same ranks give `:min` and

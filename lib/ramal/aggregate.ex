@@ -22,7 +22,7 @@ defmodule Ramal.Aggregate do
   that produces SQL, so it is not here. `:sum` of decimals is a `Decimal`, `:avg` is a
   float (Ash types it as `:float`, `lib/ash/query/aggregate.ex`). `:min` and `:max` order values the way a runtime sort
   does (the runtime sort in Ash.Actions.Sort), so dates and decimals compare by their type. Strings of an AshPostgres
-  resource compare by the collation of the column, which `Ramal.Collation` asks the database for (ADR 0045); the
+  resource compare by the collation of the column, which Ramal.Collation (an internal module) asks the database for (ADR 0045); the
   function then reads from the database and raises `Ramal.Error` with reason `:collation_failed` if that fails.
 
   Confirmed against Ash 3.37 for the delta path: the aggregate action (`lib/ash/actions/aggregate.ex`) builds its query with

@@ -417,7 +417,7 @@ defmodule Ramal do
 
   `:min` and `:max` over strings of an AshPostgres resource compare by the collation of the column, for the branch's
   rows as for the database's, so `"apple"` is the minimum of `"apple"` and `"Banana"` under `en_US.UTF-8`
-  (`Ramal.Collation`, ADR 0045). The comparison is one read-only query for the values that need ordering.
+  (ADR 0045). The comparison is one read-only query for the values that need ordering.
 
   Confirmed against Ash 3.37 (`lib/ash.ex`): `Ash.count/2` takes no field, and the others take `(query, field, opts)`.
 

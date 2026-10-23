@@ -14,7 +14,7 @@ The database can answer the question, though, and a read inside a branch already
 
 ## Decision
 
-- **Ask the database for ranks.** When a sort key is text and the resource is on AshPostgres, `Ramal.Collation` sends the
+- **Ask the database for ranks.** When a sort key is text and the resource is on AshPostgres, Ramal.Collation (`lib/ramal/collation.ex`) sends the
   distinct values of that key in one read-only query, `SELECT v, dense_rank() OVER (ORDER BY v COLLATE "<c>") FROM
   unnest($1::text[]) AS t(v)`, on the resource's repo, and the in-memory sort orders by the rank. Values equal under the
   collation share a rank, so the next sort key breaks the tie as it does in SQL. `nil`s and directions are placed as the
