@@ -6,7 +6,7 @@ Ramal is pre-1.0. Only the latest released version receives security fixes.
 
 ## Reporting a vulnerability
 
-Do not open a public issue with the details. Report it privately with [GitHub private vulnerability reporting](https://github.com/agustinrojas1/ramal/security/advisories/new) (the "Report a vulnerability" button under the Security tab), or email the maintainer, [@agustinrojas1](https://github.com/agustinrojas1), at the address on their GitHub profile. Include the Ramal, Ash and AshPostgres versions, the resource and action involved, and a failing test or the smallest call sequence that shows the problem.
+Do not open a public issue with the details. Report it privately by emailing the maintainer, [@agustinrojas1](https://github.com/agustinrojas1), at the address on their GitHub profile. Include the Ramal, Ash and AshPostgres versions, the resource and action involved, and a failing test or the smallest call sequence that shows the problem.
 
 If you cannot find an address, open an issue that says only that you have a security report and want a private channel, with no details, and the maintainer will reply there.
 

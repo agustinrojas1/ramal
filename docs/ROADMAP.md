@@ -28,8 +28,8 @@ README runs as written; every **[confirm]** mark in `docs/DESIGN.md` is resolved
   the patched list; it now aggregates in the database the rows the overlay does not touch and reads only the overlaid
   ones (ADR 0013), so scoring a state no longer costs a table scan.
 - Many-to-many join resources inside a branch. Done: they get overlay entries like any resource; a many_to_many load and
-  `manage_relationship` do not see links the branch changed, which is a documented limit (ADR 0014).
-- Several domains per branch if a real host needs it.
+  `manage_relationship` first did not see links the branch changed; they do since ADR 0017 (a paged load and a multi-hop `through` still do not).
+- Several domains per branch. Closed: a branch names one domain, and resources of other domains that use `Ramal.Resource` are branched like the rest (`test/ramal/other_domain_test.exs`).
 - Publish 0.2 to Hex. Done: `ramal` and `ramal_live` 0.2.0 are on Hex and the install snippets in the docs point at them.
 
 ## Inspector
@@ -72,6 +72,13 @@ Done; released in 0.3.0.
 - 0.5.0: Reads that agree with the branch: pages ([ADR 0030](adr/0030-pages-cut-from-the-patched-list.md)), aggregates ([ADR 0029](adr/0029-declared-aggregates-in-branches.md), [0032](adr/0032-aggregate-filters-and-sorts.md)), late-binding queries ([ADR 0028](adr/0028-late-binding-queries.md)), `Ramal.load/3` ([ADR 0031](adr/0031-ramal-load.md)), and the AshAi example. Upgrade notes are in `CHANGELOG.md`.
 - 0.6.0: A branch in one tenant ([ADR 0034](adr/0034-one-tenant-per-branch.md)), and the formal verification under `verification/` (a TLA+ model checked with TLC and Bend 2 proofs) with the three bugs it found: running actions hold their writes ([ADR 0033](adr/0033-running-actions-hold-their-writes.md)) and the merged status is stored in the merge's transaction ([ADR 0035](adr/0035-merged-status-in-the-merge-transaction.md)). Upgrade notes are in `CHANGELOG.md`.
 
+## Formal verification
+
+Done; released in 0.6.0.
+
+- `verification/`: a TLA+ model of the branch lifecycle checked with TLC, and Bend 2 proofs of the overlay and merge rules, both run by a CI workflow. It found three bugs, fixed with ADR 0033 and ADR 0035.
+- Not covered: the inspector, Postgres storage specifics, and the read paths of filters, sorts and relationships (tested by properties instead).
+
 ## 1.0
 
 - Six months without a breaking change to the public API.
@@ -82,5 +89,6 @@ Done; released in 0.3.0.
 
 - Schema changes inside a branch.
 - Distributed branches across nodes.
+- Nested branches, bulk actions and upserts inside a branch, and database-generated keys. Each is refused with a clear error.
 - A query language or DSL of its own.
 - Any dependency on a specific LLM provider or agent framework. Ramal is below that layer.
