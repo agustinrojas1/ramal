@@ -31,7 +31,7 @@ against Ash 3.37 (`deps/ash`).
 ## Consequences
 
 - Paginated reads are paged by the database and then patched, so pages can be short or miss branch-created rows.
-  Documented, not fixed, in 0.1.
+  Documented, not fixed, in 0.1; [ADR 0030](0030-pages-cut-from-the-patched-list.md) pages them after the patch.
 - `authorize_results` checks do not run on overlay records; policy filters do, through the query's filter.
 - Aggregates and database-computed calculations ignore the overlay and emit `[:ramal, :read, :unpatched_aggregate]`.
 - The hooks call the branch server once per read (Ramal.Branch.Server.slice/2), and only the slice of that

@@ -1,0 +1,171 @@
+defmodule Ramal.Preparation.Paged do
+  @moduledoc false
+  # A paginated read of a resource the branch changed is paged in Elixir, after the patch (ADR 0028).
+  #
+  # Ash adds a page's limit and offset, or its keyset filter, after the `before_action` hooks
+  # (`paginate/3` in `lib/ash/actions/read/read.ex`, Ash 3.37), so the database would page the base and the patch would
+  # add every overlay record to every page. It also counts in the database and decides `more?` from the rows the
+  # database returned. None of that can be corrected afterwards, so the last `before_action` hook reads the whole
+  # patched list, cuts the page out of it and hands Ash the rows with `Ash.Query.set_result/2`, which `run_query/4`
+  # honours in place of the data layer, and the count with the `full_count` context key, which `fetch_count/5` honours
+  # before it queries. Ash then does the rest as for a database page: `drop_pagination_extra/3` takes the extra row
+  # this module leaves at the end and sets `more?`, `add_keysets/3` puts the cursors on the rows, loads, runtime
+  # calculations, authorization of results and the `Ash.Page` value follow.
+  #
+  # This module is the pure part: whether a query is paged, and the cut. The read itself is in `Ramal.Preparation`.
+
+  alias Ash.Actions.Sort
+  alias Ash.Filter.Runtime
+  alias Ash.Page.Keyset
+  alias Ash.Resource.Info
+  alias Ramal.Resource
+
+  require Ash.Query
+
+  @typedoc "The page a query asks for."
+  @type plan :: %{
+          required(:type) => :offset | :keyset,
+          required(:limit) => pos_integer,
+          required(:offset) => non_neg_integer,
+          required(:after) => String.t() | nil,
+          required(:before) => String.t() | nil,
+          required(:filter) => term,
+          required(:count?) => boolean
+        }
+
+  @doc """
+  The page `query` asks for, or `nil` when the read is not one this module pages: a read without a page, a read of a
+  relationship (Ash pages those per source record with a lateral join), a manual action, or a read that wants the whole
+  list (see `unpaginated?/1`).
+  """
+  @spec plan(Ash.Query.t()) :: plan | nil
+  def plan(%{page: page, action: %{pagination: %{} = pagination, manual: nil}} = query)
+      when is_list(page) do
+    if is_integer(page[:limit]) and not relationship?(query) and not unpaginated?(query) do
+      %{
+        type: type(page, pagination),
+        limit: limit(query, page[:limit], pagination),
+        offset: page[:offset] || 0,
+        after: page[:after],
+        before: page[:before],
+        filter: page[:filter],
+        count?: count?(page, pagination)
+      }
+    end
+  end
+
+  def plan(_query), do: nil
+
+  # Ash gives an unpaginated read (`Ash.Actions.Read.unpaginated_read/3`) the action's `default_limit` as its page and
+  # skips the `paginate` step, and the query keeps no mark of it. The reads whose callers can be told apart are left
+  # alone: Ramal's own (`Ramal.Resource.read_all/2`), the ones Ash makes for a policy or a filter on a relationship
+  # (`internal?`), and the source read of a bulk update or destroy. Any other is caught after the data layer, where a
+  # query with no limit was not paginated: the preparation then returns the whole list.
+  defp unpaginated?(query) do
+    query.context[:ramal][:whole?] == true or query.context[:private][:internal?] == true or
+      query.context[:query_for] in [:bulk_update, :bulk_destroy]
+  end
+
+  # A relationship load is read with `accessing_from`; a many-to-many or limited has_many load carries the source
+  # records of a lateral join (`lib/ash/actions/read/relationships.ex`).
+  defp relationship?(query) do
+    Map.has_key?(query.context, :accessing_from) or
+      match?(%{data_layer: %{lateral_join_source: {_, _}}}, query.context)
+  end
+
+  # `pagination_type/2` of `lib/ash/actions/read/read.ex`: a cursor means keyset, an offset means offset, otherwise the
+  # first of the types the action allows.
+  defp type(page, pagination) do
+    cond do
+      page[:before] || page[:after] -> :keyset
+      page[:offset] -> :offset
+      pagination.keyset? -> :keyset
+      true -> :offset
+    end
+  end
+
+  # `limit/4` of the same file: the page size, the query's own limit and the action's `max_page_size`, whichever is
+  # smallest.
+  defp limit(query, page_size, pagination) do
+    max_page_size =
+      if query.context[:private][:bypass_max_page_size?], do: nil, else: pagination.max_page_size
+
+    [page_size, query.limit, max_page_size] |> Enum.filter(&is_integer/1) |> Enum.min()
+  end
+
+  # `fetch_count/5` of the same file.
+  defp count?(page, pagination) do
+    page[:count] == true or (page[:count] != false and pagination.countable == :by_default)
+  end
+
+  @doc """
+  `query` with the stable sort Ash appends to a paginated read (`do_paginate/3`), so that rows that tie on the sort
+  keep one order from one page to the next.
+  """
+  @spec stable_sort(Ash.Query.t()) :: Ash.Query.t()
+  def stable_sort(query) do
+    if Sort.sorting_on_identity?(query) do
+      query
+    else
+      Ash.Query.sort(
+        query,
+        query.action.pagination.stable_sort || Info.primary_key(query.resource)
+      )
+    end
+  end
+
+  @doc """
+  Cuts the page out of the patched and sorted `rows`: the rows Ash would have fetched from the database (one more than
+  the page, so Ash can tell `more?`) and the count of the whole list.
+
+  A `before` page comes back in the reversed order the database would have produced, because Ash reverses it again.
+  """
+  @spec cut(Ash.Query.t(), plan, [struct]) ::
+          {:ok, [struct], non_neg_integer} | {:error, term}
+  def cut(query, plan, rows) do
+    count = length(rows)
+
+    with {:ok, rows} <- narrow(query, rows, plan.filter),
+         {:ok, rows} <- after_cursor(query, rows, plan) do
+      {:ok, take(rows, plan), count}
+    end
+  end
+
+  defp take(rows, %{type: :offset, offset: offset, limit: limit}),
+    do: rows |> Enum.drop(offset) |> Enum.take(limit + 1)
+
+  defp take(rows, %{before: before, limit: limit}) when is_binary(before),
+    do: rows |> Enum.take(-(limit + 1)) |> Enum.reverse()
+
+  defp take(rows, %{limit: limit}), do: Enum.take(rows, limit + 1)
+
+  # The `filter` option of a page narrows the rows the page is cut from, not the count.
+  defp narrow(_query, rows, nil), do: {:ok, rows}
+
+  defp narrow(query, rows, filter) do
+    keep(query, rows, Ash.Query.filter(Ash.Query.new(query.resource), ^filter).filter)
+  end
+
+  defp after_cursor(query, rows, %{type: :keyset} = plan) do
+    {cursor, side} = if plan.before, do: {plan.before, :before}, else: {plan.after, :after}
+
+    if is_nil(cursor) do
+      {:ok, rows}
+    else
+      with {:ok, filter} <- Keyset.filter(query, cursor, query.sort, side) do
+        keep(query, rows, Ash.Query.do_filter(Ash.Query.new(query.resource), filter).filter)
+      end
+    end
+  end
+
+  defp after_cursor(_query, rows, _plan), do: {:ok, rows}
+
+  # The same expression the database would have been given, judged by `Ash.Filter.Runtime` on the patched rows, in
+  # their order.
+  defp keep(query, rows, filter) do
+    with {:ok, matches} <- Runtime.filter_matches(query.domain, rows, filter) do
+      keys = MapSet.new(matches, &Resource.key(query.resource, &1))
+      {:ok, Enum.filter(rows, &MapSet.member?(keys, Resource.key(query.resource, &1)))}
+    end
+  end
+end

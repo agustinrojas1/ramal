@@ -16,6 +16,17 @@ defmodule Ramal.Test.Farm.Herd do
   actions do
     defaults([:read, :destroy, create: :*, update: :*])
 
+    # A paginated list, as a list page declares it.
+    read :list do
+      pagination(
+        offset?: true,
+        keyset?: true,
+        countable: true,
+        required?: false,
+        default_limit: 2
+      )
+    end
+
     # An action that loads a calculation in its own preparation, which runs after the one Ramal installs.
     read :with_size do
       prepare(build(load: [:size]))
@@ -95,7 +106,7 @@ defmodule Ramal.Test.Farm.Herd do
       authorize_if(actor_attribute_equals(:role, :admin))
     end
 
-    policy action([:read, :create, :update, :destroy]) do
+    policy action([:read, :list, :create, :update, :destroy]) do
       authorize_if(always())
     end
   end

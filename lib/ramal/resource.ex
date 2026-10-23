@@ -276,7 +276,10 @@ defmodule Ramal.Resource do
   # whole list once.
   @spec read_all(Ash.Query.t() | module, keyword) :: {:ok, [struct]} | {:error, term}
   def read_all(query, opts \\ []) do
-    Read.unpaginated_read(Ash.Query.new(query), nil, opts)
+    # Ash gives a read of an action with a `default_limit` that limit as its page even when the read skips pagination,
+    # and `Ramal.Preparation` would cut it; the flag says this read wants the whole list.
+    query = query |> Ash.Query.new() |> Ash.Query.set_context(%{ramal: %{whole?: true}})
+    Read.unpaginated_read(query, nil, opts)
   end
 
   defp attribute_names(resource),

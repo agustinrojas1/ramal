@@ -32,6 +32,13 @@ defmodule Ramal.Preparation do
       (ADR 0025). Relationships are loaded first with `reuse_values?: true` so the branch's foreign keys are used.
     * Filters are evaluated on overlay records with `Ash.Filter.Runtime.filter_matches/4` and sorting uses
       Ash.Actions.Sort.runtime_sort/3.
+    * A paginated read (`page:`, `Ash.page!/2`, `Ash.stream!/2`) of a resource the overlay touches is paged here, not by
+      the database: Ash adds a page's limit and offset after the `before_action` hooks, counts in the database and
+      decides `more?` from the database's rows, so the last `before_action` hook reads the whole patched list, cuts the
+      page out of it (lib/ramal/preparation/paged.ex) and gives Ash the rows with `Ash.Query.set_result/2` and the count
+      with the `full_count` context key, both honoured in `lib/ash/actions/read/read.ex` (Ash 3.37). Offset and keyset
+      pages, `count`, `more?` and the cursors are those of the patched list (ADR 0030). Without overlay entries for the
+      resource, and for a paged relationship load, the database pages as before.
     * A query prepared outside a branch and read inside one is bound when it runs (ADR 0028): it carries a
       `before_transaction` hook, which Ash's atomic bulk update check ignores, and that hook installs the read hooks.
 
@@ -56,8 +63,9 @@ defmodule Ramal.Preparation do
       (`Ash.Query.load/2`), which goes through this preparation;
     * a sort on text uses byte order once the overlay touches the resource, where Postgres uses its collation, so mixed-case
       text can come out in another order than outside the branch (ADR 0024);
-    * paginated reads (`page:`) are paged by the database and patched afterwards, so pages can be short or miss rows
-      created in the branch, and `count` is the database's.
+    * a paged read of a resource the overlay touches reads every row the filter matches and pages the list in Elixir,
+      so it costs what an unpaged read does, not one page (ADR 0030); a paged relationship load is still paged by the
+      database and patched afterwards.
 
   ## Example
 
@@ -71,7 +79,7 @@ defmodule Ramal.Preparation do
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
   alias Ramal.{Current, Overlay, Prefilter, Resource, Telemetry}
-  alias Ramal.Preparation.{Aggregates, ManyToMany, Related}
+  alias Ramal.Preparation.{Aggregates, ManyToMany, Paged, Related}
 
   @impl true
   def prepare(query, _opts, _context) do
@@ -96,7 +104,7 @@ defmodule Ramal.Preparation do
       :ok ->
         query
         |> Ash.Query.set_context(Current.shared_context(id))
-        |> Ash.Query.before_transaction(&record_calculations/1)
+        |> Ash.Query.before_transaction(&before_transaction(&1, id))
         |> Ash.Query.before_action(&before_data_layer(&1, id, origin))
         |> Ash.Query.after_action(&after_data_layer(&1, &2, id))
 
@@ -106,14 +114,14 @@ defmodule Ramal.Preparation do
   end
 
   # Runs when a query prepared with no branch is executed. The hooks `install/3` adds are not in the list Ash is
-  # walking, so `record_calculations/1` is called directly (the calculations are still on the query at this point).
+  # walking, so `before_transaction/2` is called directly (the calculations are still on the query at this point).
   defp bind_late(query) do
     case Current.bind(query.context) do
       :none ->
         query
 
       {:ok, id, origin} ->
-        query |> install(id, origin) |> record_calculations()
+        query |> install(id, origin) |> before_transaction(id)
 
       {:conflict, process, carried} ->
         {:error, Current.conflict(what(query), process, carried)}
@@ -125,8 +133,14 @@ defmodule Ramal.Preparation do
   # `query.calculations` yet when `prepare/3` runs, and Ash unsets `query.calculations` just before the `before_action`
   # hooks (`do_read/5` in `lib/ash/actions/read/read.ex`, Ash 3.37). `before_transaction` hooks run after every
   # preparation and while the calculations are still there.
-  defp record_calculations(query),
-    do: Ash.Query.set_context(query, %{ramal: %{calculations: query.calculations}})
+  #
+  # It is also where the paging hook is added: the hooks are appended in the order they are added, and this one runs
+  # after the `before_action` hooks of every preparation and of the action, so it pages the query as they left it.
+  defp before_transaction(query, id) do
+    query
+    |> Ash.Query.set_context(%{ramal: %{calculations: query.calculations}})
+    |> Ash.Query.before_action(&page(&1, id))
+  end
 
   defp what(query), do: "the #{query.action.name} query of #{inspect(query.resource)}"
 
@@ -259,6 +273,13 @@ defmodule Ramal.Preparation do
 
   defp distinct_kind(_query), do: nil
 
+  # A paged read was patched, sorted and cut by `page/3`; its rows are the ones to return. Unless Ash did not paginate
+  # it (a query with no limit after the `paginate` step, which an unpaginated read that `Ramal.Preparation.Paged` could
+  # not tell apart is): then the whole list is the result.
+  defp after_data_layer(%{context: %{ramal: %{paged?: true} = ramal}} = query, results, _id) do
+    if query.limit == nil, do: {:ok, ramal.whole}, else: {:ok, results}
+  end
+
   defp after_data_layer(query, results, id) do
     %{overlay?: overlay?, limit: limit, offset: offset} = query.context.ramal
     links = query.context.ramal[:links]
@@ -296,6 +317,64 @@ defmodule Ramal.Preparation do
 
       {:ok, patched}
     end
+  end
+
+  # A paginated read of a resource the overlay touches (ADR 0028). Ash would page the base in the database and the
+  # patch would add every overlay record to every page, so the page is cut here, from the whole patched list, and
+  # handed to Ash as the result of the data layer. The list is read by the same action, as a read of its own that
+  # keeps this preparation's `after_action` hook, the query as the hooks left it and none of their hooks; the loads
+  # wait for the rows of the page, which Ash loads as for any result.
+  defp page(%{context: %{ramal: %{overlay?: true, links: nil}}} = query, id) do
+    case Paged.plan(query) do
+      nil -> query
+      plan -> page(query, plan, id)
+    end
+  end
+
+  defp page(query, _id), do: query
+
+  defp page(query, plan, id) do
+    sorted = Paged.stable_sort(query)
+
+    with {:ok, rows} <- read_whole_list(sorted, id),
+         {:ok, page, count} <- Paged.cut(sorted, plan, rows) do
+      query
+      |> Ash.Query.set_result(page)
+      |> Ash.Query.set_context(%{ramal: %{paged?: true, whole: rows}})
+      |> put_full_count(plan, count)
+    else
+      {:error, error} -> Ash.Query.add_error(query, error)
+    end
+  end
+
+  # `fetch_count/5` takes a count set here before it queries the database.
+  defp put_full_count(query, %{count?: true}, count),
+    do: Ash.Query.set_context(query, %{full_count: count})
+
+  defp put_full_count(query, _plan, _count), do: query
+
+  defp read_whole_list(query, id) do
+    ramal = query.context.ramal
+    private = query.context[:private] || %{}
+
+    whole = %{
+      Ash.Query.unset(query, [:page, :limit, :offset])
+      | load: [],
+        calculations: ramal.calculations,
+        before_action: [],
+        after_action: [&after_data_layer(&1, &2, id)],
+        before_transaction: [],
+        after_transaction: [],
+        around_transaction: []
+    }
+
+    # The query's filter already holds what the policies added, and the rows are authorized when Ash reads the page.
+    Resource.read_all(whole,
+      actor: private[:actor],
+      tenant: query.tenant,
+      authorize?: false,
+      domain: query.domain
+    )
   end
 
   # Staleness at merge time is measured from the first time the branch saw a row, so every base row a read returns is
