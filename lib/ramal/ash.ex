@@ -45,9 +45,9 @@ defmodule Ramal.Ash do
     * The context markers `accessing_from`, `query_for`, `private.actor` and `private.authorize?` are where Ramal reads
       them, and `Ash.Query` has the hook fields Ramal rebuilds a query with.
     * The internal functions exist with the arity Ramal calls: Ash.Actions.Read.unpaginated_read/3,
-      Ash.Actions.Sort.runtime_sort/3 and sorting_on_identity?/1, Ash.Actions.Read.Relationships.has_parent_expr?/1,
-      Ash.Filter.list_refs/4, Ash.Filter.map/2 and Ash.Filter.Runtime.filter_matches/4. They are written without
-      code quotes because Ash hides them from its docs.
+      Ash.Actions.Sort.sorting_on_identity?/1, Ash.Actions.Read.Relationships.has_parent_expr?/1,
+      Ash.Filter.list_refs/4, Ash.Filter.map/2, Ash.Filter.hydrate_refs/2, Ash.Query.do_filter/2 and
+      Ash.Filter.Runtime.filter_matches/4. They are written without code quotes because Ash hides them from its docs.
 
   Every touch of an Ash internal goes through this module. The seam functions below the version checks are the only
   place Ramal calls an Ash internal or reads an internal context key: each names the tripwire that guards it. The seam
@@ -253,7 +253,7 @@ defmodule Ramal.Ash do
   @spec unpaginated_read(Ash.Query.t(), keyword) :: {:ok, [struct]} | {:error, term}
   def unpaginated_read(query, opts), do: Read.unpaginated_read(query, nil, opts)
 
-  # Tripwire: "assumption: Ash.Actions.Sort.runtime_sort/3 is exported". Ash: deps/ash/lib/ash/sort/sort.ex, which
+  # Tripwire: "assumption: Ash.Sort.runtime_sort/3 is exported". Ash: deps/ash/lib/ash/sort/sort.ex, which
   # delegates Ash.Sort.runtime_sort/3 to deps/ash/lib/ash/actions/sort.ex. Ramal calls the public name.
   @doc false
   @spec runtime_sort([struct], term, keyword) :: [struct]
@@ -279,7 +279,7 @@ defmodule Ramal.Ash do
   @spec map_filter(term, (term -> term)) :: term
   def map_filter(filter, fun), do: Ash.Filter.map(filter, fun)
 
-  # No tripwire yet. Ash: deps/ash/lib/ash/filter/filter.ex (hydrate_refs/2, ~l.4226).
+  # Tripwire: "assumption: Ash.Filter.hydrate_refs/2 is exported". Ash: deps/ash/lib/ash/filter/filter.ex (~l.4226).
   @doc false
   @spec hydrate_refs(term, module) :: {:ok, term} | {:error, term}
   def hydrate_refs(expression, resource),
@@ -297,8 +297,9 @@ defmodule Ramal.Ash do
   def filter_matches(domain, records, filter),
     do: Runtime.filter_matches(domain, records, filter)
 
-  # No tripwire yet. Ash: deps/ash/lib/ash/query/query.ex (do_filter/3, marked @doc false). Ash's own filter step with
-  # no validation of the filter, which the keyset cursor and the lookups of Ramal.Capture and Ramal.Merge use.
+  # Tripwire: "assumption: Ash.Query.do_filter/2 is exported". Ash: deps/ash/lib/ash/query/query.ex (do_filter/3,
+  # @doc false). Ash's own filter step with no validation of the filter, which the keyset cursor and the lookups of
+  # Ramal.Capture and Ramal.Merge use.
   @doc false
   @spec do_filter(Ash.Query.t(), term) :: Ash.Query.t()
   def do_filter(query, filter), do: Ash.Query.do_filter(query, filter)

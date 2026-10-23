@@ -403,9 +403,8 @@ defmodule Ramal.AshContractTest do
         # Ramal: lib/ramal/resource.ex read_all/2. Ash: deps/ash/lib/ash/actions/read/read.ex (unpaginated_read/3, l.18).
         {Ash.Actions.Read, :unpaginated_read, 3, "lib/ramal/resource.ex",
          "deps/ash/lib/ash/actions/read/read.ex"},
-        # Ramal: lib/ramal/collation.ex and lib/ramal/aggregate.ex. Ash: deps/ash/lib/ash/actions/sort.ex (runtime_sort/3, l.83).
-        {Ash.Actions.Sort, :runtime_sort, 3, "lib/ramal/collation.ex",
-         "deps/ash/lib/ash/actions/sort.ex"},
+        # Ramal: lib/ramal/collation.ex and lib/ramal/aggregate.ex. Ash: deps/ash/lib/ash/sort/sort.ex (the public runtime_sort/3, delegated).
+        {Ash.Sort, :runtime_sort, 3, "lib/ramal/collation.ex", "deps/ash/lib/ash/sort/sort.ex"},
         # Ramal: lib/ramal/preparation/paged.ex stable_sort/1. Ash: deps/ash/lib/ash/actions/sort.ex (sorting_on_identity?/1, l.49).
         {Ash.Actions.Sort, :sorting_on_identity?, 1, "lib/ramal/preparation/paged.ex",
          "deps/ash/lib/ash/actions/sort.ex"},
@@ -420,7 +419,12 @@ defmodule Ramal.AshContractTest do
          "deps/ash/lib/ash/filter/filter.ex"},
         # Ramal: lib/ramal/preparation.ex and lib/ramal/preparation/related.ex. Ash: deps/ash/lib/ash/filter/runtime.ex (filter_matches/4, l.19).
         {Ash.Filter.Runtime, :filter_matches, 4, "lib/ramal/preparation.ex",
-         "deps/ash/lib/ash/filter/runtime.ex"}
+         "deps/ash/lib/ash/filter/runtime.ex"},
+        # Ramal: lib/ramal/preparation/related.ex (refs of a rewritten filter). Ash: deps/ash/lib/ash/filter/filter.ex (hydrate_refs/2).
+        {Ash.Filter, :hydrate_refs, 2, "lib/ramal/preparation/related.ex",
+         "deps/ash/lib/ash/filter/filter.ex"},
+        # Ramal: the keyset cursor and the key lookups of Ramal.Capture and Ramal.Merge. Ash: deps/ash/lib/ash/query/query.ex (do_filter/3, @doc false, opts defaulted).
+        {Ash.Query, :do_filter, 2, "lib/ramal/capture.ex", "deps/ash/lib/ash/query/query.ex"}
       ] do
     test "assumption: #{inspect(module)}.#{function}/#{arity} is exported (Ramal calls it in #{ramal}; from #{ash})" do
       Code.ensure_loaded!(unquote(module))
