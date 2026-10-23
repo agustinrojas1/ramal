@@ -347,7 +347,7 @@ skipping action logic; it is faster and less safe, and needs its own ADR.
 Events, all with `%{branch_id, domain}` metadata:
 
 `[:ramal, :branch, :create]`, `[:ramal, :branch, :fork]`, `[:ramal, :branch, :unload]`, `[:ramal, :branch, :load]`,
-`[:ramal, :branch, :persist_failed]` (storage refused a write on `:idle` or `:shutdown`, with the `error`),
+`[:ramal, :branch, :persist_failed]` (storage refused a write on `:idle`, `:shutdown` or `:merged`, with the `error`),
 `[:ramal, :branch, :discard]`, `[:ramal, :branch, :propose]`, `[:ramal, :branch, :approve]`, `[:ramal, :branch, :reject]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
 `[:ramal, :read, :patch]` with measurements `%{base_rows, overlay_rows, result_rows, duration}`,
 `[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource, action, nested?}`.

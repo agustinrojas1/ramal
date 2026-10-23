@@ -16,6 +16,12 @@ defmodule Ramal.Branch.Server do
 
   @max_attempts 6
 
+  # How long a caller waits for the process. A read or a write only touches memory, so five seconds is generous. A call
+  # that persists the whole branch through the storage (finish_merge, propose, reject, discard) can take as long as the
+  # storage does for a large branch, and for finish_merge the merge has already committed by then, so it waits longer.
+  @call_timeout 5_000
+  @persist_timeout 60_000
+
   # An overlay with fewer entries than this is scanned for each read. Grouping it by resource costs several scans, so it
   # is only done for a large overlay that two reads in a row found unchanged (see index/1).
   @index_min 5_000
@@ -85,19 +91,29 @@ defmodule Ramal.Branch.Server do
   A process can stop between the lookup and the call (idle unload). That is retried, so callers never see it.
   """
   @spec call(String.t(), term) :: term | {:error, Error.t()}
-  def call(id, request), do: call(id, request, @max_attempts)
+  def call(id, request), do: call(id, request, @call_timeout, @max_attempts)
 
-  defp call(id, request, attempts) do
+  # Calls that persist the whole branch wait `@persist_timeout`, the others `@call_timeout`. A timeout is returned as
+  # `{:error, %Ramal.Error{reason: :timeout}}`; the process may still carry the request out afterwards.
+  defp persisting_call(id, request), do: call(id, request, @persist_timeout, @max_attempts)
+
+  defp call(id, request, timeout, attempts) do
     with {:ok, config} <- Supervisor.config(),
          {:ok, pid} <- ensure_started(id, config) do
       try do
-        GenServer.call(pid, request)
+        GenServer.call(pid, request, timeout)
       catch
         :exit, {reason, {GenServer, :call, _}} when reason in [:noproc, :normal, :shutdown] ->
           # The process stopped between the lookup and the call. The Registry drops its entry a moment after the
           # process dies, so wait for this pid to be gone before looking again, or the retry finds the same corpse.
           await_down(pid)
-          if attempts > 1, do: call(id, request, attempts - 1), else: stopping_error(id)
+
+          if attempts > 1,
+            do: call(id, request, timeout, attempts - 1),
+            else: stopping_error(id)
+
+        :exit, {:timeout, {GenServer, :call, _}} ->
+          {:error, timeout_error(id, timeout)}
 
         :exit, {:killed, {GenServer, :call, _}} ->
           # The watcher marks it too, but asynchronously; mark here so the very next call already sees it.
@@ -118,6 +134,23 @@ defmodule Ramal.Branch.Server do
 
     # One scheduler tick for the Registry to process the exit of the process it monitors.
     Process.sleep(1)
+  end
+
+  defp timeout_error(id, timeout) do
+    Error.new(
+      :timeout,
+      "branch #{inspect(id)} did not answer within #{timeout} ms; the request may still be carried out",
+      %{id: id, timeout: timeout}
+    )
+  end
+
+  @doc """
+  Waits until the process of branch `id` has handled every request sent before this one, for a caller whose request
+  timed out and needs to know whether it was carried out. Waits as long as a persisting call does.
+  """
+  @spec settle(String.t()) :: :ok | {:error, Error.t()}
+  def settle(id) do
+    with {:ok, _status} <- call(id, :status, @persist_timeout, @max_attempts), do: :ok
   end
 
   defp stopping_error(id) do
@@ -150,6 +183,13 @@ defmodule Ramal.Branch.Server do
       %{id: id}
     )
   end
+
+  @doc """
+  The branch for `Ramal.fork/2`. Rejected unless the branch is open and not claimed by a merge: the claimed branch's log
+  is about to be replayed, and a fork of it would replay the same writes a second time.
+  """
+  @spec fork_source(String.t()) :: {:ok, Branch.t()} | {:error, Error.t()}
+  def fork_source(id), do: call(id, :fork_source)
 
   @doc "The branch struct as the process holds it."
   @spec get(String.t()) :: {:ok, Branch.t()} | {:error, Error.t()}
@@ -254,12 +294,16 @@ defmodule Ramal.Branch.Server do
   @doc """
   Ends the claim of `begin_merge/1`. `:merged` applies `annotate` to the branch (an approval records its decision
   there), marks it merged, persists it and stops the process; `:aborted` only releases the claim.
+
+  The merge has committed by the time `:merged` is sent, so a storage failure is not an error of the merge. The process
+  keeps the branch as `:merged` (it refuses writes and a second merge), answers `{:persist_failed, error}`, and writes
+  it again at its next idle timeout (ADR 0023).
   """
   @spec finish_merge(String.t(), :merged | :aborted, (Branch.t() -> Branch.t())) ::
-          :ok | {:error, Error.t()}
+          :ok | {:persist_failed, Error.t()} | {:error, Error.t()}
   def finish_merge(id, outcome, annotate \\ & &1)
       when outcome in [:merged, :aborted] and is_function(annotate, 1),
-      do: call(id, {:finish_merge, outcome, annotate})
+      do: persisting_call(id, {:finish_merge, outcome, annotate})
 
   @doc """
   Freezes an open branch as a proposal: `fun` turns the branch into the proposed one, which is persisted before the
@@ -267,14 +311,14 @@ defmodule Ramal.Branch.Server do
   is no longer open.
   """
   @spec propose(String.t(), (Branch.t() -> Branch.t())) :: {:ok, Branch.t()} | {:error, Error.t()}
-  def propose(id, fun) when is_function(fun, 1), do: call(id, {:propose, fun})
+  def propose(id, fun) when is_function(fun, 1), do: persisting_call(id, {:propose, fun})
 
   @doc """
   Rejects a proposed branch: `fun` records the decision, the rejected branch is persisted and the process stops. The
   overlay and log are kept, so the rejected diff can still be read.
   """
   @spec reject(String.t(), (Branch.t() -> Branch.t())) :: {:ok, Branch.t()} | {:error, Error.t()}
-  def reject(id, fun) when is_function(fun, 1), do: call(id, {:reject, fun})
+  def reject(id, fun) when is_function(fun, 1), do: persisting_call(id, {:reject, fun})
 
   @doc """
   Discards the branch: its process persists the discarded state and stops.
@@ -288,7 +332,7 @@ defmodule Ramal.Branch.Server do
       if Supervisor.too_large?(id) and is_nil(Supervisor.whereis(id)) do
         discard_cold(id, config)
       else
-        call(id, :discard)
+        persisting_call(id, :discard)
       end
     end
   end
@@ -368,6 +412,12 @@ defmodule Ramal.Branch.Server do
   @impl true
   def handle_call(:get, _from, state), do: reply(state, {:ok, state.branch})
 
+  def handle_call(:fork_source, _from, state) do
+    if usable?(state),
+      do: reply(state, {:ok, state.branch}),
+      else: reply(state, {:error, unavailable(state)})
+  end
+
   def handle_call(:status, _from, state), do: reply(state, {:ok, state.branch.status})
 
   def handle_call(:domain, _from, state), do: reply(state, {:ok, state.branch.domain})
@@ -444,8 +494,15 @@ defmodule Ramal.Branch.Server do
         branch = %{annotate.(state.branch) | status: :merged}
 
         case persist(branch, state.config) do
-          :ok -> {:stop, :normal, :ok, %{state | branch: branch, stop: :merged}}
-          {:error, _} = error -> reply(state, error)
+          :ok ->
+            {:stop, :normal, :ok, %{state | branch: branch, stop: :merged}}
+
+          {:error, error} ->
+            # The replay has committed, so the merge happened whatever the storage says. Stopping would lose the
+            # `:merged` status and leave the stored branch open, to be merged a second time. Keep it loaded as merged;
+            # the idle timeout writes it again (see handle_info(:timeout, _)).
+            Telemetry.branch(:persist_failed, branch, %{reason: :merged, error: error})
+            reply(%{state | branch: branch}, {:persist_failed, error})
         end
     end
   end

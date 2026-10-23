@@ -250,6 +250,9 @@ defmodule Ramal do
   Both share the same database. `metadata.forked_from` holds the parent's id. A fork counts against the same limits
   as `branch/2` (`:limit_reached`), counted for the parent's domain.
 
+  Only an open branch can be forked, and not while a merge holds it: a fork of a branch being merged would replay the
+  same writes again (`:not_open`, ADR 0007).
+
   ## Options
 
     * `:name` - default: the parent's name
@@ -266,8 +269,7 @@ defmodule Ramal do
   @spec fork(branch_or_id, keyword) :: {:ok, Branch.t()} | {:error, Error.t()}
   def fork(branch_or_id, opts \\ []) do
     with {:ok, config} <- Supervisor.config(),
-         {:ok, parent} <- Server.get(id_of(branch_or_id)),
-         :ok <- ensure_open(parent.id, parent.status),
+         {:ok, parent} <- Server.fork_source(id_of(branch_or_id)),
          :ok <- Limits.check(parent.domain, :fork, config),
          fork = Branch.fork(parent, opts),
          :ok <- config.storage.put(fork, config.storage_config),

@@ -25,6 +25,7 @@ defmodule Ramal.Error do
   | `:missing_snapshot` | an overlay entry that needs the base row as first seen has none recorded |
   | `:limit_reached` | `Ramal.branch/2` or `Ramal.fork/2` was refused by `:max_active_branches` or `:branch_rate` of `Ramal.Supervisor` (`details.limit`, `max`, and `active` or `window`) |
   | `:storage` | the storage backend failed |
+  | `:timeout` | the branch process did not answer in time (`details.timeout` in ms); the request may still be carried out |
 
   ## Example
 
@@ -51,6 +52,7 @@ defmodule Ramal.Error do
           | :missing_snapshot
           | :limit_reached
           | :storage
+          | :timeout
 
   @type t :: %__MODULE__{reason: reason, message: String.t(), details: map}
 
