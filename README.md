@@ -6,7 +6,7 @@
 
 <p align="center"><b>Git-style branches for your Ash application's data, as BEAM processes.</b><br>Fork it, change it, diff it, merge it back, or throw it away. Nothing touches your database until you say so.</p>
 
-[![Hex.pm](https://img.shields.io/hexpm/v/ramal.svg)](https://hex.pm/packages/ramal) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal-blue.svg)](https://hexdocs.pm/ramal)
+[![Hex.pm](https://img.shields.io/hexpm/v/ramal.svg)](https://hex.pm/packages/ramal) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal-blue.svg)](https://hexdocs.pm/ramal) [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Fagustinrojas1%2Framal%2Fblob%2Fmain%2Fdemo%2Framal_tour.livemd)
 
 > **Status: 0.3, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, exact aggregates, the LiveView inspector and the tools for AI agents work and are tested on Postgres. The API may still change before 1.0.
 
@@ -148,6 +148,18 @@ Ramal.merge(branch)              # now R10 is in Postgres, created by your real 
 
 Every function that takes a branch also takes its id, and starts the branch process from storage if it is not running,
 so a request can keep only the id.
+
+## Try it
+
+A guided tour opens branches of a small farm in Postgres, diffs and forks them, merges one, gets a stale one refused, and
+shows a merge that fails halfway and leaves the database untouched. It needs a Postgres (`docker compose -f demo/docker-compose.yml up -d`
+starts one) and comes in two forms:
+
+- **In Livebook:** click the badge above, or open [`demo/ramal_tour.livemd`](https://github.com/agustinrojas1/ramal/blob/main/demo/ramal_tour.livemd).
+  One section per chapter, with the explanation next to the cell you run.
+- **In a terminal:** `elixir demo/walkthrough.exs`, which needs Elixir 1.18+.
+
+[`demo/`](https://github.com/agustinrojas1/ramal/tree/main/demo) has what each chapter shows, and the browser view.
 
 ## A closer look
 

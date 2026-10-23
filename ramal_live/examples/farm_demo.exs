@@ -1,7 +1,10 @@
 # A runnable demo of the Ramal inspector, for a screen recording.
 #
-#     docker compose up -d db        # from the repository root; Postgres on port 5435
+#     docker compose -f demo/docker-compose.yml up -d     # from the repository root; Postgres on port 5436
 #     elixir ramal_live/examples/farm_demo.exs
+#
+# Postgres is found by itself: the demo tries port 5436 (`docker compose -f demo/docker-compose.yml up -d`, the walkthrough's
+# database) and then 5435 (the repository's own `docker compose up -d db`). RAMAL_PG_PORT picks one explicitly.
 #
 # Open http://localhost:4000 and press "Explore 4 alternatives". Four branches open on the same farm, each moves herd R7
 # to a different paddock, and the columns fill in live. Merge one: the others read R7 before it moved, so a merge of
@@ -169,17 +172,51 @@ defmodule FarmDemo.Data do
 
   def setup! do
     config = Application.fetch_env!(:farm_demo, Repo)
+    {:ok, _} = Application.ensure_all_started(:postgrex)
 
     case Ecto.Adapters.Postgres.storage_up(config) do
-      :ok -> :ok
-      {:error, :already_up} -> :ok
-      {:error, reason} -> raise "cannot create #{config[:database]}: #{inspect(reason)}"
+      :ok ->
+        :ok
+
+      {:error, :already_up} ->
+        :ok
+
+      {:error, reason} ->
+        fail!(
+          "cannot open database #{config[:database]} as #{config[:username]}: #{inspect(reason)} (check RAMAL_PG_USER and RAMAL_PG_PASSWORD)"
+        )
     end
 
-    {:ok, _} = Application.ensure_all_started(:postgrex)
     {:ok, pid} = Repo.start_link(pool_size: 2)
     Enum.each(@ddl, &Repo.query!/1)
     Supervisor.stop(pid)
+  end
+
+  # One line and exit code 1, not the stack trace Postgrex prints for a refused connection.
+  def fail!(message) do
+    IO.puts(IO.ANSI.format([:red, :bright, "\n#{message}\n", :reset]))
+    System.halt(1)
+  end
+
+  # A plain TCP connect, so nothing noisy happens when no server listens. Returns the first port that answers.
+  def find_port!(host) do
+    ports =
+      case System.get_env("RAMAL_PG_PORT") do
+        nil -> [5436, 5435]
+        port -> [String.to_integer(port)]
+      end
+
+    Enum.find(ports, fn port ->
+      case :gen_tcp.connect(to_charlist(host), port, [], 2_000) do
+        {:ok, socket} -> :gen_tcp.close(socket) == :ok
+        {:error, _} -> false
+      end
+    end) ||
+      fail!(
+        "Postgres is not reachable on #{host}:#{Enum.join(ports, " or ")}.\n" <>
+          "Start one with: docker compose -f demo/docker-compose.yml up -d\n" <>
+          "or point the demo at yours with RAMAL_PG_HOST, RAMAL_PG_PORT, RAMAL_PG_USER and RAMAL_PG_PASSWORD."
+      )
   end
 
   # Also what the Reset button runs: it empties the tables and seeds them again.
@@ -348,11 +385,13 @@ defmodule FarmDemo.Router do
   end
 end
 
+pg_host = System.get_env("RAMAL_PG_HOST", "localhost")
+
 Application.put_env(:farm_demo, FarmDemo.Repo,
   username: System.get_env("RAMAL_PG_USER", "ramal"),
   password: System.get_env("RAMAL_PG_PASSWORD", "ramal"),
-  hostname: System.get_env("RAMAL_PG_HOST", "localhost"),
-  port: String.to_integer(System.get_env("RAMAL_PG_PORT", "5435")),
+  hostname: pg_host,
+  port: FarmDemo.Data.find_port!(pg_host),
   database: "ramal_dev",
   pool_size: 10
 )
