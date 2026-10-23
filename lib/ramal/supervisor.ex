@@ -10,9 +10,9 @@ defmodule Ramal.Supervisor do
   It starts a `Registry` keyed by branch id, a `DynamicSupervisor` for the branch processes, and owns the ETS
   tables the library needs. There is one instance per node; its configuration lives in `:persistent_term`.
 
-  At start it logs a warning, once, when the host's Ash or AshPostgres is outside the versions `Ramal.Ash` is tested
-  with. Outside them it also runs Ramal's Ash contract (`mix ramal.doctor` runs the same checks), logs the assumptions
-  that are broken, and emits `[:ramal, :ash, :contract]`; a branch then refuses the work that relies on a broken one with
+  At start it logs a warning for each of Ash and AshPostgres that is outside the versions `Ramal.Ash` is tested with.
+  Outside them it also runs Ramal's Ash contract (`mix ramal.doctor` runs the same checks), logs one more warning with its
+  result, naming the assumptions that are broken, and emits `[:ramal, :ash, :contract]`; a branch then refuses the work that relies on a broken one with
   `:ash_incompatible` (ADR 0049). It never refuses to start.
 
   A branch lives on one node. To let every node of a cluster use the same branches, see `:cluster` below.
@@ -166,23 +166,31 @@ defmodule Ramal.Supervisor do
   # same checks already, so boot costs nothing. Never refuse: the host may be ahead of the range, and the warning is the
   # signal. The broken assumptions are kept, so a branch refuses the work they break.
   defp check_ash_versions do
+    ash_boot_check(%{
+      ash: Ramal.Ash.installed_version(:ash),
+      ash_postgres: Ramal.Ash.installed_version(:ash_postgres)
+    })
+  end
+
+  # The boot check on the versions it is given; `check_ash_versions/0` passes the loaded ones. It is public only so
+  # that a test can run it on versions that are not installed (test/ramal/ash_boot_test.exs).
+  @doc false
+  @spec ash_boot_check(%{ash: String.t() | nil, ash_postgres: String.t() | nil}) :: :ok
+  def ash_boot_check(versions) do
     untested =
-      for app <- [:ash, :ash_postgres],
-          {:untested, version, range} <-
-            [Ramal.Ash.check_version(app, Ramal.Ash.installed_version(app))] do
+      for {app, installed} <- versions,
+          {:untested, version, range} <- [Ramal.Ash.check_version(app, installed)] do
         Logger.warning(Ramal.Ash.untested_message(app, version, range))
         app
       end
 
-    if untested == [], do: Contract.put_broken([]), else: check_contract()
+    if untested == [], do: Contract.put_broken([]), else: check_contract(versions)
   end
 
-  defp check_contract do
+  defp check_contract(%{ash: ash, ash_postgres: ash_postgres}) do
     broken = for {id, {:broken, _reason}} <- Contract.run(), do: id
     Contract.put_broken(broken)
 
-    ash = Ramal.Ash.installed_version(:ash)
-    ash_postgres = Ramal.Ash.installed_version(:ash_postgres)
     Telemetry.ash_contract(broken, ash, ash_postgres)
 
     if broken == [] do

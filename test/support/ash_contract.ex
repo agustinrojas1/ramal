@@ -39,6 +39,22 @@ defmodule Ramal.AshContract.Domain do
   end
 end
 
+defmodule Ramal.AshContract.Guarded do
+  @moduledoc false
+  # A domain that requires an actor and authorizes every request, as a host's domain may. Ramal's collation loads
+  # (`Ramal.Collation`) are made with `authorize?: false` and no actor, so they pass only when they are marked internal.
+  use Ash.Domain, validate_config_inclusion?: false
+
+  authorization do
+    require_actor?(true)
+    authorize(:always)
+  end
+
+  resources do
+    resource(Ramal.AshContract.Gated)
+  end
+end
+
 defmodule Ramal.AshContract.Recorder do
   @moduledoc false
   # Reports the changeset's private context and a tag, then changes nothing.
@@ -48,6 +64,21 @@ defmodule Ramal.AshContract.Recorder do
   def change(changeset, opts, _context) do
     Report.tell({:recorded, opts[:tag], changeset.context[:private] || %{}})
     changeset
+  end
+end
+
+defmodule Ramal.AshContract.HookRecorder do
+  @moduledoc false
+  # Reports the private context its changeset has in a before_action hook, which is where Ramal's write hook reads it
+  # (`Ramal.Capture`), and changes nothing.
+  use Ash.Resource.Change
+
+  @impl true
+  def change(changeset, opts, _context) do
+    Ash.Changeset.before_action(changeset, fn changeset ->
+      Report.tell({:before, opts[:tag], changeset.context[:private] || %{}})
+      changeset
+    end)
   end
 end
 
@@ -274,6 +305,13 @@ defmodule Ramal.AshContract.Plot do
       change({Ramal.AshContract.Recorder, tag: :upsert})
     end
 
+    create :hooked_upsert do
+      accept([:name, :size])
+      upsert?(true)
+      upsert_identity(:unique_name)
+      change({Ramal.AshContract.HookRecorder, tag: :hooked_upsert})
+    end
+
     create :conditional do
       accept([:name, :size])
       upsert?(true)
@@ -345,6 +383,23 @@ defmodule Ramal.AshContract.Roll do
   attributes do
     uuid_primary_key(:id)
     attribute(:n, :integer, public?: true)
+  end
+end
+
+defmodule Ramal.AshContract.Gated do
+  @moduledoc false
+  # ETS, in the actor-requiring domain. Rows are made with an actor, which the domain requires.
+  use Ash.Resource,
+    domain: Ramal.AshContract.Guarded,
+    data_layer: Ash.DataLayer.Ets
+
+  actions do
+    defaults([:read, :destroy, create: :*, update: :*])
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:name, :string, public?: true)
   end
 end
 

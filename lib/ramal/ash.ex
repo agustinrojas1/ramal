@@ -49,9 +49,13 @@ defmodule Ramal.Ash do
     * `private_actor`: a changeset's `context.private.actor` is the actor the action was given (`Ramal.Capture`).
     * `private_authorize`: a query run with `authorize?: false` has `context.private.authorize?` false
       (aggregate reads, see `Ramal.Preparation`).
+    * `internal_read`: a read marked `context.private.internal?` is exempt from a domain's `require_actor?` and
+      `authorize: :always` (the sort loads of Ramal.Collation, and the reads `Ramal.Preparation` tells apart).
     * `query_fields`: `Ash.Query` has the hook and page fields `Ramal.Preparation` rebuilds a query with.
     * `unpaginated_read`: Ash.Actions.Read.unpaginated_read/3 returns every row when the read's `default_limit` is lower
       (`Ramal.Resource`).
+    * `stream_max_page_size`: a streamed read's page queries carry `context.private.bypass_max_page_size?`, and an
+      ordinary read's do not (the page size of a branch read, see `Ramal.Preparation`).
     * `export_runtime_sort`, `export_sorting_on_identity`, `export_list_refs`, `export_filter_map`,
       `export_hydrate_refs`, `export_do_filter`, `export_filter_matches`: the internal functions Ramal calls exist with the
       arity it calls them with (text sorts, reads and writes, see `Ramal.Preparation` and `Ramal.Capture`). They are
@@ -70,7 +74,8 @@ defmodule Ramal.Ash do
     * `:upsert`: `upsert_flag`, `upsert_plain_create`, `upsert_for_create_option`: `change/3` sees `context.private.upsert?`
       for an upsert, not for a plain create, and for the `upsert?: true` option of `Ash.Changeset.for_create/4`.
       `upsert_identity_fields`: `change/3` sees the upsert identity and fields in `context.private`. `upsert_condition`:
-      it sees the upsert condition there (`Ramal.Capture`).
+      it sees the upsert condition there (`Ramal.Capture`). `upsert_touch_update_defaults`: a `before_action` of an upsert
+      sees `context.private.touch_update_defaults?` false when it is given `touch_update_defaults?: false` (`Ramal.Capture`).
     * `:relationship_pages`: `lateral_join_source`: a has_many load with a limit reaches the destination read with its
       source records in `context.data_layer.lateral_join_source`, and tags its rows with `__lateral_join_source__`
       (`Ramal.Preparation`). `export_has_parent_expr`: the function that tells a relationship's parent expression is
@@ -209,8 +214,10 @@ defmodule Ramal.Ash do
   @spec upsert_fields(Ash.Changeset.t()) :: [atom] | nil
   def upsert_fields(changeset), do: private(changeset, :upsert_fields)
 
-  # No tripwire yet. Ash sets context.private.touch_update_defaults? from the create's option, in
-  # deps/ash/lib/ash/actions/create/create.ex (touch_update_defaults?, defaulting to true).
+  # Tripwire: "assumption: in a before_action an upsert with touch_update_defaults?: false sees
+  # context.private.touch_update_defaults? == false, and not false by default". Ash:
+  # deps/ash/lib/ash/actions/create/create.ex (do_run/4, ~l.170, sets the key from the option, default true). A missing
+  # key counts as not false, so Ramal keeps the update defaults when the option is not given.
   @doc false
   @spec touch_update_defaults?(Ash.Changeset.t()) :: boolean
   def touch_update_defaults?(changeset), do: private(changeset, :touch_update_defaults?) != false
@@ -229,8 +236,10 @@ defmodule Ramal.Ash do
   @spec put_full_count(Ash.Query.t(), non_neg_integer) :: Ash.Query.t()
   def put_full_count(query, count), do: Ash.Query.set_context(query, %{full_count: count})
 
-  # No tripwire yet. Ash reads context.private.internal? in deps/ash/lib/ash/actions/helpers.ex (internal?/1), which
-  # exempts a read from the policy that needs an actor.
+  # Tripwire: "assumption: a read with context.private.internal? true is exempt from a domain's require_actor? and
+  # authorize: :always". Ash: deps/ash/lib/ash/actions/helpers.ex (add_actor/3, add_authorize?/3 and internal?/1,
+  # ~l.471-496). Ash also sets the mark on the reads it makes itself (deps/ash/lib/ash/filter/filter.ex, ~l.1949, 2144
+  # and 2191), which this seam reads; no tripwire covers that side yet.
   @doc false
   @spec internal_read?(Ash.Query.t()) :: boolean
   def internal_read?(query), do: private(query, :internal?) == true
@@ -254,8 +263,10 @@ defmodule Ramal.Ash do
   def bulk?(changeset),
     do: Enum.any?([:bulk_create, :bulk_update, :bulk_destroy], &(changeset.context[&1] != nil))
 
-  # No tripwire yet. Ash sets context.private.bypass_max_page_size? to true on the pages of a stream in
-  # deps/ash/lib/ash/actions/read/stream.ex, and reads it in deps/ash/lib/ash/actions/read/read.ex (max page size).
+  # Tripwire: "assumption: a streamed read's page queries carry context.private.bypass_max_page_size? true, and an
+  # ordinary read's do not". Ash: deps/ash/lib/ash/actions/read/stream.ex (do_stream/4 and the offset stream, ~l.40 and
+  # ~l.102, set the key on the pages) and deps/ash/lib/ash/actions/read/read.ex (clamp_page_limit/3, ~l.4093, clamps a
+  # page unless the key is set).
   @doc false
   @spec bypass_max_page_size?(Ash.Query.t()) :: boolean
   def bypass_max_page_size?(query), do: private(query, :bypass_max_page_size?) == true

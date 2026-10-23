@@ -14,6 +14,22 @@ defmodule Ramal.Ash.Probe.Domain do
   end
 end
 
+defmodule Ramal.Ash.Probe.Guarded do
+  @moduledoc false
+  # A domain that requires an actor and authorizes every request, as a host's domain may. Ramal's collation loads are
+  # made with `authorize?: false` and no actor, so they pass only when they are marked internal.
+  use Ash.Domain, validate_config_inclusion?: false
+
+  authorization do
+    require_actor?(true)
+    authorize(:always)
+  end
+
+  resources do
+    resource(Ramal.Ash.Probe.Gated)
+  end
+end
+
 defmodule Ramal.Ash.Probe.Report do
   @moduledoc false
   # A probe reports to the check that runs it. The check puts `{self(), ref}` under `ramal_probe` in the context of its
@@ -65,6 +81,23 @@ defmodule Ramal.Ash.Probe.Recorder do
   def change(changeset, opts, _context) do
     Report.tell(changeset.context, {:recorded, opts[:tag], changeset})
     changeset
+  end
+end
+
+defmodule Ramal.Ash.Probe.BeforeRecorder do
+  @moduledoc false
+  # Reports the changeset it sees in a before_action hook, where Ramal's write hook reads what Ash put in the context
+  # (`Ramal.Capture`), and changes nothing.
+  use Ash.Resource.Change
+
+  alias Ramal.Ash.Probe.Report
+
+  @impl true
+  def change(changeset, opts, _context) do
+    Ash.Changeset.before_action(changeset, fn changeset ->
+      Report.tell(changeset.context, {:before, opts[:tag], changeset})
+      changeset
+    end)
   end
 end
 
@@ -311,6 +344,14 @@ defmodule Ramal.Ash.Probe.Plot do
       upsert_condition(expr(size < upsert_conflict(:size)))
       change({Ramal.Ash.Probe.Recorder, tag: :conditional})
     end
+
+    # An upsert whose before_action reports what Ash put in the context, as Ramal's write hook does.
+    create :hooked_upsert do
+      accept([:name, :size])
+      upsert?(true)
+      upsert_identity(:unique_name)
+      change({Ramal.Ash.Probe.BeforeRecorder, tag: :hooked_upsert})
+    end
   end
 
   identities do
@@ -353,6 +394,35 @@ defmodule Ramal.Ash.Probe.Ordered do
     create :with_own_change do
       accept([:name])
       change({Ramal.Ash.Probe.Mark, tag: :action})
+    end
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:name, :string, public?: true)
+  end
+end
+
+defmodule Ramal.Ash.Probe.Gated do
+  @moduledoc false
+  # ETS, private, in the domain that requires an actor. Its rows are made with an actor, which that domain requires.
+  use Ash.Resource,
+    domain: Ramal.Ash.Probe.Guarded,
+    data_layer: Ash.DataLayer.Ets,
+    primary_read_warning?: false
+
+  ets do
+    private?(true)
+  end
+
+  actions do
+    read :read do
+      primary?(true)
+    end
+
+    create :create do
+      primary?(true)
+      accept([:name])
     end
   end
 

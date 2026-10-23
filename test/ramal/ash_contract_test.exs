@@ -13,13 +13,13 @@ defmodule Ramal.AshContractTest do
   require Ash.Query
 
   alias Ash.Actions.Read
-  alias Ramal.AshContract.{Cow, Domain, Note, Ordered, Pasture, Plot, Report, Roll}
+  alias Ramal.AshContract.{Cow, Domain, Gated, Note, Ordered, Pasture, Plot, Report, Roll}
   alias Ramal.Test.Ets
 
   setup do
     # The hooks report to this process by name (Ramal.AshContract.Report), so reports from a task still reach it.
     Report.register()
-    Enum.each([Note, Plot, Ordered, Roll], &Ets.reset/1)
+    Enum.each([Note, Plot, Ordered, Roll, Gated], &Ets.reset/1)
     :ok
   end
 
@@ -197,6 +197,25 @@ defmodule Ramal.AshContractTest do
     assert_received {:recorded, :plain, private}
     refute private[:upsert?] == true
     assert private[:upsert_identity] == nil
+  end
+
+  # Ramal: lib/ramal/ash.ex touch_update_defaults?/1, read by Ramal.Capture in the write hook of an upsert
+  # (plan_upsert/2), which runs as a before_action, after Ash has set the key. Ash:
+  # deps/ash/lib/ash/actions/create/create.ex (do_run/4, ~l.170, sets the key for every create from the
+  # touch_update_defaults? option, default true).
+  test "assumption: in a before_action an upsert with touch_update_defaults?: false sees context.private.touch_update_defaults? == false, and not false by default" do
+    Ash.create!(Plot, %{name: "touch off", size: 1},
+      action: :hooked_upsert,
+      touch_update_defaults?: false,
+      authorize?: false
+    )
+
+    assert_received {:before, :hooked_upsert, %{touch_update_defaults?: false}}
+
+    Ash.create!(Plot, %{name: "touch on", size: 1}, action: :hooked_upsert, authorize?: false)
+
+    assert_received {:before, :hooked_upsert, private}
+    refute private[:touch_update_defaults?] == false
   end
 
   # Ramal: lib/ramal/capture.ex upsert?/1 (an upsert? true option given to for_create). Ash: deps/ash/lib/ash/changeset/changeset.ex for_create (opts[:upsert?]).
@@ -496,5 +515,40 @@ defmodule Ramal.AshContractTest do
         ] do
       assert field in keys, "Ash.Query has no #{inspect(field)} field"
     end
+  end
+
+  # 13. a read marked internal is exempt from the domain's actor requirement
+
+  # Ramal: lib/ramal/collation.ex load/3 (Ramal.Ash.mark_internal/1, for the loads that sort by a calculation:
+  # authorize?: false and no actor). Ash: deps/ash/lib/ash/actions/helpers.ex add_actor/3 and add_authorize?/3
+  # (internal?/1, ~l.471-496).
+  test "assumption: a read with context.private.internal? true is exempt from a domain's require_actor? and authorize: :always" do
+    Ash.create!(Gated, %{name: "marked"}, actor: %{id: 1})
+    marked = Ash.Query.set_context(Gated, %{private: %{internal?: true}})
+
+    assert {:ok, [%Gated{name: "marked"}]} = Ash.read(marked, authorize?: false)
+
+    assert_raise Ash.Error.Forbidden, fn -> Ash.read(Gated, authorize?: false) end
+  end
+
+  # 14. the pages of a stream are not cut to the action's max_page_size
+
+  # Ramal: lib/ramal/ash.ex bypass_max_page_size?/1, read by lib/ramal/preparation/paged.ex limit/3 (the page size of
+  # every paginated read in a branch) and unpaginated?/1 (the streamed source of a bulk action). Ash:
+  # deps/ash/lib/ash/actions/read/stream.ex (do_stream/4 and the offset stream set the key on the page queries, ~l.40
+  # and ~l.102), read.ex (clamp_page_limit/3, ~l.4093, which clamps unless the key is set).
+  test "assumption: a streamed read's page queries carry context.private.bypass_max_page_size? true, and an ordinary read's do not" do
+    Ash.create!(Cow, %{name: "stream pages", head: 1}, authorize?: false)
+    flush()
+
+    Cow |> Ash.stream!(authorize?: false) |> Enum.to_list()
+
+    assert_received {:probe, :before_action, %{private: %{bypass_max_page_size?: true}}}
+
+    flush()
+    Ash.read!(Cow, authorize?: false)
+
+    assert_received {:probe, :before_action, context}
+    refute get_in(context, [:private, :bypass_max_page_size?])
   end
 end

@@ -12,7 +12,7 @@ defmodule Ramal.Ash.Contract do
   require Ash.Query
   require Logger
 
-  alias Ramal.Ash.Probe.{Cow, Domain, Note, Ordered, Pasture, Plot, Report, Roll}
+  alias Ramal.Ash.Probe.{Cow, Domain, Gated, Note, Ordered, Pasture, Plot, Report, Roll}
   alias Ramal.Error
 
   @broken_key {__MODULE__, :broken}
@@ -126,6 +126,14 @@ defmodule Ramal.Ash.Contract do
         &check_private_authorize/0
       ),
       entry(
+        :internal_read,
+        :core,
+        :core,
+        "a read marked internal is exempt from a domain's require_actor? and authorize: :always",
+        "assumption: a read with context.private.internal? true is exempt from a domain's require_actor? and authorize: :always",
+        &check_internal_read/0
+      ),
+      entry(
         :query_fields,
         :core,
         :core,
@@ -140,6 +148,14 @@ defmodule Ramal.Ash.Contract do
         "Ash.Actions.Read.unpaginated_read/3 returns every row when the read's default_limit is lower",
         "assumption: Ash.Actions.Read.unpaginated_read/3 returns every row when the read's default_limit is lower",
         &check_unpaginated_read/0
+      ),
+      entry(
+        :stream_max_page_size,
+        :core,
+        :core,
+        "a streamed read's page queries carry bypass_max_page_size?, and an ordinary read's do not",
+        "assumption: a streamed read's page queries carry context.private.bypass_max_page_size? true, and an ordinary read's do not",
+        &check_stream_max_page_size/0
       ),
       entry(
         :export_runtime_sort,
@@ -288,6 +304,14 @@ defmodule Ramal.Ash.Contract do
         "change/3 of an upsert with a condition sees the condition",
         "assumption: in change/3 an upsert with an upsert_condition sees it in context.private.upsert_condition",
         &check_upsert_condition/0
+      ),
+      entry(
+        :upsert_touch_update_defaults,
+        :extended,
+        :upsert,
+        "a before_action of an upsert sees context.private.touch_update_defaults? false when it is given false",
+        "assumption: in a before_action an upsert with touch_update_defaults?: false sees context.private.touch_update_defaults? == false, and not false by default",
+        &check_upsert_touch_update_defaults/0
       ),
 
       # Extended, :relationship_pages: the loads a branch walks over its rows (paged, lateral and many-to-many).
@@ -453,6 +477,14 @@ defmodule Ramal.Ash.Contract do
     case for({:recorded, ^tag, changeset} <- messages, do: changeset) do
       [changeset | _] -> changeset
       [] -> raise "the change of #{inspect(tag)} did not run"
+    end
+  end
+
+  # The changeset a probe reported from a before_action hook for `tag`.
+  defp before_changeset(messages, tag) do
+    case for({:before, ^tag, changeset} <- messages, do: changeset) do
+      [changeset | _] -> changeset
+      [] -> raise "the before_action hook of #{inspect(tag)} did not run"
     end
   end
 
@@ -751,6 +783,32 @@ defmodule Ramal.Ash.Contract do
     )
   end
 
+  # The read Ramal.Collation makes to sort by a calculation: marked internal, run with authorize?: false and no actor on
+  # a domain that requires an actor and authorizes always. Unmarked, the same read is refused.
+  defp check_internal_read do
+    Ash.create!(Gated, %{name: "marked"}, actor: %{id: 1})
+    query = Ramal.Ash.mark_internal(Ash.Query.new(Gated))
+    rows = ok!(Ash.read(query, authorize?: false))
+
+    with :ok <-
+           expect(
+             length(rows) == 1,
+             "a marked internal read did not return its row in a domain that requires an actor"
+           ) do
+      expect(
+        refused_as_forbidden?(fn -> Ash.read(Gated, authorize?: false) end),
+        "an unmarked read of a domain that requires an actor ran without one"
+      )
+    end
+  end
+
+  defp refused_as_forbidden?(fun) do
+    fun.()
+    false
+  rescue
+    _forbidden in Ash.Error.Forbidden -> true
+  end
+
   defp check_query_fields do
     query = Ramal.Ash.without_hooks(Ash.Query.new(Note))
 
@@ -783,6 +841,35 @@ defmodule Ramal.Ash.Contract do
     rows = ok!(Ramal.Ash.unpaginated_read(Ash.Query.new(Roll), authorize?: false, domain: Domain))
 
     expect(length(rows) == 3, "the unpaginated read returned #{length(rows)} rows of 3")
+  end
+
+  # The page queries of a stream carry the mark `Ramal.Ash.bypass_max_page_size?/1` reads; an ordinary read does not.
+  defp check_stream_max_page_size do
+    Ash.create!(Cow, %{name: "streamed"}, authorize?: false)
+    {streamed_ref, streamed_context} = probe_context()
+
+    _pages =
+      Cow
+      |> Ash.Query.set_context(streamed_context)
+      |> Ash.stream!(authorize?: false)
+      |> Enum.to_list()
+
+    streamed = for {:query, query} <- reports(streamed_ref), do: query
+
+    {plain_ref, plain_context} = probe_context()
+    Ash.read!(Cow, authorize?: false, context: plain_context)
+    plain = for {:query, query} <- reports(plain_ref), do: query
+
+    with :ok <-
+           expect(
+             streamed != [] and Enum.all?(streamed, &Ramal.Ash.bypass_max_page_size?/1),
+             "a page query of a stream does not carry context.private.bypass_max_page_size? true"
+           ) do
+      expect(
+        plain != [] and not Enum.any?(plain, &Ramal.Ash.bypass_max_page_size?/1),
+        "an ordinary read carries context.private.bypass_max_page_size?"
+      )
+    end
   end
 
   # Bulk
@@ -977,6 +1064,40 @@ defmodule Ramal.Ash.Contract do
       Ramal.Ash.upsert_condition(recorded(reports(ref), :conditional)) != nil,
       "change/3 of an upsert with an upsert_condition does not see it"
     )
+  end
+
+  # Ramal reads the key in the write hook, which is a before_action, so the check reads it there too.
+  defp check_upsert_touch_update_defaults do
+    {off_ref, off_context} = probe_context()
+
+    Ash.create!(Plot, %{name: "touch off", size: 1},
+      action: :hooked_upsert,
+      touch_update_defaults?: false,
+      context: off_context,
+      authorize?: false
+    )
+
+    {on_ref, on_context} = probe_context()
+
+    Ash.create!(Plot, %{name: "touch on", size: 1},
+      action: :hooked_upsert,
+      context: on_context,
+      authorize?: false
+    )
+
+    off = before_changeset(reports(off_ref), :hooked_upsert)
+    on = before_changeset(reports(on_ref), :hooked_upsert)
+
+    with :ok <-
+           expect(
+             Ramal.Ash.touch_update_defaults?(off) == false,
+             "an upsert given touch_update_defaults?: false does not see it false in a before_action"
+           ) do
+      expect(
+        Ramal.Ash.touch_update_defaults?(on),
+        "an upsert without the option sees touch_update_defaults? false in a before_action"
+      )
+    end
   end
 
   # Relationship pages
