@@ -171,6 +171,38 @@ defmodule Ramal.Resource do
     end
   end
 
+  @doc false
+  # Ash updates and destroys a row with the tenant in the data layer's `WHERE`, so a record of another tenant is not
+  # found. A branch has no `WHERE`, so it checks the record the caller passed: its tenant attribute must be the tenant
+  # of the call. Only the attribute strategy has such an attribute, and a row without a value (a `global?` resource)
+  # belongs to no tenant and is left to the merge.
+  @spec ensure_record_tenant(Ash.Changeset.t()) :: :ok | {:error, Ramal.Error.t()}
+  def ensure_record_tenant(%{
+        action: %{type: type},
+        tenant: tenant,
+        resource: resource,
+        data: data
+      })
+      when type in [:update, :destroy] and not is_nil(tenant) do
+    with :attribute <- Ash.Resource.Info.multitenancy_strategy(resource),
+         attribute when not is_nil(attribute) <-
+           Ash.Resource.Info.multitenancy_attribute(resource),
+         value when not is_nil(value) <- Map.get(data, attribute),
+         false <- value == Ash.ToTenant.to_tenant(tenant, resource) do
+      {:error,
+       Ramal.Error.new(
+         :tenant_mismatch,
+         "a #{inspect(resource)} record of another tenant was passed to a #{type} with tenant #{inspect(tenant)}; " <>
+           "Ash would not find it, so a branch refuses it too",
+         %{resource: resource, tenant: tenant}
+       )}
+    else
+      _ -> :ok
+    end
+  end
+
+  def ensure_record_tenant(_changeset), do: :ok
+
   defp check_tenant(resource, tenant, nil) do
     {:error,
      Ramal.Error.new(

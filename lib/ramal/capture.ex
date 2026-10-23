@@ -203,8 +203,14 @@ defmodule Ramal.Capture do
     end
   end
 
+  defp check_tenant(changeset, id) do
+    with :ok <- Resource.ensure_tenant(changeset.resource, changeset.tenant, id) do
+      Resource.ensure_record_tenant(changeset)
+    end
+  end
+
   defp install(changeset, id, origin) do
-    case Resource.ensure_tenant(changeset.resource, changeset.tenant, id) do
+    case check_tenant(changeset, id) do
       :ok ->
         upsert? = Ramal.Ash.upsert?(changeset)
 

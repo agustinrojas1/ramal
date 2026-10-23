@@ -15,6 +15,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- **A branch refuses an update or destroy of a record that belongs to another tenant.** With the attribute strategy, `Ash.update(record_of_globex, tenant: "acme")` inside a branch of tenant `acme` was accepted and logged, while Ash outside a branch rejects it. The merge failed on it (`:stale`, or `:merge_failed` with `on_stale: :ignore`) and no row of the other tenant was written, but the what-if said it worked. It now fails at once with `:tenant_mismatch`. SECURITY.md also says that tenant does not scope `Ramal.list/2` or the inspector; use `owner:`.
 - **A stored branch whose state is not an object with a version no longer crashes the caller.** `Ramal.get/1` and `Ramal.list/2` (and a durable branch's write log) now return `{:error, %Ramal.Error{reason: :storage}}` for a `state` of `{}`, `null`, a list or a string, or a `version` that is not a number, as SECURITY.md says they do. Found by fuzzing the decoder with mutated states. Only someone who can already write the `ramal_branches` table can store such a value.
 
 ## [0.9.0] - 2026-10-23
