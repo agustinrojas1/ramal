@@ -173,6 +173,10 @@ def reads_replay(ops: List<&2, M.Op>, +base: Maybe<&2, Nat>, +s: M.Slot, +h: M.H
 def Laws.branch_reads_replay(ops, base):
   reads_replay(ops, base, M.Absent{}, Unit{})
 
+# The same lemma, stated for the entry a nested merge's replay starts from.
+def Laws.branch_reads_run(ops, base, s, h):
+  reads_replay(ops, base, s, h)
+
 def Laws.key_refl(j):
   match j:
     case 0n:

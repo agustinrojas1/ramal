@@ -46,6 +46,7 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0040](0040-relationship-pages-cut-per-source.md) | A relationship page is cut from the patched rows, per source record | accepted |
 | [0041](0041-replay-keeps-hook-keys-and-caller-attributes.md) | Replay keeps hook-created keys and caller-set attributes | accepted |
 | [0042](0042-placeholder-keys-for-generated-primary-keys.md) | Placeholder keys for database-generated primary keys | accepted |
+| [0043](0043-nested-branches-merge-into-their-parent.md) | Nested branches merge into their parent | accepted |
 | [0045](0045-text-sorted-by-the-databases-collation.md) | Text sorted in a branch follows the database's collation | accepted |
 | [0046](0046-through-paths-walked-over-the-branch.md) | A `through` path of several hops is walked over the branch's rows | accepted |
 | [0047](0047-relationship-filter-narrowing.md) | A filter through a changed to-one relationship is narrowed in the data-layer query | accepted |

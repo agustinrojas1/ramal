@@ -19,7 +19,6 @@ discard them. A branch must cost roughly what a process and a map cost, so thous
 - Schema changes inside a branch.
 - Branch-local indexes, or any promise about query plans.
 - Data-layer aggregates and calculations that Ramal cannot recompute over a branch (`custom` aggregates, join filters and custom read actions keep the database's value, with a telemetry event; section 4.1 point 4 says what is recomputed).
-- Nested branches.
 - Multi-node branches. A branch lives on one node; persistence makes it movable, not distributed.
 - A UI. The inspector is a separate package (`ramal_live/`, section 12).
 
@@ -71,7 +70,7 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
   snapshot (`put/2` of the branch without running actions' writes, which deletes the deltas up to its `wal`) after 100
   appends, after a load that applied deltas, on unload and on shutdown. A load is the snapshot with the deltas after
   its `wal` applied in `seq` order, the order the actions ended in. A `seq` is never reused: an append that errors may
-  have been stored, so the process gives it up and compacts at once.
+  have been stored, so the process gives it up and compacts at once. A nested fork of a durable parent is durable; `adopt/4` stores the parent whole, which is a snapshot covering its log.
 - Running actions: a captured write belongs to its action until the action ends. The server keeps its undo under the
   writer's pid and monitors it; a merge or a proposal waits for running actions, a fork leaves their writes out, another
   process's write to the same row is refused (`:row_busy`), and a writer that dies is undone (ADR 0033). `Ramal.branch/2`, `run/2`, `fork/1`, `diff/1`, `merge/2` and `discard/1` all accept a branch id and
@@ -306,8 +305,10 @@ This is the section that decides correctness. In a read action's preparation, wh
 
 @spec fork(branch | id, keyword) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
 # the fork is a new branch with a copy of overlay, log and fingerprints; metadata.forked_from = parent id
+# `nested: true` makes it a branch of the parent that merges into it (ADR 0043, section 8)
 
-@spec diff(branch | id) :: {:ok, [Ramal.Change.t()]} | {:error, Ramal.Error.t()}
+@spec diff(branch | id, keyword) :: {:ok, [Ramal.Change.t()]} | {:error, Ramal.Error.t()}
+# `against: :parent` for a nested fork: what merging it would change in its parent
 
 @spec merge(branch | id, keyword) :: {:ok, Ramal.Merge.Result.t()} | {:error, Ramal.Error.t()}
 # opts: actor, authorize? (default true), on_stale (:error | :ignore | (stale_rows -> :continue | :abort)), mode (:replay)
@@ -436,7 +437,20 @@ skipping action logic; it is faster and less safe, and needs its own ADR.
 - `fork/2` copies overlay, log and `base` into a new open branch with its own process, a fresh id, the parent's name,
   metadata and owner unless given, and `metadata.forked_from`. Both branches share the database; neither sees the other's later
   changes. Persistent data structures make the copy cheap; the log is a list and gets shared structurally. A fork of a
-  branch that is not open is `:not_open`. It emits `[:ramal, :branch, :fork]` with `parent_id`, then `:load`.
+  branch that is not open is `:not_open`. It emits `[:ramal, :branch, :fork]` with `parent_id` and `nested`, then `:load`.
+- `fork/2` with `nested: true` makes a branch of the branch (ADR 0043). It records `parent: %{id, log_length}`, the length
+  of the log it inherited, and `parent_seen`: for each row it reads or writes, what it held the first time (`:base`
+  without an overlay entry, otherwise the hash of the entry), which is what the parent held when it was forked. Merging
+  it (`merge/2`, `approve/2`) claims it, copies the parent with its `version` (waiting for the actions running in it),
+  compares `parent_seen` with the copy (`:stale`, `on_stale` applies), replays the entries the fork wrote itself through
+  the real actions in a scratch branch that is never stored, and gives the parent the scratch's overlay, log and
+  `base` in one call that checks the `version`, persists the parent and records the fork's id in `merged_children`. A
+  parent that changed meanwhile makes the merge run once more, and then fail as `:stale`; a failed replay leaves the
+  parent as it was. The parent keeps the earliest fingerprint of every base row, so its own merge to the database
+  checks the rows the fork read. A fork its parent holds is merged, whatever its own status says: the branch process
+  asks the parent's storage when its merger dies and when it is loaded. A parent that is not open refuses
+  (`:parent_not_open`). `Ramal.run/2` inside `Ramal.run/2` stays refused. `diff(fork, against: :parent)` compares the
+  fork's own writes with the parent's copy of the rows.
 - `diff/1` walks the overlay: for `:updated`, compare the overlay record with the base row as the branch first saw it
   (kept alongside the fingerprint, so diff never queries the base) and keep only the attributes that differ; for
   `:created`, every attribute is `{nil, value}`; for `:deleted`, `{value, nil}`. An updated row whose values ended equal
@@ -483,7 +497,7 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 ## 11. Open questions
 
 1. ~~Several domains per branch?~~ A branch names one domain, which is the one `Ramal.branch/2` checks for resources that neither use `Ramal.Resource` nor opt out. The overlay is keyed by resource, so a resource of another domain that uses `Ramal.Resource` is read, written, diffed and merged like the rest (`test/ramal/other_domain_test.exs`); one that does not is written for real, and Ramal does not check its domain.
-2. Should `run/2` be reentrant (a branch inside a branch)? 0.1: no, `{:error, %Ramal.Error{reason: :nested_branch}}`; `merge/2` refuses the same way.
+2. Should `run/2` be reentrant (a branch inside a branch)? No, `{:error, %Ramal.Error{reason: :nested_branch}}`; `merge/2` refuses the same way. A branch of a branch is a nested fork, which is run on its own (ADR 0043, section 8).
 3. ~~Where do many-to-many join resources sit in the overlay?~~ Answered: they are resources, so they get overlay
    entries like any other, keyed by the join resource's primary key (section 4.1 point 7, ADR 0014). A many_to_many
    load and `manage_relationship` see links the branch changed (ADR 0017); a `through` path of several hops sees them too (ADR 0046), and `append_and_remove` with a link to remove works, as a bulk action run record by record (ADR 0036).
@@ -574,4 +588,5 @@ action (ADR 0016).
 | 34 | Inside a branch a bulk action runs each record through the captured single action; a bulk update or destroy of a query must allow `:stream`; a guard refuses an action the capture hook did not wrap | Ash runs changesets with an `around_action` hook singly, and the refusal also blocked `append_and_remove` and AshAi's update and destroy tools. [ADR 0036](adr/0036-bulk-actions-record-by-record.md) |
 | 35 | `first`, `list`, `uniq?` and `include_nil?` aggregates, and a calculation as the field of a `first`, `list` or `count`, are computed over the branch like the other kinds | The related rows already arrive filtered and sorted by the aggregate's own query, so the kinds are a reduction over them; only `custom`, which is SQL, cannot be. [ADR 0039](adr/0039-first-list-and-uniq-aggregates.md) |
 | 36 | A text sort, `:min` and `:max` inside a branch order by the rank Postgres gives the value under the column's collation, from one read-only query per sort key; `C`, `POSIX` and other data layers keep byte order | Strings compared as bytes in the branch and by `en_US.UTF-8` in the database, so the same read disagreed before and after the merge. No Elixir comparator reproduces a collation; asking the database does. [ADR 0045](adr/0045-text-sorted-by-the-databases-collation.md), supersedes [ADR 0024](adr/0024-text-sort-order.md) |
-| 37 | A branch can be durable: the outermost action's end is a call that appends the action's delta (its own rows, never a running action's) to the storage's write log before the action returns; a load is the snapshot plus the log; a snapshot compacts the log | Writes since the last save were lost on a node crash, and storing on every write would store the writes of running actions (ADR 0033). The cost is a storage write per action. [ADR 0048](adr/0048-durable-branches.md) |
+| 37 | A nested fork (`fork/2` with `nested: true`) merges into its parent by replaying its own entries in a scratch copy that the parent adopts if its version did not change; the parent persists first and remembers the fork; a fork the parent holds is merged however its own status was left | A fork that replayed its whole log into the database could not be merged without its parent. Replaying in a copy keeps the parent untouched when a replay fails, the version makes an adoption valid, and the model checked in `verification/tla/Nested.tla` found the fork that was still writable after its merger died. [ADR 0043](adr/0043-nested-branches-merge-into-their-parent.md) |
+| 38 | A branch can be durable: the outermost action's end is a call that appends the action's delta (its own rows, never a running action's) to the storage's write log before the action returns; a load is the snapshot plus the log; a snapshot compacts the log | Writes since the last save were lost on a node crash, and storing on every write would store the writes of running actions (ADR 0033). The cost is a storage write per action. [ADR 0048](adr/0048-durable-branches.md) |

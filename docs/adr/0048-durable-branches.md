@@ -52,8 +52,16 @@ running action's writes in storage, and ADR 0033 says they are the action's own 
   only while the stored epoch is that one, as `put/2` does, or a fenced process could add deltas the new holder never
   sees; its `:fenced` error stops the process the way a refused `put/2` does. This is not in the code, which has no
   epoch yet. A delta also holds the count of placeholder keys handed out for generated keys (ADR 0042), which a call
-  that is not one of the action's writes bumps; a recovered branch would otherwise give out one again. Nested branches (ADR 0043) add writes to a
-  parent that do not come through `Capture`, when a child merges into it; for a durable parent those must be appended
-  as a delta too, or stored as a snapshot, or a crash after the merge of the child loses them.
+  that is not one of the action's writes bumps; a recovered branch would otherwise give out one again. Nested branches (ADR 0043) compose as
+  follows. A nested fork is a durable branch like any other; a delta also holds `seen`, what the fork recorded of its
+  parent for the rows it wrote (`parent_seen`), while what it recorded for rows it only read is, like a fingerprint, not
+  stored between snapshots. The work a fork gives a parent does not come through `Capture`: `Server.adopt/4` already
+  stores the whole parent before it answers, which for a durable parent is a snapshot with its current `wal`, so it
+  covers every delta so far and deletes them. It takes only a parent with no action running and the version of the copy
+  (`:moved` otherwise), so a delta of the parent's own action is never inside the snapshot nor lost: it is appended after
+  it, with a larger `seq`. The scratch copy the replay runs in is not durable and stores nothing. `adopted?/2` reads a
+  durable parent as a load does, the snapshot with the log applied. The state version is the lowest that says what the
+  branch holds: 2 plain, 3 nested (`parent`, `parent_seen`, `merged_children`), 4 durable, with the nested fields as well
+  when it has them; all four are read.
 - The TLA+ model has `Durable`: `DurableAcked`, `RecoveredMatchesLog` and `NoHeldPersisted` hold, and
   `bug-durable-held.cfg`, which appends on every write, violates `NoHeldPersisted`.

@@ -187,6 +187,31 @@ defmodule Ramal.BranchDeltaTest do
     assert Branch.apply_delta(replica, 2, %{delta | next_placeholder: 0}).next_placeholder == 1
   end
 
+  test "what a nested fork saw of its parent in the rows it wrote travels with the delta" do
+    parent = Branch.new(MyApp.Farm, durable: true)
+    child = Branch.fork(parent, nested: true)
+
+    {written, undo} =
+      Branch.put_write(child, :created, {Herd, 3}, %{id: 3}, nil, entry(:create, 3))
+
+    {written, other} =
+      Branch.put_write(written, :created, {Herd, 4}, %{id: 4}, nil, entry(:create, 4))
+
+    delta = Branch.delta(written, [undo])
+
+    assert delta.seen == %{{Herd, 3} => :base}
+    assert Branch.apply_delta(child, 1, delta).parent_seen == %{{Herd, 3} => :base}
+    assert Branch.delta(written, [other, undo]).seen |> map_size() == 2
+  end
+
+  test "a scratch copy of a durable branch is not durable, so nothing of it is stored" do
+    branch = %{Branch.new(MyApp.Farm, durable: true) | wal: 4}
+    scratch = Branch.scratch(branch)
+
+    refute scratch.durable
+    assert scratch.id != branch.id
+  end
+
   test "a fork starts with an empty write log and keeps the parent's durability" do
     parent = %{Branch.new(MyApp.Farm, durable: true) | wal: 12}
 

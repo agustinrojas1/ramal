@@ -26,7 +26,8 @@ writes stay in the branch until `Ramal.merge/2` replays them through the real ac
    write per action (a storage without `append/4` and `writes_after/2` refuses it).
 3. **Work inside** `Ramal.run(branch, fn -> ... end)` using the app's own actions. Never `Repo.insert` or raw SQL there.
 4. **Look**: `Ramal.diff(branch)` for the rows changed, `Ramal.aggregate(...)` for exact counts and sums.
-5. **Vary**: `Ramal.fork(branch)` to try an alternative; `Ramal.discard/1` the ones you drop.
+5. **Vary**: `Ramal.fork(branch)` to try an alternative; `Ramal.discard/1` the ones you drop. A fork made with
+   `nested: true` is a branch of the branch that merges into it, not into the database.
 6. **Hand over**: `Ramal.propose(branch, proposed_by: ..., reason: "...")`, then show the diff to the decider.
 7. **Apply**: `Ramal.approve(branch, decided_by: person, actor: person)` merges through the real actions; handle
    `{:error, %Ramal.Error{reason: :stale}}` by re-running the work in a new branch.

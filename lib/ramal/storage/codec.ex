@@ -4,7 +4,8 @@ defmodule Ramal.Storage.Codec do
   in a `jsonb` column).
 
   `encode_state/1` covers what the table has no column for: overlay, base (fingerprints and snapshots), log, metadata,
-  the owner, the proposal and the count of placeholder keys. `decode_state/2` takes that map and the columns and gives the branch back, equal to the one encoded.
+  the owner, the proposal, the count of placeholder keys and, for nested forks, the parent link, what the fork saw of the parent and the forks that
+  merged into the branch (ADR 0043). `decode_state/2` takes that map and the columns and gives the branch back, equal to the one encoded.
 
   How values are written, confirmed against Ash 3.37 (`lib/ash/type/type.ex`):
 
@@ -50,13 +51,15 @@ defmodule Ramal.Storage.Codec do
   alias Ash.Resource.Info
   alias Ramal.{Branch, Error}
 
-  # A branch that is not durable is written as version 2, byte for byte as before, so that a node of an earlier release
-  # reads it. The state of a durable branch is version 4 (3 is the format nested branches write, ADR 0043): it names the
-  # write log (`wal`) that a node unaware of the log would not apply, which would drop acknowledged writes without a
-  # word, so such a node refuses the state instead.
+  # The version is the lowest that can say what the branch holds, so that a state an older Ramal can read stays
+  # readable by it. 2 is the original shape. 3 adds `parent`, `parent_seen` and `merged_children`, for a nested fork or
+  # a branch with merged children (ADR 0043). 4 adds `durable` and `wal` (ADR 0048), and carries the nested fields too
+  # when the branch has them. A node that does not know the write log must refuse a durable state, or it would load the
+  # snapshot without the deltas and drop acknowledged writes without a word. All of 1 to 4 are read.
   @version 2
+  @nested_version 3
   @durable_version 4
-  @readable_versions [1, 2, 4]
+  @readable_versions [1, 2, 3, 4]
   @statuses %{
     "open" => :open,
     "proposed" => :proposed,
@@ -87,7 +90,7 @@ defmodule Ramal.Storage.Codec do
   def encode_state(%Branch{} = branch) do
     {:ok,
      %{
-       "version" => @version,
+       "version" => state_version(branch),
        "overlay" => Enum.map(branch.overlay, &overlay_entry/1),
        "base" => Enum.map(branch.base, &base_entry(&1, branch.overlay)),
        "log" => Enum.map(branch.log, &log_entry/1),
@@ -98,6 +101,7 @@ defmodule Ramal.Storage.Codec do
        "proposal" => proposal(branch.proposal),
        "next_placeholder" => branch.next_placeholder
      }
+     |> Map.merge(nested(branch))
      |> durable_fields(branch)
      |> dedupe_extras()}
   catch
@@ -107,7 +111,7 @@ defmodule Ramal.Storage.Codec do
   end
 
   defp durable_fields(state, %Branch{durable: true, wal: wal}),
-    do: Map.merge(state, %{"version" => @durable_version, "durable" => true, "wal" => wal})
+    do: Map.merge(state, %{"durable" => true, "wal" => wal})
 
   defp durable_fields(state, _not_durable), do: state
 
@@ -118,7 +122,7 @@ defmodule Ramal.Storage.Codec do
 
   ## Example
 
-      iex> {:ok, delta} = Ramal.Storage.Codec.encode_delta(%{overlay: %{}, gone: [], base: %{}, log: [], next_placeholder: 0})
+      iex> {:ok, delta} = Ramal.Storage.Codec.encode_delta(%{overlay: %{}, gone: [], base: %{}, log: [], seen: %{}, next_placeholder: 0})
       iex> {delta["overlay"], delta["gone"], delta["log"]}
       {[], [], []}
   """
@@ -128,6 +132,7 @@ defmodule Ramal.Storage.Codec do
      dedupe_extras(%{
        "version" => @version,
        "overlay" => Enum.map(overlay, &overlay_entry/1),
+       "seen" => seen_entries(delta.seen),
        "gone" =>
          Enum.map(gone, fn {resource, key} ->
            %{
@@ -149,9 +154,9 @@ defmodule Ramal.Storage.Codec do
 
   ## Example
 
-      iex> {:ok, stored} = Ramal.Storage.Codec.encode_delta(%{overlay: %{}, gone: [], base: %{}, log: [], next_placeholder: 0})
+      iex> {:ok, stored} = Ramal.Storage.Codec.encode_delta(%{overlay: %{}, gone: [], base: %{}, log: [], seen: %{}, next_placeholder: 0})
       iex> Ramal.Storage.Codec.decode_delta("b1", stored)
-      {:ok, %{overlay: %{}, gone: [], base: %{}, log: [], next_placeholder: 0}}
+      {:ok, %{overlay: %{}, gone: [], base: %{}, log: [], seen: %{}, next_placeholder: 0}}
   """
   @spec decode_delta(String.t(), map) :: {:ok, Branch.delta()} | {:error, Error.t()}
   def decode_delta(id, %{"version" => version} = stored) when version in @readable_versions do
@@ -167,6 +172,7 @@ defmodule Ramal.Storage.Codec do
          end),
        base: Map.new(stored["base"], &decode_base_entry(&1, overlay)),
        log: Enum.map(stored["log"], &decode_log_entry/1),
+       seen: Map.new(stored["seen"] || [], &decode_seen/1),
        next_placeholder: stored["next_placeholder"] || 0
      }}
   rescue
@@ -243,7 +249,8 @@ defmodule Ramal.Storage.Codec do
        next_placeholder: state["next_placeholder"] || 0,
        durable: state["durable"] == true,
        wal: state["wal"] || 0
-     }}
+     }
+     |> decode_nested(state)}
   rescue
     # The state came out of a database column that anything with write access to it can change. A shape this module
     # never writes is an error for the caller to handle, not a crash of the branch process that asked. Only the kind of
@@ -378,6 +385,31 @@ defmodule Ramal.Storage.Codec do
   defp expand_parts(leaf, _table), do: leaf
 
   # -- encode -------------------------------------------------------------------------------------------------------
+
+  defp state_version(%Branch{durable: true}), do: @durable_version
+  defp state_version(%Branch{parent: nil, merged_children: []}), do: @version
+  defp state_version(_nested), do: @nested_version
+
+  defp nested(%Branch{parent: nil, merged_children: []}), do: %{}
+
+  defp nested(branch) do
+    %{
+      "parent" =>
+        branch.parent && %{"id" => branch.parent.id, "log_length" => branch.parent.log_length},
+      "parent_seen" => seen_entries(branch.parent_seen),
+      "merged_children" => branch.merged_children
+    }
+  end
+
+  defp seen_entries(seen) do
+    for {{resource, key}, view} <- seen do
+      %{
+        "resource" => Atom.to_string(resource),
+        "key" => term(key, [{:resource, resource}, "parent_seen"]),
+        "view" => if(view == :base, do: nil, else: view)
+      }
+    end
+  end
 
   # A proposal is written field by field, with string keys, so that reading it back never needs an atom that only this
   # module mentions. Actors lose their sensitive attributes like the actors in the log (ADR 0010).
@@ -670,6 +702,33 @@ defmodule Ramal.Storage.Codec do
   end
 
   defp decode_snapshot(resource, stored, _entry), do: decode_record(resource, stored)
+
+  defp decode_nested(branch, %{"parent_seen" => seen} = state) when is_list(seen) do
+    parent =
+      case state["parent"] do
+        %{"id" => id, "log_length" => length} when is_binary(id) and is_integer(length) ->
+          %{id: id, log_length: length}
+
+        nil ->
+          nil
+      end
+
+    %{
+      branch
+      | parent: parent,
+        parent_seen: Map.new(seen, &decode_seen/1),
+        merged_children: Enum.map(state["merged_children"] || [], &ensure_binary!/1)
+    }
+  end
+
+  defp decode_nested(branch, _state), do: branch
+
+  defp decode_seen(%{"resource" => resource, "key" => key, "view" => view}) do
+    {{module!(resource), unterm(key)}, if(is_integer(view), do: view, else: :base)}
+  end
+
+  defp ensure_binary!(id) when is_binary(id), do: id
+  defp ensure_binary!(_other), do: throw({:codec, "a merged fork id is not a string"})
 
   defp decode_proposal(nil), do: nil
 

@@ -17,6 +17,11 @@ defmodule Ramal.Branch do
     interprets it: `Ramal.list/2` can filter by it (ADR 0018) and nothing else reads it
   * `tenant` - the one tenant the branch works in, `nil` unless given at `branch/2` (ADR 0034). A fork keeps it
   * `proposal` - `nil` until `Ramal.propose/2`; then `t:proposal/0`
+  * `parent` - `nil`, or for a nested fork (`Ramal.fork(parent, nested: true)`, ADR 0043) `%{id: parent_id, log_length:
+    n}`: the branch it merges into and how many of its own log entries the fork inherited
+  * `parent_seen` - for a nested fork, `ref => view`: what the parent held for each row the fork read or wrote, the
+    first time it did. `view/2` says what a view is. Merging into the parent compares them with the parent's now
+  * `merged_children` - the ids of the nested forks that merged into this branch, so that one cannot merge twice
   * `next_placeholder` - how many placeholder keys the branch handed out for rows whose key the database generates
     (ADR 0042). A fork keeps the count, and its placeholders are its own
   * `durable` - whether the branch appends the writes of every action that ends to the storage's write log, so a crash
@@ -78,11 +83,18 @@ defmodule Ramal.Branch do
   @typedoc "What the branch knows about one base row."
   @type base_row :: %{fingerprint: non_neg_integer | nil, snapshot: map | nil}
 
+  @typedoc """
+  What a branch holds for a row: `:base` when it has no overlay entry (the row is the database's), otherwise the hash of
+  the entry. Two views are the same row in the same state when they are equal.
+  """
+  @type view :: :base | non_neg_integer
+
   @typedoc "What `put_write/6` replaced, so `undo/2` can put it back."
   @type undo :: %{
           ref: ref,
           overlay: Overlay.entry() | :none,
           base: base_row | :none,
+          seen: :added | :kept,
           entry: log_entry
         }
 
@@ -99,6 +111,9 @@ defmodule Ramal.Branch do
           owner: term,
           tenant: term,
           proposal: proposal | nil,
+          parent: %{id: String.t(), log_length: non_neg_integer} | nil,
+          parent_seen: %{optional(ref) => view},
+          merged_children: [String.t()],
           next_placeholder: non_neg_integer,
           durable: boolean,
           wal: non_neg_integer
@@ -107,14 +122,16 @@ defmodule Ramal.Branch do
   @typedoc """
   What one action added to the branch (ADR 0048), as `delta/2` builds it and `apply_delta/2` applies it: the overlay
   entries and base rows of the rows the action wrote as they stand when it ends, the rows whose entry is gone (a created
-  row the action then destroyed), the action's log entries, oldest first, and `next_placeholder`, the count of
-  placeholder keys the branch had handed out (ADR 0042), so that a recovered branch does not hand out one again.
+  row the action then destroyed), the action's log entries, oldest first, `seen`, what a nested fork recorded of its
+  parent for those rows (`parent_seen`, ADR 0043), and `next_placeholder`, the count of placeholder keys the branch had
+  handed out (ADR 0042), so that a recovered branch does not hand out one again.
   """
   @type delta :: %{
           overlay: %{optional(ref) => Overlay.entry()},
           gone: [ref],
           base: %{optional(ref) => base_row},
           log: [log_entry],
+          seen: %{optional(ref) => view},
           next_placeholder: non_neg_integer
         }
 
@@ -137,6 +154,9 @@ defmodule Ramal.Branch do
     owner: nil,
     tenant: nil,
     proposal: nil,
+    parent: nil,
+    parent_seen: %{},
+    merged_children: [],
     next_placeholder: 0,
     durable: false,
     wal: 0
@@ -303,10 +323,15 @@ defmodule Ramal.Branch do
   def put_write(%__MODULE__{} = branch, kind, ref, record, base_row, entry) do
     {record, base_row, entry} = share_terms(branch, ref, record, base_row, entry)
 
+    # A nested fork's first touch of a row records what it held before the write, which is what its parent held when it
+    # was forked (see `see/2`).
+    {parent_seen, seen} = first_touch(branch, ref)
+
     undo = %{
       ref: ref,
       overlay: Map.get(branch.overlay, ref, :none),
       base: Map.get(branch.base, ref, :none),
+      seen: seen,
       entry: entry
     }
 
@@ -327,8 +352,22 @@ defmodule Ramal.Branch do
         branch.base
       end
 
-    {%{branch | overlay: overlay, base: base, log: [entry | branch.log]}, undo}
+    {%{
+       branch
+       | overlay: overlay,
+         base: base,
+         log: [entry | branch.log],
+         parent_seen: parent_seen
+     }, undo}
   end
+
+  defp first_touch(%__MODULE__{parent: nil, parent_seen: seen}, _ref), do: {seen, :kept}
+
+  defp first_touch(%__MODULE__{parent_seen: %{} = seen}, ref) when is_map_key(seen, ref),
+    do: {seen, :kept}
+
+  defp first_touch(%__MODULE__{parent_seen: seen} = branch, ref),
+    do: {Map.put(seen, ref, view(branch, ref)), :added}
 
   # The record, the snapshot and the log entry reach the branch process as copies of terms the writer built, without the
   # sharing it had (`Ramal.Overlay.share/3`). Sharing them again is what keeps a row's cost at the values that are its
@@ -493,12 +532,16 @@ defmodule Ramal.Branch do
   Overlays, logs and the base are immutable, so the copy shares structure with the parent and neither sees the
   other's later changes. `metadata` gets `forked_from: parent.id`.
 
+  A plain fork is a sibling: it merges into the database. With `nested: true` it records `parent` and merges into
+  `parent` instead (ADR 0043); either way it forgets the parent's own `parent`, `parent_seen` and `merged_children`.
+
   ## Options
 
     * `:name` - default: the parent's name
     * `:metadata` - default: the parent's metadata
     * `:owner` - default: the parent's owner
     * `:durable` - default: the parent's
+    * `:nested` - default `false`
 
   ## Example
 
@@ -507,11 +550,15 @@ defmodule Ramal.Branch do
       iex> fork = Ramal.Branch.fork(parent, name: "variant")
       iex> {fork.name, fork.overlay == parent.overlay, fork.metadata.forked_from == parent.id, fork.id != parent.id}
       {"variant", true, true, true}
+      iex> Ramal.Branch.fork(parent, nested: true).parent == %{id: parent.id, log_length: 0}
+      true
   """
   @spec fork(t, keyword) :: t
   def fork(%__MODULE__{} = parent, opts \\ []) do
     metadata =
       opts |> Keyword.get(:metadata, parent.metadata) |> Map.put(:forked_from, parent.id)
+
+    link = if opts[:nested], do: %{id: parent.id, log_length: length(parent.log)}
 
     %{
       parent
@@ -521,7 +568,166 @@ defmodule Ramal.Branch do
         metadata: metadata,
         owner: Keyword.get(opts, :owner, parent.owner),
         durable: Keyword.get(opts, :durable, parent.durable),
-        wal: 0
+        wal: 0,
+        parent: link,
+        parent_seen: %{},
+        merged_children: []
+    }
+  end
+
+  @doc """
+  What the branch holds for `ref`: `:base` without an overlay entry, otherwise the hash of the entry.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> Ramal.Branch.view(branch, {MyApp.Herd, 1})
+      :base
+      iex> branch = %{branch | overlay: %{{MyApp.Herd, 1} => :deleted}}
+      iex> Ramal.Branch.view(branch, {MyApp.Herd, 1}) == :erlang.phash2(:deleted)
+      true
+  """
+  @spec view(t, ref) :: view
+  def view(%__MODULE__{overlay: overlay}, ref) do
+    case overlay do
+      %{^ref => entry} -> :erlang.phash2(entry)
+      _none -> :base
+    end
+  end
+
+  @doc """
+  The branch after its reads returned the rows `refs`: a nested fork records, for each one it has not recorded yet, what
+  it holds for it, which is what its parent held when it was forked, since only the fork's own writes change an entry.
+  Any other branch is returned as it is.
+
+  ## Example
+
+      iex> parent = Ramal.Branch.new(MyApp.Farm)
+      iex> child = Ramal.Branch.fork(parent, nested: true)
+      iex> Ramal.Branch.see(child, [{MyApp.Herd, 1}]).parent_seen
+      %{{MyApp.Herd, 1} => :base}
+      iex> Ramal.Branch.see(parent, [{MyApp.Herd, 1}]).parent_seen
+      %{}
+  """
+  @spec see(t, Enumerable.t()) :: t
+  def see(%__MODULE__{parent: nil} = branch, _refs), do: branch
+
+  def see(%__MODULE__{} = branch, refs) do
+    seen =
+      Enum.reduce(refs, branch.parent_seen, fn ref, seen ->
+        if is_map_key(seen, ref), do: seen, else: Map.put(seen, ref, view(branch, ref))
+      end)
+
+    %{branch | parent_seen: seen}
+  end
+
+  @doc """
+  The rows a nested fork saw in its parent that the parent holds differently now, as `%{resource, key, reason}` sorted by
+  resource and key. `reason` is `:deleted` when the parent now holds the row as deleted and `:changed` otherwise.
+
+  ## Example
+
+      iex> parent = Ramal.Branch.new(MyApp.Farm)
+      iex> child = Ramal.Branch.see(Ramal.Branch.fork(parent, nested: true), [{MyApp.Herd, 1}, {MyApp.Herd, 2}])
+      iex> parent = %{parent | overlay: %{{MyApp.Herd, 1} => :deleted}}
+      iex> Ramal.Branch.stale_against(child, parent)
+      [%{resource: MyApp.Herd, key: 1, reason: :deleted}]
+  """
+  @spec stale_against(t, t) :: [%{resource: module, key: term, reason: :changed | :deleted}]
+  def stale_against(%__MODULE__{parent_seen: seen, log: log}, %__MODULE__{} = parent) do
+    # A row the fork created under a placeholder key (ADR 0042) is the fork's own: the parent may hand out the same
+    # placeholder to another row, and the replay in the copy gives the fork's row a placeholder of the parent's.
+    placeholders =
+      for {:create, resource, _action, _params, _actor, opts, _at} <- log,
+          opts[:generated_key?],
+          into: MapSet.new(),
+          do: {resource, opts[:key]}
+
+    for {{resource, key} = ref, expected} <- seen,
+        not MapSet.member?(placeholders, ref),
+        view(parent, ref) != expected do
+      reason = if Map.get(parent.overlay, ref) == :deleted, do: :deleted, else: :changed
+      %{resource: resource, key: key, reason: reason}
+    end
+    |> Enum.sort_by(&{inspect(&1.resource), &1.key})
+  end
+
+  @doc """
+  The log entries a nested fork wrote itself, oldest first, each with its index in the fork's log: the entries it
+  inherited from its parent come first in the log and are left out.
+
+  ## Example
+
+      iex> parent = Ramal.Branch.new(MyApp.Farm)
+      iex> child = Ramal.Branch.fork(parent, nested: true)
+      iex> entry = {:create, MyApp.Herd, :create, %{}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
+      iex> {child, _} = Ramal.Branch.put_write(child, :created, {MyApp.Herd, 1}, %{id: 1}, nil, entry)
+      iex> Ramal.Branch.own_entries(child)
+      [{entry, 0}]
+  """
+  @spec own_entries(t) :: [{log_entry, non_neg_integer}]
+  def own_entries(%__MODULE__{log: log, parent: %{log_length: inherited}}) do
+    log |> Enum.reverse() |> Enum.with_index() |> Enum.drop(inherited)
+  end
+
+  @doc """
+  A copy of `branch` with a new id, for the replay of a nested merge (ADR 0043): the writes go there, and the parent
+  takes them with `adopt/3` only if the replay succeeded and the parent did not change meanwhile.
+
+  The copy is not durable, even when `branch` is: nothing of it is stored, and the parent stores what it adopts as a
+  snapshot (ADR 0048).
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> scratch = Ramal.Branch.scratch(branch)
+      iex> {scratch.id != branch.id, scratch.overlay == branch.overlay}
+      {true, true}
+  """
+  @spec scratch(t) :: t
+  def scratch(%__MODULE__{} = branch), do: %{branch | id: Ash.UUID.generate(), durable: false}
+
+  @doc """
+  `parent` after it adopted the work of `child` that was replayed in `scratch` (a `scratch/1` of `parent`): the scratch's
+  overlay, log and `parent_seen`, `child` among its `merged_children`, and a `base` that keeps the earliest fingerprint of
+  each row, which is the child's when the parent had not seen the row, since the replay fingerprinted it later. The
+  rows the child read join the parent's `parent_seen` where the parent has none, so that a parent that is itself nested
+  keeps their protection.
+
+  ## Example
+
+      iex> parent = Ramal.Branch.new(MyApp.Farm)
+      iex> child = Ramal.Branch.fork(parent, nested: true)
+      iex> adopted = Ramal.Branch.adopt(parent, Ramal.Branch.scratch(parent), child)
+      iex> adopted.merged_children == [child.id]
+      true
+  """
+  @spec adopt(t, t, t) :: t
+  def adopt(%__MODULE__{} = parent, %__MODULE__{} = scratch, %__MODULE__{} = child) do
+    base =
+      Enum.reduce(child.base, scratch.base, fn {ref, row}, base ->
+        if is_map_key(parent.base, ref) do
+          base
+        else
+          held = Map.get(base, ref, %{fingerprint: nil, snapshot: nil})
+
+          Map.put(base, ref, %{
+            fingerprint: row.fingerprint || held.fingerprint,
+            snapshot: row.snapshot || held.snapshot
+          })
+        end
+      end)
+
+    seen = if parent.parent, do: Map.merge(child.parent_seen, scratch.parent_seen), else: %{}
+
+    %{
+      parent
+      | overlay: scratch.overlay,
+        log: scratch.log,
+        base: base,
+        parent_seen: seen,
+        next_placeholder: scratch.next_placeholder,
+        merged_children: [child.id | parent.merged_children]
     }
   end
 
@@ -553,6 +759,72 @@ defmodule Ramal.Branch do
       {:ok, in_log_order(changes, branch.log)}
     end
   end
+
+  @doc """
+  What merging the nested fork `child` into `parent` would change in it: the changes of the rows the fork wrote itself,
+  compared with what `parent` holds for them now, not with the database. Rows the parent changed and the fork did not
+  touch are left out, and so are the changes the fork inherited.
+
+  Never reads the database; see `diff/2` for the options and the errors.
+
+  ## Example
+
+      iex> parent = Ramal.Branch.new(MyApp.Farm)
+      iex> child = Ramal.Branch.fork(parent, nested: true)
+      iex> entry = {:create, MyApp.Herd, :create, %{}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
+      iex> {child, _} = Ramal.Branch.put_write(child, :created, {MyApp.Herd, 1}, %{id: 1}, nil, entry)
+      iex> {:ok, [change]} = Ramal.Branch.diff_against(child, parent)
+      iex> {change.kind, change.key}
+      {:created, 1}
+  """
+  @spec diff_against(t, t, keyword) :: {:ok, [Change.t()]} | {:error, Ramal.Error.t()}
+  def diff_against(%__MODULE__{} = child, %__MODULE__{} = parent, opts \\ []) do
+    refs =
+      child
+      |> own_entries()
+      |> Enum.map(fn {{_type, resource, _action, _input, _actor, entry_opts, _at}, _index} ->
+        {resource, entry_opts[:key]}
+      end)
+      |> Enum.uniq()
+
+    {overlay, snapshots} =
+      Enum.reduce(refs, {%{}, %{}}, fn ref, {overlay, snapshots} ->
+        case relative(Map.get(child.overlay, ref), Map.get(parent.overlay, ref)) do
+          nil ->
+            {overlay, snapshots}
+
+          {entry, held} ->
+            {Map.put(overlay, ref, entry),
+             put_snapshot(snapshots, ref, held || base_snapshot(parent, child, ref))}
+        end
+      end)
+
+    with {:ok, changes} <- Overlay.diff(overlay, snapshots, opts) do
+      {:ok, in_log_order(changes, child.log)}
+    end
+  end
+
+  # The fork's entry for a row as a change to what the parent holds: the fork's own entry when the parent holds the row
+  # as the database has it, an update or a delete of the parent's copy when the parent changed it, and a create when the
+  # parent deleted it. The second element is the parent's copy, the "before" of the change, when there is one.
+  defp relative(nil, nil), do: nil
+  defp relative(entry, nil), do: {entry, nil}
+  defp relative({_kind, record}, {_parent_kind, held}), do: {{:updated, record}, held}
+  defp relative(_deleted_or_dropped, {_parent_kind, held}), do: {:deleted, held}
+  defp relative({_kind, record}, :deleted), do: {{:created, record}, nil}
+  defp relative(_deleted_or_dropped, :deleted), do: nil
+
+  defp base_snapshot(parent, child, ref) do
+    Enum.find_value([parent, child], fn branch ->
+      case branch.base do
+        %{^ref => %{snapshot: snapshot}} -> snapshot
+        _none -> nil
+      end
+    end)
+  end
+
+  defp put_snapshot(snapshots, _ref, nil), do: snapshots
+  defp put_snapshot(snapshots, ref, snapshot), do: Map.put(snapshots, ref, snapshot)
 
   # The first entry of the oldest write to each row decides its position; rows the log does not mention go last.
   defp in_log_order(changes, log) do
@@ -589,10 +861,14 @@ defmodule Ramal.Branch do
         acc
         | overlay: restore(acc.overlay, undo.ref, undo.overlay),
           base: restore(acc.base, undo.ref, undo.base),
+          parent_seen: unsee(acc.parent_seen, undo),
           log: List.delete(acc.log, undo.entry)
       }
     end)
   end
+
+  defp unsee(seen, %{ref: ref, seen: :added}), do: Map.delete(seen, ref)
+  defp unsee(seen, _undo), do: seen
 
   defp restore(map, ref, :none), do: Map.delete(map, ref)
   defp restore(map, ref, value), do: Map.put(map, ref, value)
@@ -623,6 +899,7 @@ defmodule Ramal.Branch do
       gone: Enum.reject(refs, &is_map_key(branch.overlay, &1)),
       base: Map.take(branch.base, refs),
       log: undos |> Enum.map(& &1.entry) |> Enum.reverse(),
+      seen: Map.take(branch.parent_seen, refs),
       next_placeholder: branch.next_placeholder
     }
   end
@@ -648,6 +925,7 @@ defmodule Ramal.Branch do
       | overlay: branch.overlay |> Map.drop(delta.gone) |> Map.merge(delta.overlay),
         base: Map.merge(branch.base, delta.base),
         log: Enum.reduce(delta.log, branch.log, &[&1 | &2]),
+        parent_seen: Map.merge(branch.parent_seen, delta.seen),
         next_placeholder: max(branch.next_placeholder, delta.next_placeholder),
         wal: seq
     }
