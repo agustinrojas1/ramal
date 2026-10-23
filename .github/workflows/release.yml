@@ -1,15 +1,26 @@
 name: Release
 
-# Every push to main checks whether the version in mix.exs has been released. A version with no tag gets a tag and a
-# GitHub release made from its CHANGELOG section, then both packages are published to Hex (ramal first, since ramal_live
-# depends on it). Each step looks at what already exists, so a run that failed half way is finished by running the
-# workflow again (Actions > Release > Run workflow), and a push that does not bump the version does nothing.
+# When CI has passed on main, check whether the version in mix.exs has been released. A version with no tag gets a tag and
+# a GitHub release made from its CHANGELOG section, then both packages are published to Hex (ramal first, since
+# ramal_live depends on it). Each step looks at what already exists, so a run that failed half way is finished by running
+# the workflow again (Actions > Release > Run workflow, on main), and a push that does not bump the version does nothing.
 #
-# The Hex steps need a repository secret named HEX_API_KEY (a Hex API key with write access to both packages). Without
-# it the tag and the release are still made and the publish steps are skipped with a warning.
+# What keeps a bad ref or a red commit from being published:
+#   * It starts only when the CI workflow succeeded for a push to main of this repository (a pull request from a fork
+#     whose branch is called main has event "pull_request" and is ignored), or on a manual run, and then only on main.
+#   * Both ways re-check that a CI run of that exact commit succeeded before anything is tagged.
+#   * The Hex key lives in the "hex" environment, restricted to main. Only the job `publish` can read it, and only the
+#     two `hex.publish` steps (and the check that it exists) have it in their environment, so checkout, setup, `deps.get`
+#     and `hex.build` run without it.
+#
+# The Hex steps need a secret named HEX_API_KEY (a Hex API key with write access to both packages) in the "hex"
+# environment (see CONTRIBUTING.md). Without it the tag and the release are still made and the publish steps are
+# skipped with a warning.
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -18,18 +29,42 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    # `github.ref` is main for a workflow_run (the default branch) and the branch chosen for a manual run.
+    if: >-
+      github.ref == 'refs/heads/main' && (
+        github.event_name == 'workflow_dispatch' || (
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_repository.full_name == github.repository
+        )
+      )
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       GH_TOKEN: ${{ github.token }}
-      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+      # The commit CI ran on, which is not always the tip of main by the time this runs.
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
+
+      - name: Require a green CI run of this commit
+        run: |
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$RELEASE_SHA&event=push&status=success" --jq '.total_count')
+          if [ "$passed" = "0" ]; then
+            echo "::error::No successful CI run of $RELEASE_SHA on a push to main. Nothing is tagged or published."
+            exit 1
+          fi
 
       - name: Read the version
         id: version
@@ -44,7 +79,6 @@ jobs:
           echo "Version in mix.exs: $version"
 
       - name: Tag and GitHub release
-        id: release
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -63,50 +97,80 @@ jobs:
             exit 1
           fi
           # Creates the tag on this commit if it does not exist yet.
-          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --notes-file notes.md
+          gh release create "v$VERSION" --target "$RELEASE_SHA" --title "v$VERSION" --notes-file notes.md
 
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    # The environment restricts this job, and so the secret, to main.
+    environment: hex
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+
+      # The only step before the publish steps that sees the key, and it only tests whether it is set.
       - name: Check for the Hex key
         id: hex
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: |
           if [ -z "$HEX_API_KEY" ]; then
-            echo "::warning::The HEX_API_KEY secret is not set, so nothing is published to Hex. Add it and run this workflow again."
+            echo "::warning::The HEX_API_KEY secret is not set in the hex environment, so nothing is published to Hex. Add it and run this workflow again."
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         if: steps.hex.outputs.enabled == 'true'
         with:
           otp-version: "28.5"
           elixir-version: "1.19.6"
 
-      - name: Publish ramal
+      - name: Is ramal on Hex?
+        id: ramal
         if: steps.hex.outputs.enabled == 'true'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           status=$(curl -s -o /dev/null -w '%{http_code}' "https://hex.pm/api/packages/ramal/releases/$VERSION")
           if [ "$status" = "200" ]; then
             echo "ramal $VERSION is already on Hex."
-            exit 0
+            echo "published=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Build ramal
+        if: steps.hex.outputs.enabled == 'true' && steps.ramal.outputs.published != 'true'
+        run: |
           mix deps.get
           mix hex.build
-          mix hex.publish --yes
 
-      - name: Publish ramal_live
-        if: steps.hex.outputs.enabled == 'true'
-        working-directory: ramal_live
+      - name: Publish ramal
+        if: steps.hex.outputs.enabled == 'true' && steps.ramal.outputs.published != 'true'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          RAMAL_LIVE_HEX: "1"
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: mix hex.publish --yes
+
+      - name: Is ramal_live on Hex?
+        id: live
+        if: steps.hex.outputs.enabled == 'true'
         run: |
           status=$(curl -s -o /dev/null -w '%{http_code}' "https://hex.pm/api/packages/ramal_live/releases/$VERSION")
           if [ "$status" = "200" ]; then
             echo "ramal_live $VERSION is already on Hex."
-            exit 0
+            echo "published=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Build ramal_live
+        if: steps.hex.outputs.enabled == 'true' && steps.live.outputs.published != 'true'
+        working-directory: ramal_live
+        env:
+          RAMAL_LIVE_HEX: "1"
+        run: |
           # ramal_live depends on the Hex package ramal; its mirror can take a moment to list a new release.
           for attempt in $(seq 1 30); do
             if mix deps.get; then break; fi
@@ -118,4 +182,11 @@ jobs:
             sleep 20
           done
           mix hex.build
-          mix hex.publish --yes
+
+      - name: Publish ramal_live
+        if: steps.hex.outputs.enabled == 'true' && steps.live.outputs.published != 'true'
+        working-directory: ramal_live
+        env:
+          RAMAL_LIVE_HEX: "1"
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: mix hex.publish --yes

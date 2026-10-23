@@ -6,7 +6,7 @@ Ramal is pre-1.0. Only the latest released version receives security fixes.
 
 ## Reporting a vulnerability
 
-Do not open a public issue with the details. Email the maintainer, [@agustinrojas1](https://github.com/agustinrojas1), at the address on their GitHub profile. Include the Ramal, Ash and AshPostgres versions, the resource and action involved, and a failing test or the smallest call sequence that shows the problem.
+Do not open a public issue with the details. Report it privately with [GitHub private vulnerability reporting](https://github.com/agustinrojas1/ramal/security/advisories/new) (the "Report a vulnerability" button under the Security tab), or email the maintainer, [@agustinrojas1](https://github.com/agustinrojas1), at the address on their GitHub profile. Include the Ramal, Ash and AshPostgres versions, the resource and action involved, and a failing test or the smallest call sequence that shows the problem.
 
 If you cannot find an address, open an issue that says only that you have a security report and want a private channel, with no details, and the maintainer will reply there.
 
@@ -36,6 +36,8 @@ What Ramal does and does not protect, so you can decide what to add. Each point 
 **Stored state is read defensively.** The `state` column is data, not code: a malformed or hostile value makes `Ramal.get/1` return `{:error, %Ramal.Error{reason: :storage}}` and never crashes the caller. Whoever can write that column can still change what a merge replays (the log and its actors), so give the table the same write protection as the tables it replays into.
 
 **ETS.** `Ramal.Storage.ETS` and the supervisor's own table are `:public` named tables, because every branch process writes to them. Any code in the VM can read or write them; use `Ramal.Storage.Postgres` when branches must survive a restart, and treat the VM as the boundary.
+
+**Releases.** The Release workflow publishes only from `main`, only for a commit whose CI run succeeded, and the Hex key is an environment secret (`hex`, restricted to `main`) that only the two publish steps read. GitHub Actions are pinned to commit SHAs.
 
 **Dependencies.** CI runs `mix hex.audit` for the library, `bench/` and `ramal_live/` and fails on a retired package or a published advisory. Dependabot proposes updates.
 
