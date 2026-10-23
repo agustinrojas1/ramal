@@ -250,6 +250,39 @@ defmodule Ramal.PreparationTest do
       assert l07b.paddock.name == "L07b"
     end
 
+    test "distinct keeps one row per group of the branch's view, not of the database's", %{
+      branch: branch,
+      herds: h,
+      paddocks: p
+    } do
+      put(branch, :created, new_herd(name: "N1", head: 40, paddock_id: p.l18.id))
+      put(branch, :created, new_herd(name: "N2", head: 50, paddock_id: p.l18.id))
+      put(branch, :deleted, h.r7)
+
+      distinct = fn direction ->
+        inside(branch, fn ->
+          Herd
+          |> Ash.Query.distinct(:paddock_id)
+          |> Ash.Query.distinct_sort(head: direction)
+          |> Ash.Query.sort(:name)
+          |> Ash.read!(authorize?: false)
+        end)
+      end
+
+      # R7 is the database's pick for L07 and is destroyed in the branch, so R8 takes its place; L18 has three herds.
+      assert names(distinct.(:desc)) == ["N2", "R8"]
+      assert names(distinct.(:asc)) == ["R8", "R9"]
+
+      # Outside the branch the database answers.
+      assert names(
+               Herd
+               |> Ash.Query.distinct(:paddock_id)
+               |> Ash.Query.distinct_sort(head: :asc)
+               |> Ash.Query.sort(:name)
+               |> Ash.read!(authorize?: false)
+             ) == ["R7", "R9"]
+    end
+
     test "Ash.load on records read outside the branch is patched, lazily or not", %{
       branch: branch,
       herds: h,
