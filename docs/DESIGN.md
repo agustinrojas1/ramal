@@ -298,7 +298,8 @@ keyed by `{resource, key}`. On `merge/2`:
    option if given, else the one recorded with each entry. A replayed create keeps the primary key it had in the
    branch. Any failure rolls the transaction back and returns `:merge_failed` with the log entry's `index`. Validations
    run again, so a branch that was valid against a base that has since moved can legitimately fail here; that is the
-   feature.
+   feature. An update or destroy of a row the staleness check just read (and locked) takes that row from there
+   instead of reading it again, once per row; the reuse stops for good at the first entry a hook wrote.
 5. Mark the branch `:merged`, persist, stop the process. Return a `Ramal.Merge.Result` with the records the replay
    produced, keyed like the overlay. On failure the claim is released and the branch stays open.
 

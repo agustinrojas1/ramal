@@ -19,6 +19,36 @@ defmodule Ramal.MergeTest do
   defp db_names, do: Herd |> Ash.read!(authorize?: false) |> Enum.map(& &1.name) |> Enum.sort()
   defp reload!(herd), do: Ash.get!(Herd, herd.id, authorize?: false)
 
+  # The SELECT statements on the herds table that `fun` makes.
+  defp count_selects(fun) do
+    test = self()
+    handler = "selects-#{inspect(test)}"
+
+    :telemetry.attach(
+      handler,
+      [:ramal, :test_repo, :query],
+      fn _event, _measurements, %{query: query}, _config ->
+        if query =~ ~r/^SELECT .* FROM "herds"/, do: send(test, :select)
+      end,
+      nil
+    )
+
+    try do
+      fun.()
+      drain(0)
+    after
+      :telemetry.detach(handler)
+    end
+  end
+
+  defp drain(count) do
+    receive do
+      :select -> drain(count + 1)
+    after
+      0 -> count
+    end
+  end
+
   describe "a clean merge" do
     test "writes exactly the rows the diff promised", %{
       branch: branch,
@@ -45,6 +75,44 @@ defmodule Ramal.MergeTest do
       promised = Enum.map(changes, &{&1.kind, &1.resource, &1.key})
       written = for {{resource, key}, entry} <- result.records, do: {kind(entry), resource, key}
       assert Enum.sort(promised) == Enum.sort(written)
+    end
+
+    test "the replay reuses the rows the staleness check read instead of reading each one again",
+         %{
+           branch: branch,
+           herds: herds
+         } do
+      inside(branch, fn ->
+        Ash.update!(herds.r7, %{head: 31}, authorize?: false)
+        Ash.update!(herds.r8, %{head: 36}, authorize?: false)
+        Ash.destroy!(herds.r9, authorize?: false)
+      end)
+
+      selects =
+        count_selects(fn ->
+          assert {:ok, %Result{replayed: 3}} = Ramal.merge(branch, authorize?: false)
+        end)
+
+      # One read of the three rows for the staleness check; the replay does not fetch them again.
+      assert selects == 1
+      assert reload!(herds.r7).head == 31
+      assert reload!(herds.r8).head == 36
+      assert db_names() == ["R7", "R8"]
+    end
+
+    test "a row changed twice is read again for the second change, so both land", %{
+      branch: branch,
+      herds: herds
+    } do
+      inside(branch, fn ->
+        updated = Ash.update!(herds.r7, %{head: 31}, authorize?: false)
+        Ash.update!(updated, %{name: "R7b"}, authorize?: false)
+        Ash.update!(herds.r8, %{head: 36}, authorize?: false)
+      end)
+
+      assert {:ok, %Result{replayed: 3}} = Ramal.merge(branch, authorize?: false)
+      assert %{name: "R7b", head: 31} = reload!(herds.r7)
+      assert reload!(herds.r8).head == 36
     end
 
     test "a created row keeps the primary key it had in the branch", %{branch: branch} do

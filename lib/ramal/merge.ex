@@ -11,7 +11,8 @@ defmodule Ramal.Merge do
        and compared. A row that is gone or whose fingerprint differs is stale. `on_stale` decides what happens.
     3. The log is replayed oldest first with no branch current, so every action runs for real: validations and
        policies see the base as it is now. Entries marked `nested?` are skipped, because replaying the action that
-       wrote them runs their hook again.
+       wrote them runs their hook again. An update or destroy of a row step 2 read and locked uses that row instead of
+       reading it again, once per row, until the first entry a hook wrote.
     4. On success the branch is marked `:merged`, persisted, and its process stops. On any failure the transaction is
        rolled back and the branch stays open.
 
@@ -157,8 +158,8 @@ defmodule Ramal.Merge do
 
     resources
     |> Ash.transact(fn ->
-      with {:ok, stale} <- check_staleness(branch, opts),
-           {:ok, records, replayed} <- replay(entries, opts) do
+      with {:ok, stale, fetched} <- check_staleness(branch, opts),
+           {:ok, records, replayed} <- replay(entries, fetched, opts) do
         {stale, records, replayed}
       end
     end)
@@ -189,24 +190,39 @@ defmodule Ramal.Merge do
   # -- staleness ----------------------------------------------------------------------------------------------------
 
   defp check_staleness(branch, opts) do
-    rows = stale_rows(branch)
+    {rows, fetched} = stale_rows(branch)
 
     case {rows, Keyword.get(opts, :on_stale, :error)} do
-      {[], _} -> {:ok, []}
-      {_, :ignore} -> {:ok, rows}
-      {_, :error} -> {:error, stale_error(rows)}
-      {_, fun} -> if fun.(rows) == :continue, do: {:ok, rows}, else: {:error, stale_error(rows)}
+      {[], _} ->
+        {:ok, [], fetched}
+
+      {_, :ignore} ->
+        {:ok, rows, fetched}
+
+      {_, :error} ->
+        {:error, stale_error(rows)}
+
+      {_, fun} ->
+        if fun.(rows) == :continue, do: {:ok, rows, fetched}, else: {:error, stale_error(rows)}
     end
   end
 
+  # The stale rows, and the rows as the transaction read them (by `{resource, key}`), which the replay reuses.
   defp stale_rows(branch) do
-    branch.base
-    |> Enum.filter(fn {_ref, row} -> row.fingerprint != nil end)
-    |> Enum.group_by(fn {{resource, _key}, _row} -> resource end, fn {{_resource, key}, row} ->
-      {key, row.fingerprint}
-    end)
-    |> Enum.flat_map(fn {resource, expected} -> stale_in(resource, Map.new(expected)) end)
-    |> Enum.sort_by(&{inspect(&1.resource), &1.key})
+    {stale, fetched} =
+      branch.base
+      |> Enum.filter(fn {_ref, row} -> row.fingerprint != nil end)
+      |> Enum.group_by(fn {{resource, _key}, _row} -> resource end, fn {{_resource, key}, row} ->
+        {key, row.fingerprint}
+      end)
+      |> Enum.map_reduce(%{}, fn {resource, expected}, fetched ->
+        {stale, rows} = stale_in(resource, Map.new(expected))
+
+        {stale,
+         Enum.reduce(rows, fetched, &Map.put(&2, {resource, Resource.key(resource, &1)}, &1))}
+      end)
+
+    {stale |> Enum.concat() |> Enum.sort_by(&{inspect(&1.resource), &1.key}), fetched}
   end
 
   defp stale_in(resource, expected) do
@@ -221,11 +237,25 @@ defmodule Ramal.Merge do
         {:error, error} -> raise error
       end
 
-    current = Map.new(rows, &{Resource.key(resource, &1), Resource.fingerprint(&1)})
+    current = current_fingerprints(resource, rows)
 
-    for {key, fingerprint} <- expected,
-        reason = staleness(Map.fetch(current, key), fingerprint),
-        do: %{resource: resource, key: key, reason: reason}
+    stale =
+      for {key, fingerprint} <- expected,
+          reason = staleness(Map.fetch(current, key), fingerprint),
+          do: %{resource: resource, key: key, reason: reason}
+
+    {stale, rows}
+  end
+
+  # A row with an attribute the read could not load (a field policy) has no fingerprint and compares as changed.
+  defp current_fingerprints(resource, rows) do
+    fingerprints =
+      Map.new(Resource.fingerprints(resource, rows), fn {{_resource, key}, fp} -> {key, fp} end)
+
+    Map.new(rows, fn row ->
+      key = Resource.key(resource, row)
+      {key, Map.get(fingerprints, key)}
+    end)
   end
 
   defp staleness(:error, _expected), do: :deleted
@@ -262,21 +292,63 @@ defmodule Ramal.Merge do
 
   # -- replay -------------------------------------------------------------------------------------------------------
 
-  defp replay(entries, opts) do
+  # `fetched` holds the rows the staleness check read in this transaction, locked where the data layer can lock. An
+  # update or destroy takes its row from there instead of reading it again (a read per change was half the cost of a
+  # merge). A row is used once, because the replay changes it. The cache is dropped for good at the first entry a hook
+  # wrote (`nested?`): that hook may have changed any row, and replaying it again may change a different one.
+  defp replay(entries, fetched, opts) do
     entries
-    |> Enum.reject(fn {{_type, _resource, _action, _input, _actor, entry_opts, _at}, _index} ->
-      entry_opts[:nested?]
-    end)
-    |> Enum.reduce_while({:ok, Overlay.new(), 0}, fn {entry, index}, {:ok, records, count} ->
-      case replay_entry(entry, opts) do
-        {:ok, kind, ref, record} ->
-          {:cont, {:ok, record_in(records, kind, ref, record), count + 1}}
+    |> Enum.reduce_while({:ok, Overlay.new(), 0, fetched}, fn {entry, index},
+                                                              {:ok, records, count, fetched} ->
+      case replay_step(entry, index, entries, fetched, opts) do
+        {:skip, fetched} ->
+          {:cont, {:ok, records, count, fetched}}
 
-        {:error, error} ->
-          {:halt, {:error, merge_failed(entry, index, error, written_before(entries, index))}}
+        {:ok, kind, ref, record, fetched} ->
+          {:cont, {:ok, record_in(records, kind, ref, record), count + 1, fetched}}
+
+        {:error, _} = error ->
+          {:halt, error}
       end
     end)
+    |> case do
+      {:ok, records, count, _fetched} -> {:ok, records, count}
+      {:error, _} = error -> error
+    end
   end
+
+  defp replay_step(
+         {_type, _resource, _action, _params, _actor, entry_opts, _at} = entry,
+         index,
+         entries,
+         fetched,
+         opts
+       ) do
+    if entry_opts[:nested?] do
+      {:skip, %{}}
+    else
+      {row, fetched} = take_fetched(fetched, entry)
+
+      case replay_entry(entry, row, opts) do
+        {:ok, kind, ref, record} ->
+          {:ok, kind, ref, record, fetched}
+
+        {:error, error} ->
+          {:error, merge_failed(entry, index, error, written_before(entries, index))}
+      end
+    end
+  end
+
+  defp take_fetched(fetched, {type, resource, _action, _params, _actor, entry_opts, _at})
+       when type in [:update, :destroy] do
+    if Ash.DataLayer.data_layer_can?(resource, {:lock, @lock}) do
+      Map.pop(fetched, {resource, entry_opts[:key]})
+    else
+      {nil, fetched}
+    end
+  end
+
+  defp take_fetched(fetched, _entry), do: {nil, fetched}
 
   # The resources the replay wrote to before the entry at `index` failed, restricted to the ones whose data layer has
   # no transaction to roll those writes back with.
@@ -289,7 +361,7 @@ defmodule Ramal.Merge do
         do: resource
   end
 
-  defp replay_entry({type, resource, action, params, recorded_actor, entry_opts, _at}, opts) do
+  defp replay_entry({type, resource, action, params, recorded_actor, entry_opts, _at}, row, opts) do
     key = entry_opts[:key]
     actor = if Keyword.has_key?(opts, :actor), do: opts[:actor], else: recorded_actor
     authorize? = Keyword.get(opts, :authorize?, true)
@@ -305,7 +377,7 @@ defmodule Ramal.Merge do
         |> tag(:created, ref)
 
       :update ->
-        with {:ok, record} <- fetch(resource, key, entry_opts[:tenant]) do
+        with {:ok, record} <- row_or_fetch(row, resource, key, entry_opts[:tenant]) do
           record
           |> Ash.Changeset.for_update(action, params, run_opts)
           |> Ash.update(run_opts)
@@ -313,7 +385,7 @@ defmodule Ramal.Merge do
         end
 
       :destroy ->
-        with {:ok, record} <- fetch(resource, key, entry_opts[:tenant]) do
+        with {:ok, record} <- row_or_fetch(row, resource, key, entry_opts[:tenant]) do
           record
           |> Ash.Changeset.for_destroy(action, params, run_opts)
           |> Ash.destroy(Keyword.put(run_opts, :return_destroyed?, true))
@@ -337,6 +409,9 @@ defmodule Ramal.Merge do
 
   defp key_values(key) when is_tuple(key), do: Tuple.to_list(key)
   defp key_values(key), do: [key]
+
+  defp row_or_fetch(nil, resource, key, tenant), do: fetch(resource, key, tenant)
+  defp row_or_fetch(row, _resource, _key, _tenant), do: {:ok, row}
 
   defp fetch(resource, key, tenant) do
     identifier =
