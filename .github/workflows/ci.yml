@@ -44,6 +44,56 @@ jobs:
         env:
           MIX_ENV: dev
 
+  # Tests against other Ash versions than the locked one. The next Ash minor should break this job before it breaks a
+  # user, so each leg resolves the newest versions its requirement allows (the unlock below), and the Ash main leg
+  # may fail without failing the workflow. RAMAL_ASH_VERSION is read by mix.exs; the `ci` job above stays on the lock.
+  ash-matrix:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ramal
+          POSTGRES_PASSWORD: ramal
+          POSTGRES_DB: ramal_test
+        ports: ["5435:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      MIX_ENV: test
+      RAMAL_ASH_VERSION: ${{ matrix.requirement }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: "3.36", requirement: "~> 3.36.0", experimental: false}
+          - {name: "3.37", requirement: "~> 3.37.0", experimental: false}
+          - {name: "latest 3.x", requirement: "~> 3.36", experimental: false}
+          - {name: "main", requirement: "main", experimental: true}
+    continue-on-error: ${{ matrix.experimental }}
+    name: ash ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28.5"
+          elixir-version: "1.19.6"
+      - uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-ash-${{ matrix.name }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-ash-${{ matrix.name }}-
+      - run: mix deps.unlock ash ash_postgres ash_sql spark reactor splode && mix deps.get
+      - name: Print the resolved Ash versions
+        run: mix deps | grep -A1 -E '^\* (ash|ash_postgres|ash_sql|spark) '
+      - run: mix compile
+      - run: mix test
+
   # Compiles the benchmark and runs its smallest profile, so that it cannot rot. No timing is asserted or recorded.
   bench-smoke:
     runs-on: ubuntu-latest
