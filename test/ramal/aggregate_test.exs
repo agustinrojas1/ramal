@@ -135,6 +135,22 @@ defmodule Ramal.AggregateTest do
       assert_in_delta avg, 30.0, 0.0001
     end
 
+    test "a branch carried only by the context option or the query's context is the branch the aggregate sees",
+         %{branch: branch} do
+      Ramal.run!(branch, fn -> Ash.create!(Herd, %{name: "AGG", head: 1}, authorize?: false) end)
+
+      context = Ramal.context(branch)
+      query = Ash.Query.set_context(Herd, context)
+
+      assert Ramal.aggregate(Herd, :count, nil, authorize?: false, context: context) == {:ok, 4}
+      assert Ramal.aggregate(query, :count, nil, authorize?: false) == {:ok, 4}
+      assert Ramal.aggregate(query, :sum, :head, authorize?: false) == {:ok, 91}
+      assert Ash.read!(Herd, authorize?: false, context: context) |> length() == 4
+
+      # No branch anywhere: the data layer's answer.
+      assert Ramal.aggregate(Herd, :count, nil, authorize?: false) == {:ok, 3}
+    end
+
     test "inside a branch it sees creates, updates and destroys the data layer's aggregate does not",
          %{
            branch: branch,
