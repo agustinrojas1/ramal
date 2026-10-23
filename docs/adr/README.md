@@ -51,3 +51,4 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0045](0045-text-sorted-by-the-databases-collation.md) | Text sorted in a branch follows the database's collation | accepted |
 | [0046](0046-through-paths-walked-over-the-branch.md) | A `through` path of several hops is walked over the branch's rows | accepted |
 | [0047](0047-relationship-filter-narrowing.md) | A filter through a changed to-one relationship is narrowed in the data-layer query | accepted |
+| [0048](0048-durable-branches.md) | Durable branches store each action that ended | accepted |

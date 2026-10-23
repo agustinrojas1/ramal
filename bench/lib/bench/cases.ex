@@ -210,6 +210,138 @@ defmodule Bench.Cases do
     result(:write, :ash_base_write, %{overlay: 0}, stats)
   end
 
+  # What a durable branch (ADR 0048) costs: one update in a branch, with the writes of every action stored in the write
+  # log before the action returns, against the same update in a branch that is not durable, with ETS storage (nothing
+  # leaves the node) and with Postgres storage. The difference between the two Postgres rows is the cost of the append.
+  # The action of a Postgres resource holds a connection in its transaction while the branch process stores the delta
+  # over another, so the pool needs room for both.
+  #
+  # Compaction is a snapshot `put` of the branch, which also deletes the deltas it covers (every 100 appends): the
+  # `durable_compact` rows time that put for a branch whose overlay holds `size` updated rows.
+  @durable_variants [
+    {:ets, [], []},
+    {:ets_durable, [], [durable: true]},
+    {:pg, [storage: Ramal.Storage.Postgres, repo: Bench.Repo], []},
+    {:pg_durable, [storage: Ramal.Storage.Postgres, repo: Bench.Repo], [durable: true]}
+  ]
+
+  def durable(profile, env) do
+    writes =
+      for {name, supervisor, branch_opts} <- @durable_variants, size <- profile.overlay_sizes do
+        with_supervisor(supervisor, fn ->
+          branch = RamalSide.branch(branch_opts)
+          ramal = variants().ramal
+          loaded_into(ramal, branch, env.ids, size)
+          id = Enum.at(env.ids, size)
+          counter = :counters.new(1, [])
+
+          appends = collect_appends(branch.id)
+
+          stats =
+            Timing.measure(
+              run: fn _ ->
+                :counters.add(counter, 1, 1)
+                ramal.update.(branch, id, :counters.get(counter, 1))
+              end,
+              runs: profile.runs,
+              warmup: profile.warmup
+            )
+
+          ramal.discard.(branch)
+
+          [
+            result(:durable_write, name, %{overlay: size}, stats)
+            | append_result(name, size, appends)
+          ]
+        end)
+      end
+
+    List.flatten(writes) ++ durable_compaction(profile, env)
+  end
+
+  # The storage call of every append the branch made, as the process measured it (`[:ramal, :branch, :append]`): the
+  # time an action waits on the storage. Only a durable branch has any.
+  defp collect_appends(branch_id) do
+    collector = spawn_link(fn -> collect_loop([]) end)
+    handler = "bench-append-#{branch_id}"
+
+    :telemetry.attach(
+      handler,
+      [:ramal, :branch, :append],
+      fn _event, %{duration: duration}, %{branch_id: id}, collector ->
+        if id == branch_id, do: send(collector, {:duration, duration})
+      end,
+      collector
+    )
+
+    {collector, handler}
+  end
+
+  defp collect_loop(durations) do
+    receive do
+      {:duration, duration} -> collect_loop([duration | durations])
+      {:take, from} -> send(from, {:durations, durations})
+    end
+  end
+
+  defp append_result(name, size, {collector, handler}) do
+    :telemetry.detach(handler)
+    send(collector, {:take, self()})
+
+    receive do
+      {:durations, []} ->
+        []
+
+      {:durations, durations} ->
+        micros = Enum.map(durations, &System.convert_time_unit(&1, :native, :microsecond))
+        [result(:durable_append, name, %{overlay: size}, Timing.stats(micros))]
+    end
+  end
+
+  defp durable_compaction(profile, env) do
+    supervisor = [storage: Ramal.Storage.Postgres, repo: Bench.Repo]
+
+    for size <- profile.overlay_sizes, size > 0 do
+      with_supervisor(supervisor, fn ->
+        branch = RamalSide.branch(durable: true)
+        loaded_into(variants().ramal, branch, env.ids, size)
+        {:ok, stored} = Ramal.get(branch.id)
+        config = [repo: Bench.Repo]
+
+        stats =
+          Timing.measure(
+            run: fn _ -> :ok = Ramal.Storage.Postgres.put(stored, config) end,
+            runs: profile.runs,
+            warmup: profile.warmup
+          )
+
+        variants().ramal.discard.(branch)
+        result(:durable_compact, :pg_durable, %{overlay: size}, stats)
+      end)
+    end
+  end
+
+  # `Bench.run/2` starts one `Ramal.Supervisor` for the whole run; a case that needs another storage swaps it for the
+  # time of `fun` and puts the default back.
+  defp with_supervisor(opts, fun) do
+    :ok = Supervisor.stop(Ramal.Supervisor)
+    {:ok, _} = Ramal.Supervisor.start_link(opts)
+
+    try do
+      fun.()
+    after
+      :ok = Supervisor.stop(Ramal.Supervisor)
+      {:ok, _} = Ramal.Supervisor.start_link([])
+    end
+  end
+
+  defp loaded_into(variant, branch, ids, size) do
+    ids
+    |> Enum.take(size)
+    |> Enum.with_index()
+    |> Enum.each(fn {id, i} -> variant.update.(branch, id, 2_000 + i) end)
+  end
+
   # Merge of `size` updated rows. Ramal replays each through the real update action; the baseline applies the delta in
   # one SQL statement. The baseline is expected to win by a wide margin, and the number is the price of replaying
   # through actions, which is what buys validations, policies and a staleness check.

@@ -3,6 +3,8 @@ defmodule Bench.Setup do
   # Creates the database and the two tables the benchmark uses, and seeds `bench_items`.
   #
   # `bench_items` is the base. `bench_deltas` is the relational baseline's per-state overlay (see Bench.Baseline.Delta).
+  # `ramal_branches` and `ramal_branch_writes` are Ramal's own storage tables, for the cases that store branches in
+  # Postgres.
 
   alias Ecto.Adapters.SQL
 
@@ -14,6 +16,8 @@ defmodule Bench.Setup do
     {:ok, _} = Bench.Repo.start_link()
 
     for sql <- [
+          "DROP TABLE IF EXISTS ramal_branch_writes",
+          "DROP TABLE IF EXISTS ramal_branches",
           "DROP TABLE IF EXISTS bench_deltas",
           "DROP TABLE IF EXISTS bench_items",
           "DROP TABLE IF EXISTS bench_notes",
@@ -39,7 +43,27 @@ defmodule Bench.Setup do
             PRIMARY KEY (state, id)
           )
           """,
-          "CREATE INDEX bench_deltas_bucket ON bench_deltas (state, bucket)"
+          "CREATE INDEX bench_deltas_bucket ON bench_deltas (state, bucket)",
+          # What `mix ramal.gen.migration` makes, without the owner column, for the `durable` case.
+          """
+          CREATE TABLE ramal_branches (
+            id uuid PRIMARY KEY,
+            domain text NOT NULL,
+            name text,
+            status text NOT NULL,
+            state jsonb NOT NULL,
+            inserted_at timestamp NOT NULL,
+            updated_at timestamp NOT NULL
+          )
+          """,
+          """
+          CREATE TABLE ramal_branch_writes (
+            branch_id uuid NOT NULL REFERENCES ramal_branches (id) ON DELETE CASCADE,
+            seq bigint NOT NULL,
+            delta jsonb NOT NULL,
+            PRIMARY KEY (branch_id, seq)
+          )
+          """
         ] do
       SQL.query!(Bench.Repo, sql, [])
     end

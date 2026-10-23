@@ -5,13 +5,13 @@ and tests tie the two together (see [How the models meet the code](#how-the-mode
 
 | | what | tool | checked by |
 |---|---|---|---|
-| [`tla/`](tla) | the life of branches across processes: writes, reads, fork, propose, approve, reject, discard, merge, idle unload, kills, restarts; and a nested fork merging into its parent | TLA+, model-checked with TLC 1.8.0 | `check.sh tla` |
+| [`tla/`](tla) | the life of branches across processes: writes, reads, fork, propose, approve, reject, discard, merge, idle unload, kills, restarts, the write log of durable branches; and a nested fork merging into its parent | TLA+, model-checked with TLC 1.8.0 | `check.sh tla` |
 | [`tla/Cluster.tla`](tla/Cluster.tla) | one branch in a cluster: `:global` names, the storage's epoch, splits, heals, a node crash | TLA+, TLC 1.8.0 | `check.sh tla` |
 | [`bend/`](bend) | the data rules: overlay entries, what a read in a branch sees, what a merge writes | Bend 2.0.38, also rechecked by its Lean-proved kernel (`--verdict`) | `check.sh bend` |
 
 ```sh
 verification/check.sh          # both
-verification/check.sh tla      # about 5 minutes on 4 cores
+verification/check.sh tla      # about 7 minutes on 4 cores
 verification/check.sh bend     # under a second
 ```
 
@@ -41,6 +41,19 @@ and either a node restart or a merger that dies after its commit; 5,457,656 dist
 | `CommitIsFinal` | a merge reported as failed did not commit (ADR 0023) |
 | `StatusMonotonic` | a stored status only moves forward, and merged, rejected and discarded are final |
 
+[`MC-durable.cfg`](tla/MC-durable.cfg) turns on `Durable` (ADR 0048): an action that ends appends its write to the
+`wal` before it returns, a restart loads the snapshot with the `wal` applied, and `Compact` is the snapshot that covers
+the `wal`. It has two rows, so two actions of one branch can end in either order, one node restart, and no outside write
+or heap kill or dying merger, which durability does not touch (MC.cfg has those); 2,580,972 distinct states, depth 22. A
+run of the same configuration with one heap kill (`MaxKills = 1`) also found no violation, over 14,185,904 distinct
+states (depth 23), and takes too long for CI. It checks the properties above and three more:
+
+| property | meaning |
+|---|---|
+| `DurableAcked` | a branch loaded from storage now (the snapshot with the log applied) holds every write whose action returned, unless it was discarded: a crash loses no acknowledged write |
+| `RecoveredMatchesLog` | what a loaded branch shows (the overlay) is what its log says, whatever order the actions ended in |
+| `NoHeldPersisted` | storage never holds a write of an action that has not ended (ADR 0033), neither in the `wal` nor in a snapshot a compaction made while the action ran |
+
 **Bugs it found**, each confirmed by a test that failed before the fix (`test/ramal/running_actions_test.exs`,
 [ADR 0033](../docs/adr/0033-running-actions-hold-their-writes.md); `test/ramal/merged_marker_test.exs`,
 [ADR 0035](../docs/adr/0035-merged-status-in-the-merge-transaction.md)). A config with the fix switched off shows each one:
@@ -52,6 +65,7 @@ and either a node restart or a merger that dies after its commit; 5,457,656 dist
 | [`bug-marker.cfg`](tla/bug-marker.cfg) | the process holding a claimed merge is killed for its heap and reloaded from storage before its watcher marks it: a second caller claims the same branch while the first still holds its claim, and both can commit |
 | [`bug-mark-node-crash.cfg`](tla/bug-mark-node-crash.cfg) | the node restarts after a merge committed and before the merged branch was stored: storage has it open, and it is merged again |
 | [`bug-mark-merger-crash.cfg`](tla/bug-mark-merger-crash.cfg) | the process running a merge dies after the commit and before `finish_merge`: the claim is released and the branch is merged again |
+| [`bug-durable-held.cfg`](tla/bug-durable-held.cfg) | (a design the model rejected, not a bug that shipped) the `wal` is appended on every write, not when the action ends: it holds a write of an action that has not ended, which the action may still take back (`NoHeldPersisted`) |
 
 In the last two, a second merge was refused as `:stale` for every row the branch fingerprinted, and failed on the
 primary key for every row it created, unless the caller passed `on_stale: :ignore`; the model lets the caller pass it.
@@ -63,8 +77,12 @@ cover a merger killed in that instant.
 **Abstractions.** A row is a version number and an action makes one write; nested writes, policies and validations are
 not modelled. Storage writes are atomic and may fail; a failed one changes nothing. The Registry, the watcher and the
 running marks are modelled as what they decide, not as processes. A node restart loses the writes not yet persisted, as
-Ramal documents, so `NoLostWrite` asks only for the writes that survived it. The model is bounded: what TLC proves holds for the
-sizes in `MC.cfg`, and larger sizes are left out to keep the check to a few minutes.
+Ramal documents, so `NoLostWrite` asks only for the writes that survived it; a durable branch has persisted every
+acknowledged write, so there it asks for all of them. An append the storage refuses is the action failing (`Fail`),
+and a delta holds the write and the fingerprint of its row, the part of a delta that matters to the properties.
+The fingerprint of a row that was only read is not in a delta, so a restart loses it, as the code does; no property asks
+for it. The model is bounded: what TLC proves holds for the sizes in `MC.cfg` and `MC-durable.cfg`, and larger sizes are
+left out to keep the check to a few minutes.
 
 ## TLA+: a nested fork merging into its parent
 
@@ -92,6 +110,12 @@ The staleness of a fork against its parent is the rule of the first model's fing
 :ignore` here. The copy and the parent are one process each, and `adopt/4` is atomic and persists before it answers, as
 the code does.
 
+Durable branches and nested forks are checked together by tests, not by a joint model (`test/ramal/durable_nested_test.exs`),
+because the two models meet at one fact that both state: `adopt/4` persists the whole parent, which for a durable parent is
+a snapshot that covers its write log (`put/2` deletes the deltas up to its `wal`), and it takes only a parent with no action
+running and the version of the copy, so no delta of the parent is lost or applied twice. A node restart that
+`Nested.tla` treats as losing the parent's writes since its last persist loses none of them when the parent is durable.
+
 ## TLA+: a branch in a cluster
 
 [`tla/Cluster.tla`](tla/Cluster.tla) is a second, small model (ADR 0044), kept apart because `Ramal.tla` is about what the
@@ -114,6 +138,21 @@ distinct states, about 12 seconds):
 |---|---|
 | [`bug-unfenced.cfg`](tla/bug-unfenced.cfg) | after a split a node loads the branch from the storage, another saves a write, and the first saves its older copy over it: the write is gone and nobody was told (`NoLostUpdateUnreported`) |
 | [`bug-unfenced-writer.cfg`](tla/bug-unfenced-writer.cfg) | the same trace, seen as a save by a process that is not on the storage's epoch (`SingleWriter`) |
+
+[`Cluster-durable.cfg`](tla/Cluster-durable.cfg) turns on `Durable` (ADR 0048): a write is appended to the storage's log
+before the caller is told, a load reads the log after its claim, a save covers the log it holds, and with `FixAppendFence`
+an append is refused unless the process holds the storage's epoch (the action then fails and the process stops). Three
+nodes, 3 writes, 5 loads, 2 splits, 1 crash: 253,817 distinct states. `NoLostUpdateUnreported` holds as before, and two
+more:
+
+| property | meaning |
+|---|---|
+| `DurableAcked` | a write a caller was told succeeded is in the storage's snapshot or its log: a crash, a split and a heal do not lose it |
+| `SingleLogWriter` | the storage's log only grows by an append of the process that holds its epoch |
+
+| config | what TLC finds without the guard |
+|---|---|
+| [`bug-unfenced-append.cfg`](tla/bug-unfenced-append.cfg) | a process that another load replaced appends a write: it is acknowledged though the holder never reads it (`SingleLogWriter`) |
 
 **Abstractions.** A write is a number and the storage holds a set; there is one branch, at most one process per node, and
 a split cuts every node from every other. A node joining a cluster is a heal. `:global` is a view per node, updated

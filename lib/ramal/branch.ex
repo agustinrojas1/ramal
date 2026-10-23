@@ -26,6 +26,11 @@ defmodule Ramal.Branch do
   * `merged_children` - the ids of the nested forks that merged into this branch, so that one cannot merge twice
   * `next_placeholder` - how many placeholder keys the branch handed out for rows whose key the database generates
     (ADR 0042). A fork keeps the count, and its placeholders are its own
+  * `durable` - whether the branch appends the writes of every action that ends to the storage's write log, so a crash
+    loses none of them (ADR 0048). Set at `branch/2` and kept by a fork
+  * `wal` - the sequence number of the last delta of the write log this struct includes. Storage deletes the deltas up
+    to it when the branch is stored as a snapshot, and a load applies the ones after it. `0` for a branch that never
+    appended
 
   Nothing here touches a process or storage, so it is tested with plain data.
 
@@ -112,6 +117,24 @@ defmodule Ramal.Branch do
           parent: %{id: String.t(), log_length: non_neg_integer} | nil,
           parent_seen: %{optional(ref) => view},
           merged_children: [String.t()],
+          next_placeholder: non_neg_integer,
+          durable: boolean,
+          wal: non_neg_integer
+        }
+
+  @typedoc """
+  What one action added to the branch (ADR 0048), as `delta/2` builds it and `apply_delta/2` applies it: the overlay
+  entries and base rows of the rows the action wrote as they stand when it ends, the rows whose entry is gone (a created
+  row the action then destroyed), the action's log entries, oldest first, `seen`, what a nested fork recorded of its
+  parent for those rows (`parent_seen`, ADR 0043), and `next_placeholder`, the count of placeholder keys the branch had
+  handed out (ADR 0042), so that a recovered branch does not hand out one again.
+  """
+  @type delta :: %{
+          overlay: %{optional(ref) => Overlay.entry()},
+          gone: [ref],
+          base: %{optional(ref) => base_row},
+          log: [log_entry],
+          seen: %{optional(ref) => view},
           next_placeholder: non_neg_integer
         }
 
@@ -138,7 +161,9 @@ defmodule Ramal.Branch do
     parent: nil,
     parent_seen: %{},
     merged_children: [],
-    next_placeholder: 0
+    next_placeholder: 0,
+    durable: false,
+    wal: 0
   ]
 
   @doc """
@@ -151,6 +176,8 @@ defmodule Ramal.Branch do
     * `:owner` - who the branch belongs to, any term, default `nil` (see `Ramal.list/2`)
     * `:tenant` - the tenant the branch works in, default `nil`: the branch then refuses multitenant resources used with
       a tenant (ADR 0034)
+    * `:durable` - append every action's writes to the storage's write log when the action ends, default `false`
+      (ADR 0048)
 
   ## Example
 
@@ -167,7 +194,8 @@ defmodule Ramal.Branch do
       inserted_at: DateTime.utc_now(),
       metadata: Keyword.get(opts, :metadata, %{}),
       owner: opts[:owner],
-      tenant: opts[:tenant]
+      tenant: opts[:tenant],
+      durable: Keyword.get(opts, :durable, false)
     }
   end
 
@@ -502,7 +530,8 @@ defmodule Ramal.Branch do
   end
 
   @doc """
-  A new open branch that starts as a copy of `parent`: same domain, tenant, overlay, log and base.
+  A new open branch that starts as a copy of `parent`: same domain, tenant, overlay, log and base. It has no write log of
+  its own yet (`wal` is `0`): the storage holds the fork as a snapshot of everything it copied.
 
   Overlays, logs and the base are immutable, so the copy shares structure with the parent and neither sees the
   other's later changes. `metadata` gets `forked_from: parent.id`.
@@ -515,6 +544,7 @@ defmodule Ramal.Branch do
     * `:name` - default: the parent's name
     * `:metadata` - default: the parent's metadata
     * `:owner` - default: the parent's owner
+    * `:durable` - default: the parent's
     * `:nested` - default `false`
 
   ## Example
@@ -541,6 +571,8 @@ defmodule Ramal.Branch do
         inserted_at: DateTime.utc_now(),
         metadata: metadata,
         owner: Keyword.get(opts, :owner, parent.owner),
+        durable: Keyword.get(opts, :durable, parent.durable),
+        wal: 0,
         epoch: nil,
         parent: link,
         parent_seen: %{},
@@ -647,6 +679,9 @@ defmodule Ramal.Branch do
   A copy of `branch` with a new id, for the replay of a nested merge (ADR 0043): the writes go there, and the parent
   takes them with `adopt/3` only if the replay succeeded and the parent did not change meanwhile.
 
+  The copy is not durable, even when `branch` is: nothing of it is stored, and the parent stores what it adopts as a
+  snapshot (ADR 0048).
+
   ## Example
 
       iex> branch = Ramal.Branch.new(MyApp.Farm)
@@ -655,7 +690,7 @@ defmodule Ramal.Branch do
       {true, true}
   """
   @spec scratch(t) :: t
-  def scratch(%__MODULE__{} = branch), do: %{branch | id: Ash.UUID.generate()}
+  def scratch(%__MODULE__{} = branch), do: %{branch | id: Ash.UUID.generate(), durable: false}
 
   @doc """
   `parent` after it adopted the work of `child` that was replayed in `scratch` (a `scratch/1` of `parent`): the scratch's
@@ -842,4 +877,62 @@ defmodule Ramal.Branch do
 
   defp restore(map, ref, :none), do: Map.delete(map, ref)
   defp restore(map, ref, value), do: Map.put(map, ref, value)
+
+  @doc """
+  What the writes described by `undos` (newest first, as the process holds them) added to the branch: the delta a
+  durable branch appends to the storage's write log when their action ends (ADR 0048).
+
+  The delta holds the overlay entry and base row each written row has now, not the writes one by one, so it is as small
+  as the rows the action touched. That is the action's own rows only: no running action writes a row another running
+  action wrote (`:row_busy`), so nothing in it belongs to an action that has not ended.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> entry = {:create, MyApp.Herd, :create, %{}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
+      iex> {branch, undo} = Ramal.Branch.put_write(branch, :created, {MyApp.Herd, 1}, %{id: 1}, nil, entry)
+      iex> delta = Ramal.Branch.delta(branch, [undo])
+      iex> {delta.overlay, delta.gone, delta.base, delta.log == [entry], delta.next_placeholder}
+      {%{{MyApp.Herd, 1} => {:created, %{id: 1}}}, [], %{}, true, 0}
+  """
+  @spec delta(t, [undo]) :: delta
+  def delta(%__MODULE__{} = branch, undos) do
+    refs = undos |> Enum.map(& &1.ref) |> Enum.uniq()
+
+    %{
+      overlay: Map.take(branch.overlay, refs),
+      gone: Enum.reject(refs, &is_map_key(branch.overlay, &1)),
+      base: Map.take(branch.base, refs),
+      log: undos |> Enum.map(& &1.entry) |> Enum.reverse(),
+      seen: Map.take(branch.parent_seen, refs),
+      next_placeholder: branch.next_placeholder
+    }
+  end
+
+  @doc """
+  The branch with `delta` applied, as the write log of storage is read back: the entries of its rows replace the
+  branch's, its log entries go on the log, and `wal` becomes `seq`. Deltas are applied in `seq` order, which is the order
+  their actions ended in.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> entry = {:create, MyApp.Herd, :create, %{}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
+      iex> {written, undo} = Ramal.Branch.put_write(branch, :created, {MyApp.Herd, 1}, %{id: 1}, nil, entry)
+      iex> delta = Ramal.Branch.delta(written, [undo])
+      iex> Ramal.Branch.apply_delta(branch, 1, delta) == %{written | wal: 1}
+      true
+  """
+  @spec apply_delta(t, pos_integer, delta) :: t
+  def apply_delta(%__MODULE__{} = branch, seq, delta) do
+    %{
+      branch
+      | overlay: branch.overlay |> Map.drop(delta.gone) |> Map.merge(delta.overlay),
+        base: Map.merge(branch.base, delta.base),
+        log: Enum.reduce(delta.log, branch.log, &[&1 | &2]),
+        parent_seen: Map.merge(branch.parent_seen, delta.seen),
+        next_placeholder: max(branch.next_placeholder, delta.next_placeholder),
+        wal: seq
+    }
+  end
 end

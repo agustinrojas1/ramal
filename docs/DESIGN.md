@@ -25,7 +25,7 @@ discard them. A branch must cost roughly what a process and a map cost, so thous
 ## 2. Concepts
 
 **Branch.** `%Ramal.Branch{}`: `id` (UUID string), `name`, `domain` (the Ash domain whose resources it covers; a resource of another domain that uses `Ramal.Resource` is branched too, section 11), `status` (`:open | :proposed | :merged | :rejected | :discarded`), `base` (fingerprints and snapshots, section 7), `overlay`,
-`log`, `inserted_at`, `metadata` (a map the host uses freely), `owner` (any term the host set at `branch/2` or `fork/2`, `nil` by default; `Ramal.list/2` can filter by it, ADR 0018), `proposal` (`nil` until proposed, section 7.1).
+`log`, `inserted_at`, `metadata` (a map the host uses freely), `owner` (any term the host set at `branch/2` or `fork/2`, `nil` by default; `Ramal.list/2` can filter by it, ADR 0018), `proposal` (`nil` until proposed, section 7.1), `durable` (whether each action that ends is appended to the storage's write log, section 6, ADR 0048) and `wal` (the number of the last delta of that log the struct includes).
 
 **Overlay.** A map from `{resource_module, primary_key}` to one of `{:created, record}`, `{:updated, record}` or
 `:deleted`. The record is the full Ash struct as the action left it. The primary key is the value of the resource's
@@ -63,7 +63,17 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
 - Idle branches unload: after `idle_timeout` (default 5 minutes, a `Ramal.Supervisor` option) the server persists its
   state through the storage backend and stops. If the storage refuses the write the process stays loaded, with its
   overlay, and tries again at the next idle timeout (`[:ramal, :branch, :persist_failed]`). A branch is also persisted when it is created, discarded, and when the
-  supervisor shuts down; writes in between live only in the process (ADR 0003).
+  supervisor shuts down; writes in between live only in the process (ADR 0003), unless the branch is durable.
+- Durable branches (`durable: true` at `branch/2`, or on `Ramal.Supervisor`, ADR 0048): when the outermost captured action
+  of a process ends, `Capture` calls `Server.commit/1` instead of casting `release`. The server builds the delta of that
+  action (`Ramal.Branch.delta/2`: the overlay entries and base rows of the rows the action wrote as they stand, the rows
+  whose entry is gone, the log entries, the count of placeholder keys), appends it to the storage's write log under the next `seq` and answers; the
+  action returns only then, and fails with `:storage` if the append fails. A delta holds the action's own rows and no
+  other, so it holds nothing of an action still running (a row is never held by two). The log is compacted by a
+  snapshot (`put/2` of the branch without running actions' writes, which deletes the deltas up to its `wal`) after 100
+  appends, after a load that applied deltas, on unload and on shutdown. A load is the snapshot with the deltas after
+  its `wal` applied in `seq` order, the order the actions ended in. A `seq` is never reused: an append that errors may
+  have been stored, so the process gives it up and compacts at once. A nested fork of a durable parent is durable; `adopt/4` stores the parent whole, which is a snapshot covering its log. In a cluster the append and the read of the log are fenced by the epoch like `put/2` (ADR 0044): a refused append fails the action with `:fenced` and stops the process, and a load reads the log after its claim.
 - Running actions: a captured write belongs to its action until the action ends. The server keeps its undo under the
   writer's pid and monitors it; a merge or a proposal waits for running actions, a fork leaves their writes out, another
   process's write to the same row is refused (`:row_busy`), and a writer that dies is undone (ADR 0033). `Ramal.branch/2`, `run/2`, `fork/1`, `diff/1`, `merge/2` and `discard/1` all accept a branch id and
@@ -286,7 +296,7 @@ This is the section that decides correctness. In a read action's preparation, wh
 
 ```elixir
 @spec branch(domain :: module, keyword) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
-# opts: name, metadata, owner
+# opts: name, metadata, owner, tenant, durable
 
 @spec run(branch | id, (-> result)) :: {:ok, result} | {:error, Ramal.Error.t()}
 @spec run!(branch | id, (-> result)) :: result
@@ -356,13 +366,16 @@ model passes. The agent's own reads and writes are the host's tools, run in the 
 `list(domain, filters, config)` (which returns `{:ok, branches}` or `{:error, error}`) and the optional
 `count(domain, statuses, config)` (how many branches have one of the statuses; without it the limits count with `list`) and
 `mark_merged(branch, config)` (stores the branch as merged unless it already is, called inside the merge's transaction,
-ADR 0035), where `config` is the `Ramal.Supervisor` options that are not its own (the Postgres
+ADR 0035) and `append(branch, seq, delta, config)` with `writes_after(branch, config)` (the write log of durable branches,
+ADR 0048: append one delta, and the deltas after `branch.wal`, oldest first; `put/2` of a durable branch deletes the deltas
+its `wal` covers; a durable branch is refused on a storage without the pair), where `config` is the `Ramal.Supervisor` options that are not its own (the Postgres
 backend reads `:repo` from it). Two implementations:
 
-- `Ramal.Storage.ETS`: a named table owned by `Ramal.Supervisor`. Default in tests and development. Lost on restart.
+- `Ramal.Storage.ETS`: a named table owned by `Ramal.Supervisor`, and an ordered one for the write log (the first is scanned whole by `list/3`). Default in tests and development. Lost on restart.
 - `Ramal.Storage.Postgres`: one table `ramal_branches` (`id uuid pk, domain text, name text, status text, state jsonb,
   inserted_at, updated_at`, and `owner jsonb`, which Postgres generates from `state -> 'owner'` and a hash index serves,
-  ADR 0021). `mix ramal.gen.migration` writes the migrations that are missing into the host's repo. Requires AshPostgres
+  ADR 0021), and `ramal_branch_writes` (`branch_id uuid`, `seq bigint`, `delta jsonb`, key `(branch_id, seq)`, cascading
+  from `ramal_branches`) for the write log. `mix ramal.gen.migration` writes the migrations that are missing into the host's repo. Requires AshPostgres
   (or at least Ecto SQL); the module compiles only when it is present.
 
 A cluster (`Ramal.Supervisor` `cluster: true`, ADR 0044) names branch processes with `:global` (Ramal.Cluster, the `:via`
@@ -460,7 +473,8 @@ skipping action logic; it is faster and less safe, and needs its own ADR.
 Events, all with `%{branch_id, domain}` metadata:
 
 `[:ramal, :branch, :create]`, `[:ramal, :branch, :fork]`, `[:ramal, :branch, :unload]`, `[:ramal, :branch, :load]`,
-`[:ramal, :branch, :persist_failed]` (storage refused a write on `:idle`, `:shutdown` or `:merged`, with the `error`),
+`[:ramal, :branch, :persist_failed]` (storage refused a write on `:idle`, `:shutdown`, `:merged`, `:append` or `:compact`, with the `error`),
+`[:ramal, :branch, :append]` (a durable branch stored an action's delta: `seq`, `rows`, measurement `duration`), `[:ramal, :branch, :compact]` (a snapshot covering the write log: `wal`, `duration`),
 `[:ramal, :branch, :discard]`, `[:ramal, :branch, :propose]`, `[:ramal, :branch, :approve]`, `[:ramal, :branch, :reject]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
 `[:ramal, :read, :patch]` with measurements `%{base_rows, overlay_rows, result_rows, duration}`,
 `[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource, action, nested?}`.
@@ -586,3 +600,4 @@ action (ADR 0016).
 | 36 | A text sort, `:min` and `:max` inside a branch order by the rank Postgres gives the value under the column's collation, from one read-only query per sort key; `C`, `POSIX` and other data layers keep byte order | Strings compared as bytes in the branch and by `en_US.UTF-8` in the database, so the same read disagreed before and after the merge. No Elixir comparator reproduces a collation; asking the database does. [ADR 0045](adr/0045-text-sorted-by-the-databases-collation.md), supersedes [ADR 0024](adr/0024-text-sort-order.md) |
 | 37 | A nested fork (`fork/2` with `nested: true`) merges into its parent by replaying its own entries in a scratch copy that the parent adopts if its version did not change; the parent persists first and remembers the fork; a fork the parent holds is merged however its own status was left | A fork that replayed its whole log into the database could not be merged without its parent. Replaying in a copy keeps the parent untouched when a replay fails, the version makes an adoption valid, and the model checked in `verification/tla/Nested.tla` found the fork that was still writable after its merger died. [ADR 0043](adr/0043-nested-branches-merge-into-their-parent.md) |
 | 38 | With `cluster: true` branch processes are named with `:global`, every load takes the next epoch from the storage and every save is conditional on it; a refused process emits `:fenced` and stops; `:global` keeps the higher epoch when split nodes meet | Two nodes sharing Postgres could each hold a branch and the later save overwrote the earlier one's writes. The database, not the network, decides who may write. Marks and telemetry stay per node. [ADR 0044](adr/0044-branches-in-a-cluster.md) |
+| 39 | A branch can be durable: the outermost action's end is a call that appends the action's delta (its own rows, never a running action's) to the storage's write log, conditional on the epoch in a cluster, before the action returns; a load is the snapshot plus the log; a snapshot compacts the log | Writes since the last save were lost on a node crash, and storing on every write would store the writes of running actions (ADR 0033). The cost is a storage write per action. [ADR 0048](adr/0048-durable-branches.md) |

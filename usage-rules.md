@@ -95,8 +95,15 @@ test decides whether it happens.
 - **Two processes writing one row of a branch**: while the first one's action runs, the second gets `:row_busy`; retry
   once it ends. A merge or a proposal waits for running actions (up to four seconds), and a fork leaves their writes out.
 - **A proposed branch is frozen.** It refuses reads, writes and forks (`:not_open`); `diff/1` still works.
-- **Writes since the last save are lost** if the node crashes. A branch is saved on create, propose, discard, unload and
-  shutdown, not on every write.
+- **Writes since the last save are lost** if the node crashes, unless the branch is durable:
+  `Ramal.branch(domain, durable: true)`, or `durable: true` on `Ramal.Supervisor` for all of them. A durable branch
+  stores what each action wrote before the action returns (one storage write per action; an action whose append fails
+  fails with `:storage`; `mix ramal.gen.migration` writes the table; a custom `Ramal.Storage` needs `append/4` and
+  `writes_after/2`, or `Ramal.branch/2` returns `:durability_unsupported`). With Postgres resources the action holds a
+  connection while the log is written over another: leave room in the pool, or give the storage a repo of its own. The
+  SQL sandbox shares one connection among all processes, so there the append waits for the action's transaction and
+  fails: test durable branches with `Ramal.Storage.ETS`. A branch that is not durable is saved on
+  create, propose, discard, unload and shutdown, not on every write.
 - **Errors are values.** Match on `{:error, %Ramal.Error{reason: reason}}`. Inside an Ash action the error arrives in the
   `errors` of an `Ash.Error.Invalid`; `Ramal.Error.find/1` pulls it out.
 

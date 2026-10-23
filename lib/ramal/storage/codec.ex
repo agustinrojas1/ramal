@@ -51,10 +51,15 @@ defmodule Ramal.Storage.Codec do
   alias Ash.Resource.Info
   alias Ramal.{Branch, Error}
 
-  # 3 adds `parent`, `parent_seen` and `merged_children` (ADR 0043); a branch with none of them is still written as 2,
-  # so a state an older Ramal can read stays readable by it.
-  @version 3
-  @readable_versions [1, 2, 3]
+  # The version is the lowest that can say what the branch holds, so that a state an older Ramal can read stays
+  # readable by it. 2 is the original shape. 3 adds `parent`, `parent_seen` and `merged_children`, for a nested fork or
+  # a branch with merged children (ADR 0043). 4 adds `durable` and `wal` (ADR 0048), and carries the nested fields too
+  # when the branch has them. A node that does not know the write log must refuse a durable state, or it would load the
+  # snapshot without the deltas and drop acknowledged writes without a word. All of 1 to 4 are read.
+  @version 2
+  @nested_version 3
+  @durable_version 4
+  @readable_versions [1, 2, 3, 4]
   @statuses %{
     "open" => :open,
     "proposed" => :proposed,
@@ -84,25 +89,110 @@ defmodule Ramal.Storage.Codec do
   @spec encode_state(Branch.t()) :: {:ok, map} | {:error, Error.t()}
   def encode_state(%Branch{} = branch) do
     {:ok,
-     dedupe_extras(
-       %{
-         "version" => state_version(branch),
-         "overlay" => Enum.map(branch.overlay, &overlay_entry/1),
-         "base" => Enum.map(branch.base, &base_entry(&1, branch.overlay)),
-         "log" => Enum.map(branch.log, &log_entry/1),
-         "metadata" => term(branch.metadata, ["metadata"]),
-         "owner" => term(branch.owner, ["owner"]),
-         "tenant" => term(branch.tenant, ["tenant"]),
-         "inserted_at" => term(branch.inserted_at, ["inserted_at"]),
-         "proposal" => proposal(branch.proposal),
-         "next_placeholder" => branch.next_placeholder
-       }
-       |> Map.merge(nested(branch))
-     )}
+     %{
+       "version" => state_version(branch),
+       "overlay" => Enum.map(branch.overlay, &overlay_entry/1),
+       "base" => Enum.map(branch.base, &base_entry(&1, branch.overlay)),
+       "log" => Enum.map(branch.log, &log_entry/1),
+       "metadata" => term(branch.metadata, ["metadata"]),
+       "owner" => term(branch.owner, ["owner"]),
+       "tenant" => term(branch.tenant, ["tenant"]),
+       "inserted_at" => term(branch.inserted_at, ["inserted_at"]),
+       "proposal" => proposal(branch.proposal),
+       "next_placeholder" => branch.next_placeholder
+     }
+     |> Map.merge(nested(branch))
+     |> durable_fields(branch)
+     |> dedupe_extras()}
   catch
     {:codec, message, path} ->
       {:error,
        Error.new(:storage, "branch #{branch.id} cannot be stored: #{message}", %{path: path})}
+  end
+
+  defp durable_fields(state, %Branch{durable: true, wal: wal}),
+    do: Map.merge(state, %{"durable" => true, "wal" => wal})
+
+  defp durable_fields(state, _not_durable), do: state
+
+  @doc """
+  The JSON-safe form of a delta of the write log (`Ramal.Branch.delta/2`, ADR 0048), for a storage that keeps text. It is
+  written the way the state is: the overlay entries, the base rows against them, the log entries, and the rows
+  that are gone.
+
+  ## Example
+
+      iex> {:ok, delta} = Ramal.Storage.Codec.encode_delta(%{overlay: %{}, gone: [], base: %{}, log: [], seen: %{}, next_placeholder: 0})
+      iex> {delta["overlay"], delta["gone"], delta["log"]}
+      {[], [], []}
+  """
+  @spec encode_delta(Branch.delta()) :: {:ok, map} | {:error, Error.t()}
+  def encode_delta(%{overlay: overlay, gone: gone, base: base, log: log} = delta) do
+    {:ok,
+     dedupe_extras(%{
+       "version" => @version,
+       "overlay" => Enum.map(overlay, &overlay_entry/1),
+       "seen" => seen_entries(delta.seen),
+       "gone" =>
+         Enum.map(gone, fn {resource, key} ->
+           %{
+             "resource" => Atom.to_string(resource),
+             "key" => term(key, [{:resource, resource}, "gone"])
+           }
+         end),
+       "base" => Enum.map(base, &base_entry(&1, overlay)),
+       "log" => Enum.map(log, &log_entry/1),
+       "next_placeholder" => delta.next_placeholder
+     })}
+  catch
+    {:codec, message, path} ->
+      {:error, Error.new(:storage, "a write cannot be stored: #{message}", %{path: path})}
+  end
+
+  @doc """
+  The delta `encode_delta/1` wrote. `id` is the branch's, for the error.
+
+  ## Example
+
+      iex> {:ok, stored} = Ramal.Storage.Codec.encode_delta(%{overlay: %{}, gone: [], base: %{}, log: [], seen: %{}, next_placeholder: 0})
+      iex> Ramal.Storage.Codec.decode_delta("b1", stored)
+      {:ok, %{overlay: %{}, gone: [], base: %{}, log: [], seen: %{}, next_placeholder: 0}}
+  """
+  @spec decode_delta(String.t(), map) :: {:ok, Branch.delta()} | {:error, Error.t()}
+  def decode_delta(id, %{"version" => version} = stored) when version in @readable_versions do
+    stored = expand_extras(stored)
+    overlay = Map.new(stored["overlay"], &decode_overlay_entry/1)
+
+    {:ok,
+     %{
+       overlay: overlay,
+       gone:
+         Enum.map(stored["gone"], fn %{"resource" => resource, "key" => key} ->
+           {module!(resource), unterm(key)}
+         end),
+       base: Map.new(stored["base"], &decode_base_entry(&1, overlay)),
+       log: Enum.map(stored["log"], &decode_log_entry/1),
+       seen: Map.new(stored["seen"] || [], &decode_seen/1),
+       next_placeholder: stored["next_placeholder"] || 0
+     }}
+  rescue
+    exception ->
+      {:error,
+       Error.new(
+         :storage,
+         "a stored write of branch #{id} cannot be loaded: it is malformed (#{inspect(exception.__struct__)})"
+       )}
+  catch
+    {:codec, message} ->
+      {:error, Error.new(:storage, "a stored write of branch #{id} cannot be loaded: #{message}")}
+  end
+
+  def decode_delta(id, %{"version" => version}) do
+    {:error,
+     Error.new(
+       :storage,
+       "a stored write of branch #{id} has version #{version}; this Ramal reads versions #{Enum.join(@readable_versions, ", ")}"
+     )}
   end
 
   @doc """
@@ -156,7 +246,9 @@ defmodule Ramal.Storage.Codec do
        base: Map.new(state["base"], &decode_base_entry(&1, overlay)),
        log: Enum.map(state["log"], &decode_log_entry/1),
        proposal: decode_proposal(state["proposal"]),
-       next_placeholder: state["next_placeholder"] || 0
+       next_placeholder: state["next_placeholder"] || 0,
+       durable: state["durable"] == true,
+       wal: state["wal"] || 0
      }
      |> decode_nested(state)}
   rescue
@@ -178,7 +270,7 @@ defmodule Ramal.Storage.Codec do
     {:error,
      Error.new(
        :storage,
-       "stored branch #{columns.id} has state version #{version}; this Ramal reads versions #{Enum.join(@readable_versions, " and ")}"
+       "stored branch #{columns.id} has state version #{version}; this Ramal reads versions #{Enum.join(@readable_versions, ", ")}"
      )}
   end
 
@@ -294,8 +386,9 @@ defmodule Ramal.Storage.Codec do
 
   # -- encode -------------------------------------------------------------------------------------------------------
 
-  defp state_version(%Branch{parent: nil, merged_children: []}), do: 2
-  defp state_version(_nested), do: @version
+  defp state_version(%Branch{durable: true}), do: @durable_version
+  defp state_version(%Branch{parent: nil, merged_children: []}), do: @version
+  defp state_version(_nested), do: @nested_version
 
   defp nested(%Branch{parent: nil, merged_children: []}), do: %{}
 
@@ -303,16 +396,19 @@ defmodule Ramal.Storage.Codec do
     %{
       "parent" =>
         branch.parent && %{"id" => branch.parent.id, "log_length" => branch.parent.log_length},
-      "parent_seen" =>
-        for {{resource, key}, view} <- branch.parent_seen do
-          %{
-            "resource" => Atom.to_string(resource),
-            "key" => term(key, [{:resource, resource}, "parent_seen"]),
-            "view" => if(view == :base, do: nil, else: view)
-          }
-        end,
+      "parent_seen" => seen_entries(branch.parent_seen),
       "merged_children" => branch.merged_children
     }
+  end
+
+  defp seen_entries(seen) do
+    for {{resource, key}, view} <- seen do
+      %{
+        "resource" => Atom.to_string(resource),
+        "key" => term(key, [{:resource, resource}, "parent_seen"]),
+        "view" => if(view == :base, do: nil, else: view)
+      }
+    end
   end
 
   # A proposal is written field by field, with string keys, so that reading it back never needs an atom that only this

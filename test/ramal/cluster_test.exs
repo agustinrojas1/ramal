@@ -141,6 +141,107 @@ defmodule Ramal.ClusterTest do
     end
   end
 
+  describe "durable branches (ADR 0048)" do
+    alias Ramal.Test.Capture
+    alias Ramal.Test.Capture.Silent
+
+    defp create(branch, text),
+      do: Ramal.run!(branch, fn -> Ash.create!(Silent, %{text: text}, authorize?: false) end)
+
+    defp texts(id) do
+      {:ok, branch} = Ramal.get(id)
+      for({{Silent, _key}, {_kind, record}} <- branch.overlay, do: record.text) |> Enum.sort()
+    end
+
+    defp log_of(branch_id) do
+      {:ok, deltas} =
+        ETS.writes_after(
+          %Ramal.Branch{id: branch_id, domain: Capture, inserted_at: DateTime.utc_now()},
+          []
+        )
+
+      Enum.map(deltas, &elem(&1, 0))
+    end
+
+    test "appends on the epoch of the process, and a load by another node reads them" do
+      start_cluster(durable: true)
+      {:ok, branch} = Ramal.branch(Capture)
+      create(branch, "one")
+      create(branch, "two")
+      assert log_of(branch.id) == [1, 2]
+
+      # What a second node does after the first one crashed: claim the branch, then read the log.
+      {:ok, claimed} = ETS.claim(branch.id, [])
+      {:ok, deltas} = ETS.writes_after(claimed, [])
+
+      assert claimed.epoch == 2
+      assert Enum.map(deltas, &elem(&1, 0)) == [1, 2]
+    end
+
+    test "a process that another load replaced cannot store an action: it fails, says so, and stops" do
+      capture_branch_events()
+      start_cluster(durable: true)
+      {:ok, branch} = Ramal.branch(Capture)
+      create(branch, "stored")
+      id = branch.id
+      assert {:ok, %{epoch: 1}} = Ramal.get(id)
+
+      # Another node claims the branch and reads its log: it sees what was stored before.
+      {:ok, other} = ETS.claim(id, [])
+      assert {:ok, [{1, _}]} = ETS.writes_after(other, [])
+
+      assert {:ok, {:error, error}} =
+               Ramal.run(branch, fn ->
+                 Ash.create(Silent, %{text: "refused"}, authorize?: false)
+               end)
+
+      assert %Error{reason: :fenced} = Error.find(error)
+      assert_receive {:telemetry, [:ramal, :branch, :fenced], %{branch_id: ^id, epoch: 1}}, 2_000
+      eventually(fn -> not loaded?(id) end)
+
+      # Nothing of the refused action is in the log, and the process left no snapshot over the newer holder's.
+      assert log_of(id) == [1]
+      refute_received {:telemetry, [:ramal, :branch, :unload], %{branch_id: ^id}}
+      refute_received {:telemetry, [:ramal, :branch, :persist_failed], %{branch_id: ^id}}
+
+      # The newer holder appends on its epoch, and its read of the log has both.
+      delta = %{overlay: %{}, gone: [], base: %{}, log: [], seen: %{}, next_placeholder: 0}
+      assert ETS.append(other, 2, delta, []) == :ok
+      assert log_of(id) == [1, 2]
+    end
+
+    test "a load applies the log after the claim, and the process compacts what it applied" do
+      start_cluster(durable: true, idle_timeout: 60_000)
+      {:ok, branch} = Ramal.branch(Capture)
+      id = branch.id
+      create(branch, "one")
+      create(branch, "two")
+
+      # The node crashed: the process is gone, and the epoch it held is behind the storage's next claim.
+      pid = Ramal.Supervisor.whereis(id)
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}
+      eventually(fn -> not loaded?(id) end)
+      Ramal.Supervisor.clear_too_large(id)
+      Ramal.Supervisor.clear_running(id)
+
+      assert texts(id) == ["one", "two"]
+      assert {:ok, %{epoch: 2, wal: 2}} = Ramal.get(id)
+      eventually(fn -> log_of(id) == [] end)
+    end
+
+    test "without cluster: true a durable branch has no epoch and nothing else changes" do
+      start_supervised!({Ramal.Supervisor, durable: true})
+      {:ok, branch} = Ramal.branch(Capture)
+      create(branch, "one")
+
+      assert {:ok, %{epoch: nil, wal: 1, durable: true}} = Ramal.get(branch.id)
+      assert log_of(branch.id) == [1]
+      assert :global.whereis_name({Ramal.Branch, branch.id}) == :undefined
+    end
+  end
+
   describe "nested forks" do
     test "merge into a parent that a cluster process serves, and the parent persists on its epoch" do
       start_cluster()

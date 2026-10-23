@@ -104,6 +104,44 @@ defmodule Ramal.ClusterNodesTest do
     end
   end
 
+  describe "durable branches" do
+    test "a node that goes down loses nothing an action ended, and another node loads it" do
+      %{a: {pa, _}, b: {pb, b}} = nodes = cluster(idle_timeout: 60_000, durable: true)
+      id = new_branch(nodes)
+      herd(pa, id, "first")
+      herd(pa, id, "second")
+
+      # A crash: halt skips terminate/2, so no snapshot is saved; the write log is what the other node has.
+      catch_exit(Nodes.call(pa, :erlang, :halt, []))
+
+      eventually(fn -> holder(pb, id) == nil end)
+      assert created(pb, id) == ["first", "second"]
+      assert holder(pb, id) == b
+    end
+
+    test "a node cut off from the holder loads the committed writes, and the holder's next action is refused" do
+      %{a: {pa, a}, b: {pb, b}} = nodes = cluster(idle_timeout: 60_000, durable: true)
+      id = new_branch(nodes)
+      herd(pa, id, "before the split")
+
+      Nodes.split(pa, a, pb, b)
+      eventually(fn -> holder(pb, id) == nil end)
+
+      # b loads the snapshot with a's write log, which has what a was told was stored.
+      assert created(pb, id) == ["before the split"]
+      assert holder(pb, id) == b
+      herd(pb, id, "only in b")
+
+      # a's process still holds the branch: its next action cannot be stored, so it fails, and the process stops.
+      assert Nodes.call(pa, Nodes, :try_create_herd, [id, "only in a"]) == {:error, :fenced}
+      assert [event] = eventually(fn -> fenced(pa, id) end)
+      assert event.epoch == 1
+      assert holder(pa, id) == nil
+
+      assert created(pb, id) == ["before the split", "only in b"]
+    end
+  end
+
   describe "fencing" do
     test "a node cut off from the holder loads the branch, and the holder is refused when it saves" do
       %{a: {pa, a}, b: {pb, b}} = nodes = cluster(idle_timeout: 600)

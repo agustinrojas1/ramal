@@ -5,6 +5,10 @@ defmodule Ramal.Storage.ETS do
   Everything is lost when the supervisor stops. Reads and writes go straight to the table from the calling process,
   so the backend adds no bottleneck.
 
+  The write log of a durable branch (ADR 0048) is in a second table, an ordered set keyed by `{branch_id, seq}`: the
+  first one is scanned whole by `list/3` and `count/3`, which must not meet deltas. It makes a durable branch survive
+  the death of its process, which is all an ETS table can promise.
+
   The table belongs to one node, so this backend cannot be shared by a cluster. It still fences by epoch
   (`c:Ramal.Storage.claim/2`), which lets `Ramal.Supervisor` run with `cluster: true` on a single node, for tests. The
   epochs are counters in the supervisor's own table, and a check and the write that follows it are not one atomic step.
@@ -30,10 +34,22 @@ defmodule Ramal.Storage.ETS do
   @spec table() :: atom
   def table, do: __MODULE__
 
+  @doc """
+  The name of the table of the write logs. `Ramal.Supervisor` creates it.
+
+  ## Example
+
+      iex> Ramal.Storage.ETS.writes_table()
+      Ramal.Storage.ETS.Writes
+  """
+  @spec writes_table() :: atom
+  def writes_table, do: Module.concat(__MODULE__, Writes)
+
   @impl true
   def put(%{epoch: epoch} = branch, _config) when is_integer(epoch) do
     with :ok <- check_epoch(branch.id, epoch) do
       :ets.insert(table(), {branch.id, %{branch | epoch: nil}})
+      drop_covered(branch)
       :ok
     end
   rescue
@@ -42,10 +58,44 @@ defmodule Ramal.Storage.ETS do
 
   def put(branch, _config) do
     :ets.insert(table(), {branch.id, branch})
+    drop_covered(branch)
     :ok
   rescue
     ArgumentError -> unavailable()
   end
+
+  @impl true
+  def append(branch, seq, delta, _config) do
+    with :ok <- check_held(branch) do
+      :ets.insert(writes_table(), {{branch.id, seq}, delta})
+      :ok
+    end
+  rescue
+    ArgumentError -> unavailable()
+  end
+
+  @impl true
+  def writes_after(branch, _config) do
+    id = branch.id
+
+    with :ok <- check_held(branch) do
+      # The key's first element is bound, so an ordered set walks only this branch's deltas, already in `seq` order.
+      deltas =
+        :ets.select(writes_table(), [
+          {{{id, :"$1"}, :"$2"}, [{:>, :"$1", branch.wal}], [{{:"$1", :"$2"}}]}
+        ])
+
+      {:ok, deltas}
+    end
+  rescue
+    ArgumentError -> unavailable()
+  end
+
+  defp drop_covered(%{durable: true, id: id, wal: wal}) when wal > 0 do
+    :ets.select_delete(writes_table(), [{{{id, :"$1"}, :_}, [{:"=<", :"$1", wal}], [true]}])
+  end
+
+  defp drop_covered(_not_durable), do: :ok
 
   @impl true
   def claim(id, _config) do
@@ -102,6 +152,7 @@ defmodule Ramal.Storage.ETS do
   @impl true
   def delete(id, _config) do
     :ets.delete(table(), id)
+    :ets.select_delete(writes_table(), [{{{id, :_}, :_}, [], [true]}])
     :ok
   rescue
     ArgumentError -> unavailable()

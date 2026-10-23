@@ -17,9 +17,9 @@ defmodule Mix.Tasks.Ramal.Gen.MigrationTest do
 
   defp create_files(dir, name), do: Path.wildcard(Path.join(dir, "*_#{name}.exs"))
 
-  test "a new install gets the table, the owner column and the epoch column, in that order, into the given directory",
+  test "a new install gets the table, the owner column, the epoch column and the write log, in that order, into the given directory",
        %{dir: dir} do
-    assert [create, owner, epoch] = Migration.run(@args ++ ["--migrations-path", dir])
+    assert [create, owner, epoch, writes] = Migration.run(@args ++ ["--migrations-path", dir])
 
     assert Path.dirname(create) == dir
     assert Path.basename(create) =~ ~r/^\d{14}_create_ramal_branches\.exs$/
@@ -27,6 +27,8 @@ defmodule Mix.Tasks.Ramal.Gen.MigrationTest do
     assert Path.basename(epoch) =~ ~r/^\d{14}_add_ramal_branch_epoch\.exs$/
     assert Path.basename(create) < Path.basename(owner)
     assert Path.basename(owner) < Path.basename(epoch)
+    assert Path.basename(writes) =~ ~r/^\d{14}_create_ramal_branch_writes\.exs$/
+    assert Path.basename(epoch) < Path.basename(writes)
     body = File.read!(create)
     assert body =~ "defmodule Ramal.TestRepo.Migrations.CreateRamalBranches do"
     assert body =~ "create table(:ramal_branches, primary_key: false)"
@@ -36,12 +38,18 @@ defmodule Mix.Tasks.Ramal.Gen.MigrationTest do
              "GENERATED ALWAYS AS (NULLIF(state -> 'owner', 'null'::jsonb)) STORED"
 
     assert File.read!(epoch) =~ "ADD COLUMN IF NOT EXISTS epoch bigint NOT NULL DEFAULT 0"
+
+    body = File.read!(writes)
+    assert body =~ "defmodule Ramal.TestRepo.Migrations.CreateRamalBranchWrites do"
+    assert body =~ "create table(:ramal_branch_writes, primary_key: false)"
+    assert body =~ "on_delete: :delete_all"
   end
 
   @migration_modules [
     Ramal.TestRepo.Migrations.CreateRamalBranches,
     Ramal.TestRepo.Migrations.AddRamalBranchOwner,
-    Ramal.TestRepo.Migrations.AddRamalBranchEpoch
+    Ramal.TestRepo.Migrations.AddRamalBranchEpoch,
+    Ramal.TestRepo.Migrations.CreateRamalBranchWrites
   ]
 
   defp unload_migrations do
@@ -61,7 +69,8 @@ defmodule Mix.Tasks.Ramal.Gen.MigrationTest do
     assert modules == [
              Ramal.TestRepo.Migrations.CreateRamalBranches,
              Ramal.TestRepo.Migrations.AddRamalBranchOwner,
-             Ramal.TestRepo.Migrations.AddRamalBranchEpoch
+             Ramal.TestRepo.Migrations.AddRamalBranchEpoch,
+             Ramal.TestRepo.Migrations.CreateRamalBranchWrites
            ]
 
     assert function_exported?(Ramal.TestRepo.Migrations.CreateRamalBranches, :change, 0)
@@ -72,36 +81,51 @@ defmodule Mix.Tasks.Ramal.Gen.MigrationTest do
   end
 
   test "the migrations the test suite runs are what the generator writes", %{dir: dir} do
-    [create, owner, epoch] = Migration.run(@args ++ ["--migrations-path", dir])
+    [create, owner, epoch, writes] = Migration.run(@args ++ ["--migrations-path", dir])
     [installed_create] = Path.wildcard("priv/test_repo/migrations/*_create_ramal_branches.exs")
     [installed_owner] = Path.wildcard("priv/test_repo/migrations/*_add_ramal_branch_owner.exs")
     [installed_epoch] = Path.wildcard("priv/test_repo/migrations/*_add_ramal_branch_epoch.exs")
 
+    [installed_writes] =
+      Path.wildcard("priv/test_repo/migrations/*_create_ramal_branch_writes.exs")
+
     assert File.read!(create) == File.read!(installed_create)
     assert File.read!(owner) == File.read!(installed_owner)
     assert File.read!(epoch) == File.read!(installed_epoch)
+    assert File.read!(writes) == File.read!(installed_writes)
   end
 
-  test "a host that installed 0.3.0 gets the owner and the epoch migrations", %{dir: dir} do
+  test "a host that installed 0.3.0 gets the owner, epoch and write log migrations", %{dir: dir} do
     File.mkdir_p!(dir)
     old = Path.join(dir, "20260101000000_create_ramal_branches.exs")
     File.write!(old, "# written by 0.3.0\n")
 
-    assert [owner, epoch] = Migration.run(@args ++ ["--migrations-path", dir])
+    assert [owner, epoch, writes] = Migration.run(@args ++ ["--migrations-path", dir])
 
     assert Path.basename(owner) =~ ~r/^\d{14}_add_ramal_branch_owner\.exs$/
     assert Path.basename(epoch) =~ ~r/^\d{14}_add_ramal_branch_epoch\.exs$/
+    assert Path.basename(writes) =~ ~r/^\d{14}_create_ramal_branch_writes\.exs$/
     assert File.read!(old) == "# written by 0.3.0\n"
     assert create_files(dir, "create_ramal_branches") == [old]
   end
 
+  test "a host that has the epoch column gets only the write log", %{dir: dir} do
+    File.mkdir_p!(dir)
+
+    for name <- ["create_ramal_branches", "add_ramal_branch_owner", "add_ramal_branch_epoch"],
+        do: File.write!(Path.join(dir, "20260101000000_#{name}.exs"), "# written earlier\n")
+
+    assert [writes] = Migration.run(@args ++ ["--migrations-path", dir])
+    assert Path.basename(writes) =~ ~r/^\d{14}_create_ramal_branch_writes\.exs$/
+  end
+
   test "refuses to write a second copy", %{dir: dir} do
-    [_create, _owner, _epoch] = Migration.run(@args ++ ["--migrations-path", dir])
+    [_create, _owner, _epoch, _writes] = Migration.run(@args ++ ["--migrations-path", dir])
 
     assert_raise Mix.Error, ~r/already exist/, fn ->
       Migration.run(@args ++ ["--migrations-path", dir])
     end
 
-    assert dir |> File.ls!() |> length() == 3
+    assert dir |> File.ls!() |> length() == 4
   end
 end

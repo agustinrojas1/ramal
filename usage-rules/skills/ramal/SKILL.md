@@ -21,7 +21,9 @@ writes stay in the branch until `Ramal.merge/2` replays them through the real ac
 
 1. **Check the setup** in the host app: `extensions: [Ramal.Resource]` on each resource a branch should see, and
    `{Ramal.Supervisor, ...}` in the supervision tree. If either is missing, add it before writing branch code.
-2. **Open** `{:ok, branch} = Ramal.branch(MyApp.Domain, name: "...", owner: user_or_session_id)`.
+2. **Open** `{:ok, branch} = Ramal.branch(MyApp.Domain, name: "...", owner: user_or_session_id)`. Add `durable: true`
+   when the work must survive a crash of the node: each action's writes are stored before it returns, at one storage
+   write per action (a storage without `append/4` and `writes_after/2` refuses it).
 3. **Work inside** `Ramal.run(branch, fn -> ... end)` using the app's own actions. Never `Repo.insert` or raw SQL there.
 4. **Look**: `Ramal.diff(branch)` for the rows changed, `Ramal.aggregate(...)` for exact counts and sums.
 5. **Vary**: `Ramal.fork(branch)` to try an alternative; `Ramal.discard/1` the ones you drop. A fork made with

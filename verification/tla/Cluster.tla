@@ -14,6 +14,13 @@
 (* higher epoch, Ramal.Cluster.resolve/3), and a node can crash, which     *)
 (* loses what its process had not saved, as on one node.                  *)
 (*                                                                         *)
+(* Durable adds the write log of a durable branch (ADR 0048): a write is  *)
+(* acknowledged only once it is appended to the storage's log, and the     *)
+(* append is conditional on the epoch like a save (FixAppendFence); a      *)
+(* load reads the snapshot with the log after the claim. Without the guard *)
+(* on the append, a process that lost the branch stores a write the new    *)
+(* holder never sees.                                                      *)
+(*                                                                         *)
 (* FixFence switches the epoch guard on. Off, a process saves whatever it  *)
 (* holds, and TLC finds a write that was acknowledged and then silently    *)
 (* dropped.                                                                *)
@@ -26,12 +33,15 @@ CONSTANTS
     MaxLoads,     \* times a node loads the branch from storage
     MaxSplits,    \* times the network splits
     MaxCrashes,   \* node crashes
-    FixFence      \* a save is refused unless the process holds the storage's epoch
+    FixFence,     \* a save is refused unless the process holds the storage's epoch
+    Durable,      \* branches are durable: a write is appended to the storage's log before it is acknowledged
+    FixAppendFence \* an append is refused unless the process holds the storage's epoch
 
 None == "none"
 
 VARIABLES
     store,        \* [data : the writes the storage holds, epoch : the storage's epoch]
+    wal,          \* the writes in the storage's write log, not yet covered by a save (Durable)
     procs,        \* node -> [alive, epoch : the epoch it loaded with, data : the writes it holds]
     view,         \* node -> the node whose process this node's :global points to, or None
     connected,    \* whether the nodes can see each other
@@ -40,10 +50,11 @@ VARIABLES
     crashLost,    \* the writes lost with a crashed node: the limit Ramal documents, not a fencing failure
     nextW, loads, splits, crashes
 
-vars == <<store, procs, view, connected, acked, reported, crashLost, nextW, loads, splits, crashes>>
+vars == <<store, wal, procs, view, connected, acked, reported, crashLost, nextW, loads, splits, crashes>>
 
 Init ==
     /\ store = [data |-> {}, epoch |-> 0]
+    /\ wal = {}
     /\ procs = [n \in Nodes |-> [alive |-> FALSE, epoch |-> 0, data |-> {}]]
     /\ view = [n \in Nodes |-> None]
     /\ connected = TRUE
@@ -61,30 +72,47 @@ Load(n) ==
     /\ loads < MaxLoads
     /\ ~procs[n].alive /\ view[n] = None
     /\ store' = [store EXCEPT !.epoch = @ + 1]
-    /\ procs' = [procs EXCEPT ![n] = [alive |-> TRUE, epoch |-> store.epoch + 1, data |-> store.data]]
+    \* The log is read after the claim: the process before it can append nothing more (Storage.append/4 is fenced).
+    /\ procs' = [procs EXCEPT ![n] = [alive |-> TRUE, epoch |-> store.epoch + 1, data |-> store.data \union wal]]
     /\ view' = [m \in Nodes |-> IF m = n \/ connected THEN n ELSE view[m]]
     /\ loads' = loads + 1
-    /\ UNCHANGED <<connected, acked, reported, crashLost, nextW, splits, crashes>>
+    /\ UNCHANGED <<wal, connected, acked, reported, crashLost, nextW, splits, crashes>>
 
 \* A caller on node n writes: the call goes to the process its :global names, wherever it runs.
+\* With Durable the process appends the write first (Server.commit/1). An append the storage refuses fails the action,
+\* which is not acknowledged, and the process stops without saving, as for a refused save.
 Write(n) ==
     /\ nextW < MaxWrites
     /\ view[n] # None
-    /\ LET o == view[n] IN
-         /\ procs[o].alive /\ (o = n \/ connected)
-         /\ procs' = [procs EXCEPT ![o].data = @ \union {nextW + 1}]
-    /\ acked' = acked \union {nextW + 1}
-    /\ nextW' = nextW + 1
-    /\ UNCHANGED <<store, view, connected, reported, crashLost, loads, splits, crashes>>
+    /\ LET o == view[n]
+           w == nextW + 1
+       IN /\ procs[o].alive /\ (o = n \/ connected)
+          /\ IF ~Durable
+               THEN /\ procs' = [procs EXCEPT ![o].data = @ \union {w}]
+                    /\ UNCHANGED <<wal, view>>
+                    /\ acked' = acked \union {w}
+                    /\ nextW' = nextW + 1
+               ELSE IF FixAppendFence /\ procs[o].epoch # store.epoch
+                 THEN /\ procs' = [procs EXCEPT ![o].alive = FALSE]
+                      /\ view' = Forget(o)
+                      /\ UNCHANGED <<wal, acked, nextW>>
+                 ELSE /\ procs' = [procs EXCEPT ![o].data = @ \union {w}]
+                      /\ wal' = wal \union {w}
+                      /\ acked' = acked \union {w}
+                      /\ nextW' = nextW + 1
+                      /\ UNCHANGED view
+    /\ UNCHANGED <<store, connected, reported, crashLost, loads, splits, crashes>>
 
 \* handle_info(:timeout, _) (and a superseded process, which unloads the same way): save, then stop. With the fence,
 \* a save by a process that is not on the storage's epoch is refused, the process announces what it held and stops.
 Unload(n) ==
     /\ procs[n].alive
     /\ IF FixFence /\ procs[n].epoch # store.epoch
-         THEN /\ reported' = reported \union (procs[n].data \ store.data)
-              /\ UNCHANGED store
-         ELSE /\ store' = [store EXCEPT !.data = procs[n].data]
+         THEN /\ reported' = reported \union ((procs[n].data \ store.data) \ wal)
+              /\ UNCHANGED <<store, wal>>
+         ELSE \* The snapshot covers what the process holds, and Storage.put/2 deletes the deltas it covers.
+              /\ store' = [store EXCEPT !.data = procs[n].data]
+              /\ wal' = wal \ procs[n].data
               /\ UNCHANGED reported
     /\ procs' = [procs EXCEPT ![n].alive = FALSE]
     /\ view' = Forget(n)
@@ -96,7 +124,7 @@ Split ==
     /\ connected' = FALSE
     /\ view' = [m \in Nodes |-> IF view[m] = m THEN m ELSE None]
     /\ splits' = splits + 1
-    /\ UNCHANGED <<store, procs, acked, reported, crashLost, nextW, loads, crashes>>
+    /\ UNCHANGED <<store, wal, procs, acked, reported, crashLost, nextW, loads, crashes>>
 
 \* The nodes find each other. :global meets two processes with one name and Ramal.Cluster.resolve/3 keeps the higher
 \* epoch (the lower is told to stop, which is the Unload step; until it takes it no caller reaches it).
@@ -107,16 +135,16 @@ Heal ==
                      ELSE CHOOSE o \in owners : \A p \in owners : procs[o].epoch >= procs[p].epoch
        IN view' = [m \in Nodes |-> winner]
     /\ connected' = TRUE
-    /\ UNCHANGED <<store, procs, acked, reported, crashLost, nextW, loads, splits, crashes>>
+    /\ UNCHANGED <<store, wal, procs, acked, reported, crashLost, nextW, loads, splits, crashes>>
 
 \* A node crashes: no terminate/2, so what its process had not saved is lost. Ramal documents that (README, ADR 0022).
 Crash(n) ==
     /\ procs[n].alive /\ crashes < MaxCrashes
-    /\ crashLost' = crashLost \union (procs[n].data \ store.data)
+    /\ crashLost' = crashLost \union ((procs[n].data \ store.data) \ wal)
     /\ procs' = [procs EXCEPT ![n].alive = FALSE]
     /\ view' = Forget(n)
     /\ crashes' = crashes + 1
-    /\ UNCHANGED <<store, connected, acked, reported, nextW, loads, splits>>
+    /\ UNCHANGED <<store, wal, connected, acked, reported, nextW, loads, splits>>
 
 Next == Split \/ Heal \/ \E n \in Nodes : Load(n) \/ Write(n) \/ Unload(n) \/ Crash(n)
 
@@ -138,6 +166,7 @@ OneOwner == connected => \A m, n \in Nodes : view[m] = view[n]
 NoLostUpdateUnreported ==
     \A w \in acked :
         \/ w \in store.data
+        \/ w \in wal
         \/ \E n \in Nodes : procs[n].alive /\ w \in procs[n].data
         \/ w \in reported
         \/ w \in crashLost
@@ -146,4 +175,13 @@ NoLostUpdateUnreported ==
 SingleWriter ==
     [][store'.data # store.data =>
          \E n \in Nodes : procs[n].alive /\ procs[n].epoch = store.epoch /\ store'.data = procs[n].data]_vars
+
+\* A durable branch loses no write whose action returned: it is in the storage's snapshot or its log. A crash, a split
+\* and a heal leave it there, and the claim of a new holder reads it.
+DurableAcked == Durable => acked \subseteq store.data \union wal
+
+\* The storage's log only grows by an append of the process that holds the storage's epoch.
+SingleLogWriter ==
+    [][wal' \ wal # {} =>
+         \E n \in Nodes : procs[n].alive /\ procs[n].epoch = store.epoch]_vars
 =============================================================================

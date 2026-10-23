@@ -113,6 +113,136 @@ defmodule Ramal.Storage.CodecTest do
     assert round_trip(stored) == {:ok, stored}
   end
 
+  describe "the write log of a durable branch (ADR 0048)" do
+    # The undos a delta is built from, for the writes in the log of a branch: the delta reads their refs and entries.
+    defp undos(branch) do
+      for {_type, resource, _action, _params, _actor, opts, _at} = entry <- branch.log,
+          do: %{ref: {resource, opts[:key]}, entry: entry}
+    end
+
+    defp delta_round_trip(delta) do
+      {:ok, stored} = Codec.encode_delta(delta)
+      Codec.decode_delta("b1", stored |> Jason.encode!() |> Jason.decode!())
+    end
+
+    test "a delta of writes of every kind comes back equal", %{herds: herds, paddocks: paddocks} do
+      {:ok, branch} = Ramal.branch(Farm, durable: true)
+
+      Ramal.run!(branch, fn ->
+        created = Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false)
+        Ash.update!(herds.r7, %{head: 31}, authorize?: false)
+        Ash.destroy!(herds.r9, authorize?: false)
+        Ash.destroy!(created, authorize?: false)
+        Ash.create!(Paddock, %{name: "L99", capacity_head: 5}, action: :upsert, authorize?: false)
+
+        Ash.update!(herds.r8, %{to_paddock_id: paddocks.l18.id},
+          action: :move,
+          actor: %{role: :admin}
+        )
+      end)
+
+      {:ok, stored} = Ramal.get(branch.id)
+      delta = Branch.delta(stored, undos(stored))
+
+      assert delta.overlay != %{} and delta.base != %{} and delta.gone != []
+      assert delta_round_trip(delta) == {:ok, delta}
+    end
+
+    test "the state of a durable branch names its write log, in a version an earlier release refuses" do
+      branch = %{Branch.new(Farm, durable: true) | wal: 7}
+
+      {:ok, state} = Codec.encode_state(branch)
+      assert {state["version"], state["durable"], state["wal"]} == {4, true, 7}
+      assert round_trip(branch) == {:ok, branch}
+    end
+
+    test "the state of a branch that is not durable is what it always was" do
+      {:ok, state} = Codec.encode_state(Branch.new(Farm))
+
+      assert state["version"] == 2
+      refute Map.has_key?(state, "durable")
+      refute Map.has_key?(state, "wal")
+      assert {:ok, %Branch{durable: false, wal: 0}} = round_trip(Branch.new(Farm))
+    end
+
+    test "every combination of nested and durable round-trips, in the lowest version that says it" do
+      herd = {Herd, "k1"}
+      parent = Branch.new(Farm)
+      child = Branch.fork(parent, nested: true)
+
+      cases = [
+        {"plain", parent, 2},
+        {"nested fork", %{child | parent_seen: %{herd => :base, {Herd, "k2"} => 99}}, 3},
+        {"parent with merged children", %{parent | merged_children: ["c1", "c2"]}, 3},
+        {"durable", %{parent | durable: true, wal: 5}, 4},
+        {"durable nested fork",
+         %{child | durable: true, wal: 2, parent_seen: %{herd => 7}, next_placeholder: 3}, 4},
+        {"durable parent with merged children",
+         %{parent | durable: true, wal: 9, merged_children: ["c1"], next_placeholder: 1}, 4},
+        {"durable nested fork with merged children",
+         %{child | durable: true, wal: 1, merged_children: ["g1"], parent_seen: %{herd => :base}},
+         4}
+      ]
+
+      for {name, branch, version} <- cases do
+        {:ok, state} = Codec.encode_state(branch)
+        assert state["version"] == version, name
+        assert round_trip(branch) == {:ok, branch}, name
+      end
+    end
+
+    test "a state written by 0.6 (version 2) and by the nested release (version 3) still loads" do
+      for version <- [2, 3] do
+        branch = Branch.new(Farm)
+        {:ok, state} = Codec.encode_state(branch)
+        state = Map.put(state, "version", version)
+
+        assert {:ok, %Branch{durable: false, wal: 0, parent: nil}} =
+                 Codec.decode_state(columns(branch), state)
+      end
+    end
+
+    test "a delta keeps what a nested fork saw of its parent for the rows it wrote" do
+      delta = %{
+        overlay: %{},
+        gone: [],
+        base: %{},
+        log: [],
+        seen: %{{Herd, "k1"} => :base, {Herd, "k2"} => 99},
+        next_placeholder: 0
+      }
+
+      assert delta_round_trip(delta) == {:ok, delta}
+    end
+
+    test "a value that cannot be stored fails the delta and names it" do
+      entry = {:create, Herd, :create, %{nested: [self()]}, nil, [key: "k"], DateTime.utc_now()}
+      delta = %{overlay: %{}, gone: [], base: %{}, log: [entry], seen: %{}, next_placeholder: 0}
+
+      assert {:error, %Error{reason: :storage, details: %{path: path}}} =
+               Codec.encode_delta(delta)
+
+      assert path == ["log", "Ramal.Test.Farm.Herd", "create", "params", "nested"]
+    end
+
+    test "a delta from a newer version or a module that is not there is refused" do
+      assert {:error, %Error{reason: :storage, message: message}} =
+               Codec.decode_delta("b1", %{"version" => 99})
+
+      assert message =~ "version 99"
+
+      stored = %{
+        "version" => 2,
+        "overlay" => [],
+        "base" => [],
+        "log" => [],
+        "gone" => [%{"resource" => "Elixir.Nope.Nothing", "key" => 1}]
+      }
+
+      assert {:error, %Error{reason: :storage}} = Codec.decode_delta("b1", stored)
+    end
+  end
+
   test "terms of every shape in action input, actor and metadata survive" do
     now = DateTime.utc_now()
 

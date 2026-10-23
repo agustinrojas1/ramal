@@ -32,9 +32,10 @@ defmodule Ramal.Error do
   | `:row_busy` | a write to a row that another process's action wrote in the branch and has not ended (`details.resource`, `key`); retry once it has |
   | `:missing_snapshot` | an overlay entry that needs the base row as first seen has none recorded |
   | `:limit_reached` | `Ramal.branch/2` or `Ramal.fork/2` was refused by `:max_active_branches` or `:branch_rate` of `Ramal.Supervisor` (`details.limit`, `max`, and `active` or `window`) |
+  | `:durability_unsupported` | `durable: true` on a storage that cannot keep the write log (`details.storage`); it defines neither `append/4` nor `writes_after/2` |
   | `:not_started` | `Ramal.Supervisor` is not running |
   | `:collation_failed` | the query that asks the database how it orders text failed, so a sort or a `:min`/`:max` of a string in a branch could not follow it (`details.error`) |
-  | `:storage` | the storage backend failed |
+  | `:storage` | the storage backend failed; for a durable branch, an action whose writes could not be appended to the write log fails with it |
   | `:fenced` | a process of a cluster tried to write a branch that another process loaded after it did (`details.epoch`, ADR 0044); what it held since its last save is lost |
   | `:timeout` | the branch process did not answer in time (`details.timeout` in ms); the request may still be carried out |
 
@@ -71,6 +72,7 @@ defmodule Ramal.Error do
           | :row_busy
           | :limit_reached
           | :collation_failed
+          | :durability_unsupported
           | :not_started
           | :storage
           | :fenced

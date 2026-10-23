@@ -133,6 +133,15 @@ defmodule Ramal.ClusterNodes do
     Ramal.run(id, fn -> Ash.create!(Herd, %{name: name, head: 1}, authorize?: false) end)
   end
 
+  @doc "Like `create_herd/2`, but the error of an action that failed is returned, with the reason of its `Ramal.Error`."
+  def try_create_herd(id, name) do
+    case Ramal.run(id, fn -> Ash.create(Herd, %{name: name, head: 1}, authorize?: false) end) do
+      {:ok, {:ok, herd}} -> {:ok, herd.name}
+      {:ok, {:error, error}} -> {:error, (Ramal.Error.find(error) || error).reason}
+      {:error, %Ramal.Error{reason: reason}} -> {:error, reason}
+    end
+  end
+
   @doc "The names of the herds the branch created, read from wherever the branch is."
   def created(id) do
     with {:ok, changes} <- Ramal.diff(id) do

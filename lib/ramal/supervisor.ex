@@ -29,6 +29,11 @@ defmodule Ramal.Supervisor do
       does, with the `epoch` column `mix ramal.gen.migration` adds.
     * `:max_heap_size` - the heap limit of each branch process in words, default 25 million (200 MB on a 64-bit
       machine). A branch exceeding it is killed and its last persisted state remains.
+    * `:durable` - `true` to make every branch durable unless `Ramal.branch/2` says otherwise, default `false`
+      (ADR 0048). A durable branch appends the writes of each action that ends to the storage's write log before the
+      action returns, so a crash of the node loses none of them. The storage must define `c:Ramal.Storage.append/4` and
+      `c:Ramal.Storage.writes_after/2`, as `Ramal.Storage.ETS` and `Ramal.Storage.Postgres` do; the supervisor refuses
+      to start otherwise. It costs one storage write per action.
     * any other option is the storage config, for example `:repo` for the Postgres backend
 
   Both limits are off by default, so adding them is the only change; see ADR 0016 for why they exist (a client that can
@@ -50,7 +55,8 @@ defmodule Ramal.Supervisor do
   These stay on the node: the telemetry events (attach handlers on every node), the `:branch_rate` window, and the
   marks of a process killed for its heap, which the other nodes do not see (they load the last saved state, as they
   would after the node crashed). Writes since the last save are lost when the node of the process crashes, as on one
-  node. `ramal_live`'s inspector shows the events of its own node unless its broadcaster runs on every node over a
+  node, unless the branch is durable (`:durable`, ADR 0048): the log of its actions is fenced by the epoch too, and
+  another node loads the branch with every action that ended. `ramal_live`'s inspector shows the events of its own node unless its broadcaster runs on every node over a
   clustered `Phoenix.PubSub`.
 
   `idle_timeout` and `max_heap_size` belong to the supervisor, not to a branch, because a per-branch value would be
@@ -67,6 +73,7 @@ defmodule Ramal.Supervisor do
   use Supervisor
 
   alias Ramal.Error
+  alias Ramal.Storage.ETS
 
   @registry Ramal.Registry
   @dynamic Ramal.BranchSupervisor
@@ -80,6 +87,7 @@ defmodule Ramal.Supervisor do
           storage_config: keyword,
           idle_timeout: timeout,
           max_heap_size: pos_integer,
+          durable: boolean,
           limits: %{max_active: pos_integer | nil, rate: {pos_integer, pos_integer} | nil}
         }
 
@@ -91,10 +99,12 @@ defmodule Ramal.Supervisor do
   @impl true
   def init(opts) do
     # init/1 runs in the supervisor process, so the tables are owned by it and live exactly as long as it does.
-    create_table(Ramal.Storage.ETS)
+    create_table(ETS)
+    create_table(ETS.writes_table(), :ordered_set)
     create_table(__MODULE__)
     config = build_config(opts)
     check_cluster!(config)
+    check_durable!(config)
     :persistent_term.put(@config_key, config)
 
     children = [
@@ -117,9 +127,18 @@ defmodule Ramal.Supervisor do
 
   defp check_cluster!(_config), do: :ok
 
-  defp create_table(name) do
+  # Every branch would fail to be created, so say so once, at start, instead.
+  defp check_durable!(%{durable: true, storage: storage}) do
+    unless Ramal.Storage.durable?(storage) do
+      raise ArgumentError, Exception.message(Ramal.Storage.durability_unsupported(storage))
+    end
+  end
+
+  defp check_durable!(_config), do: :ok
+
+  defp create_table(name, type \\ :set) do
     if :ets.whereis(name) == :undefined do
-      :ets.new(name, [:named_table, :public, :set, read_concurrency: true])
+      :ets.new(name, [:named_table, :public, type, read_concurrency: true])
     end
   end
 
@@ -139,6 +158,7 @@ defmodule Ramal.Supervisor do
         :cluster,
         :idle_timeout,
         :max_heap_size,
+        :durable,
         :max_active_branches,
         :branch_rate
       ])
@@ -149,6 +169,7 @@ defmodule Ramal.Supervisor do
       storage_config: storage_config,
       idle_timeout: Keyword.get(known, :idle_timeout, @default_idle_timeout),
       max_heap_size: Keyword.get(known, :max_heap_size, @default_max_heap_size),
+      durable: Keyword.get(known, :durable, false) == true,
       limits: Ramal.Limits.build(known)
     }
   end

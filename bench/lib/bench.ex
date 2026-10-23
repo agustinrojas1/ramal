@@ -34,6 +34,7 @@ defmodule Bench do
     :write,
     :merge,
     :fingerprint,
+    :durable,
     :tree_search
   ]
 

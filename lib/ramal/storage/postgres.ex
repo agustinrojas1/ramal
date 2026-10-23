@@ -16,6 +16,10 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     `epoch` (bigint, default 0) is the fencing token of a cluster (ADR 0044): `claim/2` increments it, and `put/2` and
     `mark_merged/2` of a branch that carries an epoch write only while the row still has it. Nothing reads it
     without `cluster: true`, so a table without the column works as before; `mix ramal.gen.migration` adds it.
+    The write log of a durable branch (ADR 0048) is in `ramal_branch_writes`: one row per action that ended, with the
+    branch's `id`, the `seq` of the delta and the delta (jsonb) as `Ramal.Storage.Codec.encode_delta/1` writes it. The
+    last migration `mix ramal.gen.migration` writes creates it, with the branch id as a foreign key that cascades, so
+    deleting a branch deletes its log. Without the table everything but `durable: true` works.
     The branch process calls this module from its own process, so the repo's pool serves it like any other
     caller. The module exists only when Ecto SQL is a dependency of the host.
 
@@ -32,6 +36,7 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     alias Ramal.Storage.Codec
 
     @table "ramal_branches"
+    @writes "ramal_branch_writes"
     @columns "id, domain, name, status, state"
 
     @doc """
@@ -80,7 +85,7 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
                epoch
              ]) do
         case result.num_rows do
-          1 -> :ok
+          1 -> drop_covered(repo, id, branch)
           # No row updated: another process holds the branch now, the row is gone, or it is merged and this write is
           # not. Only the first two are a refusal; the third is the merged guard, which leaves the row as it is.
           0 -> fenced_or_guarded(repo, id, branch, epoch)
@@ -101,8 +106,102 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
                state,
                DateTime.to_naive(branch.inserted_at)
              ]) do
+        drop_covered(repo, id, branch)
+      end
+    end
+
+    # The snapshot is written first and the deltas it covers deleted after it, so a failure between the two leaves
+    # deltas that `writes_after/2` ignores (`seq <= wal`) and the next snapshot deletes. Nothing is read or deleted for
+    # a branch that is not durable, or has not appended yet, so they need not have the table.
+    defp drop_covered(repo, id, %Branch{durable: true, wal: wal}) when wal > 0 do
+      with {:ok, _result} <-
+             query(repo, "DELETE FROM #{@writes} WHERE branch_id = $1 AND seq <= $2", [id, wal]) do
         :ok
       end
+    end
+
+    defp drop_covered(_repo, _id, _branch), do: :ok
+
+    # The delta of a process that holds an epoch is stored only while the row still has it. The row is locked FOR SHARE
+    # by the same statement, so a `claim/2` (an UPDATE of the row) waits for the insert, and the process that claims
+    # next reads a log with every delta this one was told was stored; and an insert that finds the claim done sees the
+    # new epoch (READ COMMITTED re-evaluates the WHERE on the updated row) and stores nothing.
+    @fenced_append """
+    INSERT INTO #{@writes} (branch_id, seq, delta)
+    SELECT id, $2, $3 FROM #{@table} WHERE id = $1 AND epoch = $4 FOR SHARE
+    """
+
+    @impl true
+    def append(%Branch{epoch: epoch} = branch, seq, delta, config) when is_integer(epoch) do
+      with {:ok, repo} <- repo(config),
+           {:ok, id} <- dump_id(branch.id),
+           {:ok, encoded} <- Codec.encode_delta(delta),
+           {:ok, result} <- query(repo, @fenced_append, [id, seq, encoded, epoch]) do
+        case result.num_rows do
+          1 -> :ok
+          0 -> refused_append(repo, id, branch, epoch)
+        end
+      end
+    end
+
+    def append(%Branch{} = branch, seq, delta, config) do
+      with {:ok, repo} <- repo(config),
+           {:ok, id} <- dump_id(branch.id),
+           {:ok, encoded} <- Codec.encode_delta(delta),
+           {:ok, _result} <-
+             query(repo, "INSERT INTO #{@writes} (branch_id, seq, delta) VALUES ($1, $2, $3)", [
+               id,
+               seq,
+               encoded
+             ]) do
+        :ok
+      end
+    end
+
+    # One statement, so the epoch and the log are read together: a branch that another process claimed since has no log
+    # to give this one.
+    @fenced_writes_after """
+    SELECT b.epoch, w.seq, w.delta FROM #{@table} b
+    LEFT JOIN #{@writes} w ON w.branch_id = b.id AND w.seq > $2
+    WHERE b.id = $1 ORDER BY w.seq
+    """
+
+    @impl true
+    def writes_after(%Branch{epoch: epoch} = branch, config) when is_integer(epoch) do
+      with {:ok, repo} <- repo(config),
+           {:ok, id} <- dump_id(branch.id),
+           {:ok, result} <- query(repo, @fenced_writes_after, [id, branch.wal]) do
+        held_writes(branch, epoch, result.rows)
+      end
+    end
+
+    def writes_after(%Branch{} = branch, config) do
+      with {:ok, repo} <- repo(config),
+           {:ok, id} <- dump_id(branch.id),
+           {:ok, result} <-
+             query(
+               repo,
+               "SELECT seq, delta FROM #{@writes} WHERE branch_id = $1 AND seq > $2 ORDER BY seq",
+               [id, branch.wal]
+             ) do
+        result.rows |> Enum.map(&decode_write(branch.id, &1)) |> collect()
+      end
+    end
+
+    defp held_writes(branch, epoch, [[epoch | _] | _] = rows) do
+      rows
+      |> Enum.reject(fn [_epoch, seq, _delta] -> is_nil(seq) end)
+      |> Enum.map(fn [_epoch, seq, stored] -> decode_write(branch.id, [seq, stored]) end)
+      |> collect()
+    end
+
+    defp held_writes(_branch, _epoch, []), do: {:ok, []}
+
+    defp held_writes(branch, epoch, _other_epoch),
+      do: {:error, Ramal.Storage.fenced(branch.id, epoch)}
+
+    defp decode_write(id, [seq, stored]) do
+      with {:ok, delta} <- Codec.decode_delta(id, stored), do: {:ok, {seq, delta}}
     end
 
     # The WHERE of DO UPDATE leaves a row that is already merged as it is and returns nothing for it: the check and the
@@ -279,6 +378,24 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
       end
     end
 
+    # An append that stored nothing: the row is gone, or another process claimed the branch.
+    defp refused_append(repo, id, branch, epoch) do
+      case query(repo, "SELECT epoch FROM #{@table} WHERE id = $1", [id]) do
+        {:ok, %{rows: [[_other]]}} ->
+          {:error, Ramal.Storage.fenced(branch.id, epoch)}
+
+        {:ok, _no_row} ->
+          {:error,
+           Error.new(
+             :storage,
+             "branch #{inspect(branch.id)} is not stored, so it has no write log"
+           )}
+
+        {:error, _} = error ->
+          error
+      end
+    end
+
     defp refused_mark(repo, id, branch, epoch) do
       case query(repo, "SELECT epoch, status FROM #{@table} WHERE id = $1", [id]) do
         {:ok, %{rows: [[^epoch, "merged"]]}} -> {:error, Ramal.Storage.already_merged(branch.id)}
@@ -351,7 +468,7 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     defp failed(exception) do
       Error.new(
         :storage,
-        "Postgres storage failed: #{Exception.message(exception)}; is the ramal_branches table migrated (mix ramal.gen.migration writes what is missing, the owner column included)?",
+        "Postgres storage failed: #{Exception.message(exception)}; are the ramal_branches table and, for a durable branch, the ramal_branch_writes table migrated (mix ramal.gen.migration writes what is missing)?",
         %{exception: exception}
       )
     end

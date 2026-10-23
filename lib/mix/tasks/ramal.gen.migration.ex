@@ -8,13 +8,14 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
         $ mix ramal.gen.migration
         $ mix ramal.gen.migration -r MyApp.Repo
 
-    Three migrations make the table: `create_ramal_branches`; `add_ramal_branch_owner`, which adds the `owner` column
-    Postgres generates from `state -> 'owner'` and its index (ADR 0021); and `add_ramal_branch_epoch`, which adds the
-    `epoch` column a cluster fences writes with (ADR 0044). A new install gets all three. A host that installed
-    0.3.0 or earlier already has the first and gets the other two; it is safe to run on a table that has the columns.
-    Adding `owner` rewrites the table once, which is small; adding `epoch` does not rewrite it. The task writes whichever
-    of the three are missing and refuses when none is. The epoch is only read with `cluster: true`, so a host that does not
-    run a cluster can skip that migration.
+    Four migrations make the tables: `create_ramal_branches`; `add_ramal_branch_owner`, which adds the `owner` column
+    Postgres generates from `state -> 'owner'` and its index (ADR 0021); `add_ramal_branch_epoch`, which adds the
+    `epoch` column a cluster fences writes with (ADR 0044); and `create_ramal_branch_writes`, the table of the write log
+    of durable branches (ADR 0048). A new install gets all four. A host that installed 0.3.0 or earlier already has the
+    first and gets the others; it is safe to run on a table that has the columns. Adding `owner` rewrites the table once,
+    which is small; adding `epoch` does not rewrite it. The task writes whichever of the four are missing and refuses
+    when none is. The epoch is only read with `cluster: true`, and the write log only by branches with `durable: true`,
+    so a host that uses neither can skip those migrations.
 
     The files go where `mix ecto.gen.migration` would put them: `priv/<repo>/migrations`, or the directory given with
     `--migrations-path`.
@@ -31,6 +32,7 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
         * creating priv/repo/migrations/20261022120000_create_ramal_branches.exs
         * creating priv/repo/migrations/20261022120001_add_ramal_branch_owner.exs
         * creating priv/repo/migrations/20261022120002_add_ramal_branch_epoch.exs
+        * creating priv/repo/migrations/20261022120003_create_ramal_branch_writes.exs
     """
 
     use Mix.Task
@@ -48,6 +50,7 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
     @create "create_ramal_branches"
     @owner "add_ramal_branch_owner"
     @epoch "add_ramal_branch_epoch"
+    @writes "create_ramal_branch_writes"
 
     @impl true
     def run(args) do
@@ -63,7 +66,8 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
           [
             {@create, &create_template/1},
             {@owner, &owner_template/1},
-            {@epoch, &epoch_template/1}
+            {@epoch, &epoch_template/1},
+            {@writes, &writes_template/1}
           ]
           |> Enum.reject(fn {name, _template} ->
             Path.wildcard(Path.join(path, "*_#{name}.exs")) != []
@@ -112,6 +116,28 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
           end
 
           create index(:ramal_branches, [:domain, :status])
+        end
+      end
+      """
+    end
+
+    # The deltas of a durable branch (ADR 0048). The composite key is the order of the log and makes a second writer of
+    # one `seq` fail instead of overwrite. The foreign key cascades, so deleting a branch deletes its log.
+    defp writes_template(repo) do
+      """
+      defmodule #{inspect(repo)}.Migrations.CreateRamalBranchWrites do
+        use Ecto.Migration
+
+        # Created by `mix ramal.gen.migration`. Only a branch with `durable: true` reads or writes it.
+        def change do
+          create table(:ramal_branch_writes, primary_key: false) do
+            add :branch_id, references(:ramal_branches, type: :uuid, on_delete: :delete_all),
+              primary_key: true,
+              null: false
+
+            add :seq, :bigint, primary_key: true, null: false
+            add :delta, :map, null: false
+          end
         end
       end
       """
