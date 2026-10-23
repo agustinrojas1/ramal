@@ -195,4 +195,111 @@ defmodule Ramal.MergeReplayTest do
       refute Keyword.has_key?(opts, :forced)
     end
   end
+
+  describe "bulk actions" do
+    test "a bulk update whose hooks create rows keeps each record's hook key, and a later update of one is replayed",
+         %{
+           branch: branch,
+           herds: herds,
+           paddocks: paddocks
+         } do
+      Ash.update!(paddocks.l18, %{capacity_head: 500}, authorize?: false)
+
+      move_ids =
+        inside(branch, fn ->
+          result =
+            Ash.bulk_update(Herd, :move_early, %{to_paddock_id: paddocks.l18.id},
+              authorize?: false,
+              strategy: [:stream],
+              return_errors?: true
+            )
+
+          assert result.status == :success
+          moves = Ash.read!(Move, authorize?: false)
+          assert length(moves) == 3
+
+          [first | _] = Enum.sort_by(moves, & &1.herd_id)
+          Ash.update!(first, %{moved_on: ~D[2026-01-01]}, authorize?: false)
+          Map.new(moves, &{&1.herd_id, &1.id})
+        end)
+
+      assert {:ok, %Result{replayed: 4}} =
+               Ramal.merge(branch, authorize?: false, actor: %{role: :admin})
+
+      assert Map.new(moves(), &{&1.herd_id, &1.id}) == move_ids
+
+      assert Map.keys(move_ids) |> Enum.sort() ==
+               herds |> Map.values() |> Enum.map(& &1.id) |> Enum.sort()
+
+      assert Enum.count(moves(), &(&1.moved_on == ~D[2026-01-01])) == 1
+    end
+
+    test "a bulk create of an action that creates a related row gives that row its branch key at merge",
+         %{
+           branch: branch
+         } do
+      result =
+        inside(branch, fn ->
+          Ash.bulk_create(
+            [
+              %{name: "B1", head: 1, paddock: %{name: "P1", hectares: 1.0, capacity_head: 1}},
+              %{name: "B2", head: 1, paddock: %{name: "P2", hectares: 1.0, capacity_head: 1}}
+            ],
+            Herd,
+            :create_with_paddock,
+            authorize?: false,
+            return_errors?: true,
+            return_records?: true
+          )
+        end)
+
+      assert result.status == :success
+
+      branch_paddocks =
+        inside(branch, fn ->
+          Paddock |> Ash.read!(authorize?: false) |> Map.new(&{&1.name, &1.id})
+        end)
+
+      assert {:ok, %Result{}} = Ramal.merge(branch, authorize?: false)
+      db = Paddock |> Ash.read!(authorize?: false) |> Map.new(&{&1.name, &1.id})
+      assert db["P1"] == branch_paddocks["P1"]
+      assert db["P2"] == branch_paddocks["P2"]
+    end
+
+    test "every record of a bulk upsert gets its own root, and the row it creates keeps its key at merge",
+         %{
+           branch: branch
+         } do
+      created =
+        inside(branch, fn ->
+          result =
+            Ash.bulk_create(
+              [
+                %{name: "L07", hectares: 41.0, capacity_head: 120},
+                %{name: "NEW", hectares: 5.0, capacity_head: 9}
+              ],
+              Paddock,
+              :upsert_capacity,
+              authorize?: false,
+              return_errors?: true,
+              return_records?: true
+            )
+
+          Enum.find(result.records, &(&1.name == "NEW"))
+        end)
+
+      {:ok, %{log: log}} = Ramal.get(branch.id)
+
+      roots =
+        Enum.map(log, fn {_type, _resource, _action, _params, _actor, opts, _at} ->
+          opts[:root]
+        end)
+
+      assert length(Enum.uniq(roots)) == 2
+      assert Enum.all?(roots, &is_integer/1)
+
+      assert {:ok, %Result{replayed: 2}} = Ramal.merge(branch, authorize?: false)
+      assert Ash.get!(Paddock, created.id, authorize?: false).name == "NEW"
+    end
+  end
 end

@@ -48,3 +48,6 @@ A merge replays each top-level log entry through its action with the entry's `pa
 - Every entry is a little larger (an integer under `root`); the entry of an action that sets nothing outside its input
   has no `forced`.
 - No change to the merge's transaction, the claim or the storage callbacks, so the TLA+ model is unchanged.
+- A bulk action runs record by record through the captured action (ADR 0036), so each record is an outermost action with
+  its own `root`, and an upsert (ADR 0038) is an entry like a create. Both get the key plan and `forced` without a
+  separate path; `test/ramal/merge_replay_test.exs` merges a bulk update whose hooks create a row per record.
