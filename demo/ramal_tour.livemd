@@ -1,6 +1,6 @@
 # Ramal: a guided tour
 
-[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fhexdocs.pm%2Framal%2Framal_tour.livemd)
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fagustinrojas1%2Framal%2Fmain%2Fdemo%2Framal_tour.livemd)
 
 [Ramal](https://github.com/agustinrojas1/ramal) gives an [Ash](https://ash-hq.org) application Git-style branches of its data. A branch is a process that holds changes in memory on top of your database, and nothing reaches the database until the branch is merged.
 
