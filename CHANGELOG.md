@@ -4,14 +4,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-### Changed
+## [0.9.1] - 2026-10-23
 
-- A read inside a branch looks up the primary key once, not once per row at each step, and skips re-ordering rows when the query loads no calculations. A wide read with 1,000 overlay rows takes about 0.5 to 1 ms less of its 15 ms.
+A patch release with two fixes: a branch no longer accepts an update or destroy of another tenant's record, and a damaged stored branch no longer crashes `Ramal.get/1` or hides every branch from `Ramal.list/2`. Reads in a branch are also a little faster. Upgrading from 0.9.0 needs no step beyond the version (and `ramal_live ~> 0.9.1`, which shares it).
 
 ### Changed
 
 - **`Ramal.list/2` skips a stored branch it cannot decode** (with `Ramal.Storage.Postgres`) instead of failing for the whole domain, and emits `[:ramal, :storage, :unreadable]` with the branch id, the domain and a message that holds no stored value. `Ramal.get/1` of that id still returns the `:storage` error. One damaged row, or one written by a newer Ramal during a rolling deploy, no longer hides every other branch from `list/2` and the inspector.
 - **Documented that a branch holds only the writes of create, update and destroy actions.** A generic action and the outside effects of a hook (an HTTP call, an email, an Oban job, a `Repo` write) run for real while a branch is open. SECURITY.md, `docs/limits.md` and `usage-rules.md` now say so and how to make a hook skip itself.
+- A read inside a branch looks up the primary key once, not once per row at each step, and skips re-ordering rows when the query loads no calculations. A wide read with 1,000 overlay rows takes about 0.5 to 1 ms less of its 15 ms.
 
 ### Fixed
 
@@ -325,7 +326,8 @@ Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspec
 - A multitenant resource used with a tenant inside a branch is refused with `:multitenancy_unsupported` (the `ensure_untenanted/2` check), instead of mixing tenants in one overlay or failing at merge.
 - Stored branches no longer hold the `sensitive?` attributes of an actor that is an Ash record (they are stored as `nil`); other actors are stored as before.
 
-[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/agustinrojas1/ramal/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/agustinrojas1/ramal/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/agustinrojas1/ramal/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/agustinrojas1/ramal/compare/v0.6.1...v0.7.0
