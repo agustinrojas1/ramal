@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs every check under verification/: the Bend proofs, then TLC on the TLA+ model. Each regression config must fail
-# on the property it names, which shows the model still sees the bug its fix closed (or the known limit it documents).
+# on the property it names, which shows the model still sees the bug its fix closed.
 #
 #   verification/check.sh            # both; needs java and bend, see README.md
 #   verification/check.sh tla        # only TLC
@@ -44,7 +44,7 @@ expect() {
 expect bug-pending.cfg NoPhantomWrite
 expect bug-overlay.cfg OverlayMatchesLog
 expect bug-marker.cfg OneMerger
-expect limit-node-crash.cfg NoClaimAfterCommit
-expect limit-merger-crash.cfg NoClaimAfterCommit
+expect bug-mark-node-crash.cfg NoClaimAfterCommit
+expect bug-mark-merger-crash.cfg NoClaimAfterCommit
 rm -f tlc.out
 echo "== all checks passed"

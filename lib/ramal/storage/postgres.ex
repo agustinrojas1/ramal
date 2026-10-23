@@ -42,12 +42,16 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     @spec table() :: String.t()
     def table, do: @table
 
+    # A merged row is only ever replaced by a merged branch (an approval adding its decision). A process that missed
+    # the merge, because the process that ran it died while the commit was in flight, would otherwise store the branch
+    # as open again when it unloads (ADR 0035).
     @upsert """
     INSERT INTO #{@table} (id, domain, name, status, state, inserted_at, updated_at)
     VALUES ($1, $2, $3, $4, $5, $6, $6)
     ON CONFLICT (id) DO UPDATE SET
       domain = EXCLUDED.domain, name = EXCLUDED.name, status = EXCLUDED.status,
       state = EXCLUDED.state, updated_at = now() AT TIME ZONE 'utc'
+    WHERE #{@table}.status <> 'merged' OR EXCLUDED.status = 'merged'
     """
 
     @impl true
@@ -65,6 +69,40 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
                DateTime.to_naive(branch.inserted_at)
              ]) do
         :ok
+      end
+    end
+
+    # The WHERE of DO UPDATE leaves a row that is already merged as it is and returns nothing for it: the check and the
+    # write are one statement, under the row lock the conflict takes.
+    @mark_merged """
+    INSERT INTO #{@table} (id, domain, name, status, state, inserted_at, updated_at)
+    VALUES ($1, $2, $3, 'merged', $4, $5, $5)
+    ON CONFLICT (id) DO UPDATE SET
+      domain = EXCLUDED.domain, name = EXCLUDED.name, status = EXCLUDED.status,
+      state = EXCLUDED.state, updated_at = now() AT TIME ZONE 'utc'
+    WHERE #{@table}.status <> 'merged'
+    RETURNING id
+    """
+
+    # Run inside the merge's transaction on the same repo, the row rolls back with a failed merge and commits with a
+    # successful one (ADR 0035).
+    @impl true
+    def mark_merged(%Branch{} = branch, config) do
+      with {:ok, repo} <- repo(config),
+           {:ok, id} <- dump_id(branch.id),
+           {:ok, state} <- Codec.encode_state(%{branch | status: :merged}),
+           {:ok, result} <-
+             query(repo, @mark_merged, [
+               id,
+               Atom.to_string(branch.domain),
+               branch.name,
+               state,
+               DateTime.to_naive(branch.inserted_at)
+             ]) do
+        case result.num_rows do
+          1 -> :ok
+          0 -> {:error, Ramal.Storage.already_merged(branch.id)}
+        end
       end
     end
 

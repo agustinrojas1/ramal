@@ -6,6 +6,7 @@ defmodule Ramal.Storage.CodecTest do
   alias Ramal.Test.Other.Note
 
   doctest Ramal.Storage.Codec
+  doctest Ramal.Storage
 
   setup do
     start_supervised!(Ramal.Supervisor)

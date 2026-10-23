@@ -314,7 +314,9 @@ model passes. The agent's own reads and writes are the host's tools, run in the 
 
 `Ramal.Storage` is a behaviour: `put(branch, config)`, `fetch(id, config)`, `delete(id, config)`,
 `list(domain, filters, config)` (which returns `{:ok, branches}` or `{:error, error}`) and the optional
-`count(domain, statuses, config)` (how many branches have one of the statuses; without it the limits count with `list`), where `config` is the `Ramal.Supervisor` options that are not its own (the Postgres
+`count(domain, statuses, config)` (how many branches have one of the statuses; without it the limits count with `list`) and
+`mark_merged(branch, config)` (stores the branch as merged unless it already is, called inside the merge's transaction,
+ADR 0035), where `config` is the `Ramal.Supervisor` options that are not its own (the Postgres
 backend reads `:repo` from it). Two implementations:
 
 - `Ramal.Storage.ETS`: a named table owned by `Ramal.Supervisor`. Default in tests and development. Lost on restart.
@@ -353,7 +355,9 @@ keyed by `{resource, key}`. On `merge/2`:
    run again, so a branch that was valid against a base that has since moved can legitimately fail here; that is the
    feature. An update or destroy of a row the staleness check just read (and locked) takes that row from there
    instead of reading it again, once per row; the reuse stops for good at the first entry a hook wrote.
-5. Mark the branch `:merged`, persist, stop the process. Return a `Ramal.Merge.Result` with the records the replay
+5. Still in the transaction, store the branch as `:merged` through the storage's `mark_merged/2`, which refuses a
+   branch it already holds as merged, so a merge that committed is never run again even when the process that ran it
+   died before it finished (ADR 0035). Then stop the process. Return a `Ramal.Merge.Result` with the records the replay
    produced, keyed like the overlay. On failure the claim is released and the branch stays open.
 
 Limits and the reasons for these choices are in [ADR 0007](adr/0007-merge.md).
@@ -514,3 +518,4 @@ action (ADR 0016).
 | 30 | An aggregate a read loads is recomputed after the patch from the related records read through the branch; kinds and shapes it cannot do keep the database's value and emit the unpatched event | The database's aggregate never saw the overlay, and a row the branch changed came back with `Ash.NotLoaded`. The cost is a read of the related rows per recomputed row. [ADR 0029](adr/0029-declared-aggregates-in-branches.md) |
 | 31 | A paginated read of a resource the overlay touches reads the whole patched list, cuts the page in Elixir and gives Ash the rows with `set_result` and the count with `full_count` | The database cannot page rows it does not have, and Ash fixes `more?` and `count` from the database before any hook after the data layer can speak. The cost is a read of every matching row per page. [ADR 0030](adr/0030-pages-cut-from-the-patched-list.md) |
 | 32 | A captured write is held under its action's process until the action ends: merges and proposals wait, forks leave it out, other writers of the row get `:row_busy`, a dead writer is undone; a process that died without `terminate/2` is not reloaded from storage | The TLA+ model (`verification/tla`) found merges, forks and proposals taking writes of actions that then failed, overlay and log diverging, and a killed process reloaded behind its own writes. [ADR 0033](adr/0033-running-actions-hold-their-writes.md) |
+| 33 | The merge's transaction stores the branch as merged and refuses a branch stored so; a branch process whose merger died asks the storage before releasing the claim; Postgres never stores a merged row back as open | A merge whose process died after the commit, or whose node restarted before the persist, left the branch open and mergeable a second time (TLA+ model, #143). [ADR 0035](adr/0035-merged-status-in-the-merge-transaction.md) |

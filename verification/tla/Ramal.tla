@@ -10,17 +10,17 @@
 (* The model abstracts the data: a base row is a version number, a write   *)
 (* is identified by the action that made it, and the overlay maps a key to *)
 (* the write that set it last. Ramal.Overlay and Ramal.Branch are proved   *)
-(* separately (verification/lean); this spec is about who sees what, when. *)
+(* separately (verification/bend); this spec is about who sees what, when. *)
 (*                                                                         *)
 (* Each step is one message a branch process handles, or one thing a       *)
 (* caller does between messages, which is the granularity at which the     *)
 (* BEAM interleaves them. The source line each step models is named.       *)
 (*                                                                         *)
-(* The constants FixPending and FixMarker switch on the two fixes this     *)
-(* model led to (verification/README.md); with either off, TLC finds the   *)
-(* bug it fixes. NodeCrashes and MergerCrashes allow the two failures ADR  *)
-(* 0023 and the README list as known limits, and TLC shows the double      *)
-(* merge each one allows.                                                  *)
+(* The constants FixPending, FixMarker and FixMergedMark switch on the     *)
+(* fixes this model led to (verification/README.md); with any of them off, *)
+(* TLC finds the bug it fixes. NodeCrashes and MergerCrashes allow the     *)
+(* node to restart and the process running a merge to die after the       *)
+(* commit; without FixMergedMark, TLC shows the double merge each allows.  *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -33,6 +33,7 @@ CONSTANTS
     MaxKills,       \* branch processes killed by max_heap_size
     FixPending,     \* the branch process knows which writes are of actions still running
     FixMarker,      \* a process that died without terminate/2 is not restarted from storage
+    FixMergedMark,  \* the merge transaction stores the branch as merged, and refuses one stored so (ADR 0035)
     NodeCrashes,    \* the node restarts: every process and ETS table is lost, storage stays
     MergerCrashes   \* the process running a merge dies after the commit, before finish_merge
 
@@ -76,7 +77,7 @@ EmptyOv == [k \in Keys |-> 0]
 Absent == [status |-> "absent", log |-> <<>>, fp |-> EmptyFp, ov |-> EmptyOv]
 DeadProc == [alive |-> FALSE, status |-> "absent", log |-> <<>>, fp |-> EmptyFp, ov |-> EmptyOv,
              claim |-> None, pending |-> {}]
-IdlePc == [op |-> "idle", b |-> Root, w |-> NoWrite, stage |-> "none", snap |-> <<>>,
+IdlePc == [op |-> "idle", b |-> Root, w |-> NoWrite, stage |-> "none", snap |-> <<>>, held |-> Absent,
            ignore |-> FALSE, committed |-> FALSE, result |-> "none"]
 
 Stored(p) == [status |-> p.status, log |-> p.log, fp |-> p.fp, ov |-> p.ov]
@@ -173,7 +174,9 @@ NodeCrash ==
     /\ watcherDue' = [b \in Branches |-> FALSE]
     /\ actState' = [a \in Acts |-> IF actState[a] = "running" THEN "crashed" ELSE actState[a]]
     /\ pc' = [c \in Clients |-> IdlePc]
-    /\ UNCHANGED <<db, store, nextAct, externals, kills, committed, replayed, forkCopy, acked>>
+    \* Writes not yet persisted live only in the process (Ramal.Storage), so a restart loses them by design.
+    /\ acked' = {w \in acked : w \in LogSet(store[w.branch].log)}
+    /\ UNCHANGED <<db, store, nextAct, externals, kills, committed, replayed, forkCopy>>
 
 \* Someone writes the base outside any branch.
 External(k) ==
@@ -284,25 +287,39 @@ Claim(c, b, from) ==
     /\ proc' = [proc EXCEPT ![b].claim = c]
     /\ \E ignore \in BOOLEAN :
          pc' = [pc EXCEPT ![c] = [IdlePc EXCEPT !.op = "merge", !.b = b, !.stage = "claimed",
-                                   !.snap = proc[b].log, !.ignore = ignore]]
+                                   !.snap = proc[b].log, !.held = Stored(proc[b]), !.ignore = ignore]]
     /\ UNCHANGED <<db, store, marker, tooLarge, watcherDue, actState, nextAct, externals, kills, crashes,
                    committed, replayed, forkCopy, acked>>
 
-\* Merge.merge/2: one transaction checks the fingerprints and replays the log, or rolls back.
+\* Merge.merge/3: one transaction checks the fingerprints, replays the log and, with FixMergedMark, stores the
+\* branch as merged (storage.mark_merged/2, in the same transaction), or rolls back.
 Stale(b) == {k \in Keys : proc[b].fp[k] # NoFp /\ proc[b].fp[k] # db[k]}
 RECURSIVE Replay(_, _)
 Replay(d, l) == IF l = <<>> THEN d ELSE Replay([d EXCEPT ![l[1].key] = @ + 1], Tail(l))
+StoredMerged(b) == store[b].status = "merged"
 
 Commit(c) ==
     LET b == pc[c].b IN
     /\ pc[c].op = "merge" /\ pc[c].stage = "claimed"
     /\ Stale(b) = {} \/ pc[c].ignore
+    /\ ~(FixMergedMark /\ StoredMerged(b))
     /\ db' = Replay(db, pc[c].snap)
     /\ committed' = [committed EXCEPT ![b] = @ + 1]
     /\ replayed' = [replayed EXCEPT ![b] = @ \union LogSet(pc[c].snap)]
     /\ pc' = [pc EXCEPT ![c].stage = "committed", ![c].committed = TRUE]
-    /\ UNCHANGED <<store, proc, marker, tooLarge, watcherDue, actState, nextAct, externals, kills, crashes,
+    /\ store' = IF FixMergedMark THEN [store EXCEPT ![b] = [pc[c].held EXCEPT !.status = "merged"]] ELSE store
+    /\ UNCHANGED <<proc, marker, tooLarge, watcherDue, actState, nextAct, externals, kills, crashes,
                    forkCopy, acked>>
+
+\* The mark finds the branch stored as merged by an earlier merge whose process this one did not hear of: the
+\* transaction rolls back, and finish_merge(:stored) stops the process as merged without writing.
+MarkRefused(c) ==
+    LET b == pc[c].b IN
+    /\ FixMergedMark /\ pc[c].op = "merge" /\ pc[c].stage = "claimed" /\ StoredMerged(b)
+    /\ IF proc[b].alive /\ proc[b].claim = c THEN Stop(b) ELSE UNCHANGED <<proc, marker>>
+    /\ pc' = [pc EXCEPT ![c] = IdlePc]
+    /\ UNCHANGED <<db, store, tooLarge, watcherDue, actState, nextAct, externals, kills, crashes,
+                   committed, replayed, forkCopy, acked>>
 
 \* The base is stale (on_stale: :error) or a replayed action fails: rolled back, then finish_merge(:aborted).
 Abort(c) ==
@@ -332,15 +349,21 @@ Forget(c) == /\ pc[c].op = "merge" /\ pc[c].stage = "done"
              /\ UNCHANGED <<db, store, proc, marker, tooLarge, watcherDue, actState, nextAct, externals,
                             kills, crashes, committed, replayed, forkCopy, acked>>
 
-\* A merging process dies between the commit and finish_merge: the monitor releases the claim.
+\* A merging process dies between the commit and finish_merge: the monitor releases the claim. With FixMergedMark
+\* the process first asks the storage, and stops as merged if the transaction stored it so (Server.stored_merged?/1).
 MergerDies(c) ==
     LET b == pc[c].b IN
     /\ crashes < MergerCrashes
     /\ pc[c].op = "merge" /\ pc[c].stage = "committed"
     /\ crashes' = crashes + 1
-    /\ proc' = IF proc[b].alive /\ proc[b].claim = c THEN [proc EXCEPT ![b].claim = None] ELSE proc
+    /\ IF proc[b].alive /\ proc[b].claim = c
+         THEN IF FixMergedMark /\ StoredMerged(b)
+                THEN Stop(b)
+                ELSE /\ proc' = [proc EXCEPT ![b].claim = None]
+                     /\ UNCHANGED marker
+         ELSE UNCHANGED <<proc, marker>>
     /\ pc' = [pc EXCEPT ![c] = IdlePc]
-    /\ UNCHANGED <<db, store, marker, tooLarge, watcherDue, actState, nextAct, externals, kills,
+    /\ UNCHANGED <<db, store, tooLarge, watcherDue, actState, nextAct, externals, kills,
                    committed, replayed, forkCopy, acked>>
 
 Next ==
@@ -349,7 +372,7 @@ Next ==
     \/ \E k \in Keys : External(k)
     \/ \E c \in Clients :
          \/ Succeed(c) \/ Fail(c) \/ Crash(c) \/ ForkIt(c)
-         \/ Commit(c) \/ Abort(c) \/ Finish(c) \/ Forget(c) \/ MergerDies(c)
+         \/ Commit(c) \/ MarkRefused(c) \/ Abort(c) \/ Finish(c) \/ Forget(c) \/ MergerDies(c)
          \/ \E b \in Branches :
               \/ Propose(c, b) \/ Claim(c, b, "open") \/ Claim(c, b, "proposed")
               \/ Close(c, b, {"proposed"}, "rejected") \/ Close(c, b, {"open", "proposed"}, "discarded")

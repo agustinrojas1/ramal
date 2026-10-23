@@ -15,11 +15,14 @@ defmodule Ramal.Merge do
        policies see the base as it is now. Entries marked `nested?` are skipped, because replaying the action that
        wrote them runs their hook again. An update or destroy of a row step 2 read and locked uses that row instead of
        reading it again, once per row, until the first entry a hook wrote.
-    4. On success the branch is marked `:merged`, persisted, and its process stops. On any failure the transaction is
-       rolled back and the branch stays open. Once the transaction has committed the merge is never reported as failed:
-       if the storage refuses the `:merged` write, `merge/2` returns `{:ok, result}` with the error in
-       `result.persist_failed`, and the branch process keeps the branch as merged and writes it again when it is idle
-       (ADR 0023, `docs/adr/0023-merge-commit-is-final.md`).
+    4. Still in the transaction, the storage's `mark_merged/2` stores the branch as `:merged`, or refuses a branch it
+       already holds as merged (an earlier merge committed and its process died before finishing); with Postgres
+       storage on the resources' repo the merged row commits with the replay (ADR 0035,
+       `docs/adr/0035-merged-status-in-the-merge-transaction.md`). On success the process stops. On any failure the
+       transaction is rolled back and the branch stays open. Once the transaction has committed the merge is never
+       reported as failed: if the storage has no `mark_merged/2` and refuses the `:merged` write after the commit, or
+       refuses an approval's decision, `merge/2` returns `{:ok, result}` with the error in `result.persist_failed`, and
+       the branch process keeps the branch as merged and writes it again when it is idle (ADR 0023).
 
   Rows a replayed create writes keep the primary key they had in the branch (the key is forced onto the changeset), so
   later log entries and the branch's own diff still name the right rows.
@@ -48,7 +51,7 @@ defmodule Ramal.Merge do
 
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
-  alias Ramal.{Current, Error, Overlay, Resource, Telemetry}
+  alias Ramal.{Current, Error, Overlay, Resource, Supervisor, Telemetry}
   alias Ramal.Merge.Result
 
   @lock :for_update
@@ -126,15 +129,28 @@ defmodule Ramal.Merge do
   end
 
   defp claim_and_merge(id, opts, from, decide) do
-    with {:ok, branch} <- Server.begin_merge(id, from),
-         {:ok, result} <- merge_or_release(id, branch, opts) do
-      annotate = if(decide, do: decide.(result), else: & &1)
-      {:ok, finish(id, %{result | branch: annotate.(result.branch)}, annotate)}
+    with {:ok, config} <- Supervisor.config(),
+         {:ok, branch} <- Server.begin_merge(id, from),
+         {:ok, result, marked?} <- merge_or_release(id, branch, opts, config) do
+      {:ok, finish(id, result, marked?, decide)}
     end
   end
 
-  # The replay has committed, so nothing here may turn the merge into an error: a branch that is merged in the database
-  # and open in storage can be merged a second time (ADR 0023). A failed persist is reported in the result.
+  # The transaction stored the merged branch; with no decision to add there is nothing left to write.
+  defp finish(id, result, true = _marked?, nil = _decide) do
+    Server.finish_merge(id, :stored)
+    result
+  end
+
+  defp finish(id, result, _marked?, decide) do
+    annotate = if(decide, do: decide.(result), else: & &1)
+    finish(id, %{result | branch: annotate.(result.branch)}, annotate)
+  end
+
+  # The replay has committed, so nothing here may turn the merge into an error. Without a merged marker a branch that
+  # is merged in the database and open in storage can be merged a second time (ADR 0023); with one, the storage already
+  # holds it as merged and this write only adds the approval's decision (ADR 0035). A failed persist is reported in the
+  # result.
   defp finish(id, result, annotate) do
     case Server.finish_merge(id, :merged, annotate) do
       :ok ->
@@ -151,23 +167,60 @@ defmodule Ramal.Merge do
 
   defp persist_failed(result, error), do: %{result | persist_failed: error}
 
-  # The claim is released on every way out except success, so a failed or crashed merge leaves the branch open.
-  defp merge_or_release(id, branch, opts) do
-    case merge(branch, opts) do
-      {:ok, _result} = ok ->
-        ok
+  # The claim is released on every way out except success, so a failed or crashed merge leaves the branch open. A
+  # branch the storage already holds as merged was merged by an earlier claim whose process died before finishing: the
+  # process takes the stored status instead (ADR 0035).
+  defp merge_or_release(id, branch, opts, config) do
+    case merge(branch, opts, config) do
+      {:ok, result} ->
+        {:ok, result, unmark(branch, config, :committed)}
+
+      {:error, %Error{reason: :not_open, details: %{status: :merged}}} = error ->
+        unmark(branch, config, :committed)
+        Server.finish_merge(id, :stored)
+        error
 
       {:error, _} = error ->
+        unmark(branch, config, :rolled_back)
         Server.finish_merge(id, :aborted)
         error
     end
   catch
     kind, reason ->
+      unmark(branch, config, :rolled_back)
       Server.finish_merge(id, :aborted)
       :erlang.raise(kind, reason, __STACKTRACE__)
   end
 
-  defp merge(branch, opts) do
+  # Whether the transaction marked the branch merged in storage. The mark is the last step of the transaction, so it was
+  # made only if everything before it succeeded; if the commit then failed, a storage that could not join the
+  # transaction (ETS, or Postgres on another repo) still says merged, and the open branch is put back.
+  defp unmark(branch, config, outcome) do
+    marked? = Process.delete({__MODULE__, :marked, branch.id}) == true
+
+    if marked? and outcome == :rolled_back do
+      config.storage.put(branch, config.storage_config)
+    end
+
+    marked?
+  end
+
+  defp mark_merged(branch, config) do
+    with true <- marks?(config.storage),
+         :ok <- config.storage.mark_merged(branch, config.storage_config) do
+      Process.put({__MODULE__, :marked, branch.id}, true)
+      :ok
+    else
+      false -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp marks?(storage) do
+    Code.ensure_loaded?(storage) and function_exported?(storage, :mark_merged, 2)
+  end
+
+  defp merge(branch, opts, config) do
     entries = branch.log |> Enum.reverse() |> Enum.with_index()
 
     resources =
@@ -181,7 +234,8 @@ defmodule Ramal.Merge do
     resources
     |> Ash.transact(fn ->
       with {:ok, stale, fetched} <- check_staleness(branch, opts),
-           {:ok, records, replayed} <- replay(entries, fetched, opts) do
+           {:ok, records, replayed} <- replay(entries, fetched, opts),
+           :ok <- mark_merged(branch, config) do
         {stale, records, replayed}
       end
     end)

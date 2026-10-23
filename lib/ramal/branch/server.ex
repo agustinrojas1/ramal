@@ -356,16 +356,17 @@ defmodule Ramal.Branch.Server do
 
   @doc """
   Ends the claim of `begin_merge/1`. `:merged` applies `annotate` to the branch (an approval records its decision
-  there), marks it merged, persists it and stops the process; `:aborted` only releases the claim.
+  there), marks it merged, persists it and stops the process; `:stored` marks it merged and stops without writing,
+  because the storage already holds it as merged (ADR 0035); `:aborted` only releases the claim.
 
   The merge has committed by the time `:merged` is sent, so a storage failure is not an error of the merge. The process
   keeps the branch as `:merged` (it refuses writes and a second merge), answers `{:persist_failed, error}`, and writes
   it again at its next idle timeout (ADR 0023).
   """
-  @spec finish_merge(String.t(), :merged | :aborted, (Branch.t() -> Branch.t())) ::
+  @spec finish_merge(String.t(), :merged | :stored | :aborted, (Branch.t() -> Branch.t())) ::
           :ok | {:persist_failed, Error.t()} | {:error, Error.t()}
   def finish_merge(id, outcome, annotate \\ & &1)
-      when outcome in [:merged, :aborted] and is_function(annotate, 1),
+      when outcome in [:merged, :stored, :aborted] and is_function(annotate, 1),
       do: persisting_call(id, {:finish_merge, outcome, annotate})
 
   @doc """
@@ -607,6 +608,9 @@ defmodule Ramal.Branch.Server do
       :aborted ->
         reply(state, :ok)
 
+      :stored ->
+        stop_merged(state)
+
       :merged ->
         branch = %{annotate.(state.branch) | status: :merged}
 
@@ -692,10 +696,17 @@ defmodule Ramal.Branch.Server do
     end
   end
 
-  # The merging process died without finishing: release the claim so the branch can be merged again.
+  # The merging process died without finishing. If its transaction committed, a storage that marks merges inside the
+  # transaction says so, and the process takes that status; otherwise the claim is released so the branch can be merged
+  # again (ADR 0035). A commit still in flight can read as open here; the mark refuses the second merge then.
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{merging: ref} = state) do
     state = %{state | merging: nil}
-    {:noreply, state, timeout(state)}
+
+    if stored_merged?(state) do
+      {:stop, :normal, merged_state(state)}
+    else
+      {:noreply, state, timeout(state)}
+    end
   end
 
   # A process died in the middle of an action: the action did not happen, so its writes are taken back, as a database
@@ -917,6 +928,19 @@ defmodule Ramal.Branch.Server do
   end
 
   defp persist(branch, config), do: config.storage.put(branch, config.storage_config)
+
+  defp stop_merged(state), do: {:stop, :normal, :ok, merged_state(state)}
+
+  defp merged_state(state) do
+    %{state | branch: %{state.branch | status: :merged}, stop: :merged, persisted: true}
+  end
+
+  defp stored_merged?(%{branch: branch, config: config}) do
+    storage = config.storage
+
+    Code.ensure_loaded?(storage) and function_exported?(storage, :mark_merged, 2) and
+      match?({:ok, %{status: :merged}}, storage.fetch(branch.id, config.storage_config))
+  end
 
   # The kill from max_heap_size is untrappable, so the dying process cannot report it. A watcher process, unlinked,
   # monitors it instead. Exit reason :killed is also what an external `Process.exit(pid, :kill)` produces; such a

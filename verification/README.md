@@ -10,7 +10,7 @@ and tests tie the two together (see [How the models meet the code](#how-the-mode
 
 ```sh
 verification/check.sh          # both
-verification/check.sh tla      # about 1.5 minutes on 4 cores
+verification/check.sh tla      # about 4 minutes on 4 cores
 verification/check.sh bend     # under a second
 ```
 
@@ -26,8 +26,8 @@ kernel check, which needs Lean 4.34.0 (`elan toolchain install leanprover/lean4:
 A step is one message a branch process handles, or what a caller does between two messages, which is how the BEAM
 interleaves them; each step names the function it models (`Server.begin_merge/2`, `Capture.rollback/3`, ...).
 
-**Properties** (all hold in [`MC.cfg`](tla/MC.cfg): 2 callers, 1 row, 2 actions, a fork, 1 outside write, 1 heap kill;
-3,009,554 distinct states, depth 26):
+**Properties** (all hold in [`MC.cfg`](tla/MC.cfg): 2 callers, 1 row, 2 actions, a fork, 1 outside write, 1 heap kill,
+and either a node restart or a merger that dies after its commit; 5,457,656 distinct states, depth 24):
 
 | property | meaning |
 |---|---|
@@ -40,29 +40,30 @@ interleaves them; each step names the function it models (`Server.begin_merge/2`
 | `CommitIsFinal` | a merge reported as failed did not commit (ADR 0023) |
 | `StatusMonotonic` | a stored status only moves forward, and merged, rejected and discarded are final |
 
-**Bugs it found**, each confirmed by a test in `test/ramal/running_actions_test.exs` that failed before the fix
-([ADR 0033](../docs/adr/0033-running-actions-hold-their-writes.md)). A config with the fix switched off shows each one:
+**Bugs it found**, each confirmed by a test that failed before the fix (`test/ramal/running_actions_test.exs`,
+[ADR 0033](../docs/adr/0033-running-actions-hold-their-writes.md); `test/ramal/merged_marker_test.exs`,
+[ADR 0035](../docs/adr/0035-merged-status-in-the-merge-transaction.md)). A config with the fix switched off shows each one:
 
 | config | what TLC finds without the fix |
 |---|---|
 | [`bug-pending.cfg`](tla/bug-pending.cfg) | an action writes, another caller forks (or merges, or proposes) the branch, then the action fails or its process dies: its undo is refused, and the fork, merge or proposal keeps a write whose action failed |
 | [`bug-overlay.cfg`](tla/bug-overlay.cfg) | two actions write the same row, the first one fails: its undo restores the entry from before both, so reads lose the second write but the log, and so the merge, keeps it |
 | [`bug-marker.cfg`](tla/bug-marker.cfg) | the process holding a claimed merge is killed for its heap and reloaded from storage before its watcher marks it: a second caller claims the same branch while the first still holds its claim, and both can commit |
+| [`bug-mark-node-crash.cfg`](tla/bug-mark-node-crash.cfg) | the node restarts after a merge committed and before the merged branch was stored: storage has it open, and it is merged again |
+| [`bug-mark-merger-crash.cfg`](tla/bug-mark-merger-crash.cfg) | the process running a merge dies after the commit and before `finish_merge`: the claim is released and the branch is merged again |
 
-**Known limits**, shown the same way and documented rather than fixed:
-
-| config | what happens |
-|---|---|
-| [`limit-node-crash.cfg`](tla/limit-node-crash.cfg) | the node restarts after a merge committed and before the merged branch was stored: storage has it open, and it can be merged again (ADR 0023) |
-| [`limit-merger-crash.cfg`](tla/limit-merger-crash.cfg) | the process running a merge dies after the commit and before `finish_merge`: the claim is released and the branch can be merged again |
-
-In both, a second merge is refused as `:stale` for every row the branch fingerprinted, and fails on the primary key for
-every row it created, unless the caller passes `on_stale: :ignore`; the model lets the caller pass it.
+In the last two, a second merge was refused as `:stale` for every row the branch fingerprinted, and failed on the
+primary key for every row it created, unless the caller passed `on_stale: :ignore`; the model lets the caller pass it.
+The fix stores the branch as merged inside the merge's transaction (`Commit` with `FixMergedMark`), and the model takes
+that write as atomic with the commit, which holds for Postgres storage on the resources' repo. For ETS storage, or
+Postgres on another repo, the mark is written just before the commit and outside it (ADR 0035); the model does not
+cover a merger killed in that instant.
 
 **Abstractions.** A row is a version number and an action makes one write; nested writes, policies and validations are
 not modelled. Storage writes are atomic and may fail; a failed one changes nothing. The Registry, the watcher and the
-running marks are modelled as what they decide, not as processes. The model is bounded: what TLC proves holds for the
-sizes in `MC.cfg`, and larger sizes are left out to keep the check under two minutes.
+running marks are modelled as what they decide, not as processes. A node restart loses the writes not yet persisted, as
+Ramal documents, so `NoLostWrite` asks only for the writes that survived it. The model is bounded: what TLC proves holds for the
+sizes in `MC.cfg`, and larger sizes are left out to keep the check to a few minutes.
 
 ## Bend: the data rules
 
