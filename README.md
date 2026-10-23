@@ -42,7 +42,7 @@ end)
 
 {:ok, copy}    = Ramal.fork(branch)                  # a second branch that starts where this one is
 {:ok, changes} = Ramal.diff(branch)                  # a list of %Ramal.Change{}, computed without querying the database
-{:ok, result}  = Ramal.merge(branch, actor: admin)   # replays the branch through the real actions, in one transaction
+{:ok, merged}  = Ramal.merge(branch, actor: admin)   # replays the branch through the real actions, in one transaction
 :ok            = Ramal.discard(copy)
 ```
 
