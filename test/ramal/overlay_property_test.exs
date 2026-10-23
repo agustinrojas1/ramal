@@ -177,6 +177,35 @@ defmodule Ramal.OverlayPropertyTest do
     end
   end
 
+  property "patch with the selected entries returns what patch with the whole slice returns" do
+    check all(
+            operations <- operations(),
+            resource <- member_of(@resources),
+            threshold <- integer(0..5),
+            slack <- integer(0..3),
+            offset <- integer(0..3),
+            limit <- one_of([constant(nil), integer(0..4)]),
+            max_runs: 300
+          ) do
+      state = run(operations)
+      predicate = &(&1.v >= threshold)
+      # A sound prefilter rules out records that fail the predicate, and may let others through.
+      possible? = &(&1.v >= threshold - slack)
+      base = base_rows_matching(resource, predicate)
+      opts = [key: & &1.id, sort: &comparator/2, offset: offset, limit: limit]
+
+      {selected, count} =
+        Overlay.select(state.overlay, resource, Enum.map(base, & &1.id), possible?)
+
+      assert count == map_size(Overlay.slice(state.overlay, resource))
+
+      assert Overlay.patch(base, selected, predicate, opts) ==
+               Overlay.patch(base, Overlay.slice(state.overlay, resource), predicate, opts)
+
+      assert map_size(selected) <= count
+    end
+  end
+
   property "a fork's overlay is independent of its parent's later changes, and the other way round" do
     check all(
             shared <- operations(),

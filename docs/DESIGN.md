@@ -55,8 +55,8 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
 - `Ramal.Supervisor` (a `DynamicSupervisor` plus a `Registry` keyed by branch id). The host adds it to its tree:
   `{Ramal.Supervisor, storage: Ramal.Storage.Postgres, repo: MyApp.Repo}`.
 - Ramal.Branch.Server is a `GenServer` per open branch. State is the `%Ramal.Branch{}`. It owns the overlay and the
-  log; every write inside the branch is a `GenServer.call` to it, every read asks it for the overlay slice of one
-  resource. Reads of the overlay are frequent and small; if they become a bottleneck, the server publishes the
+  log; every write inside the branch is a `GenServer.call` to it, every read asks it for the part of one resource's
+  overlay that the read can use (ADR 0020). Reads of the overlay are frequent and small; if they become a bottleneck, the server publishes the
   overlay to an ETS table it owns. Not before the benchmark says so.
 - Idle branches unload: after `idle_timeout` (default 5 minutes, a `Ramal.Supervisor` option) the server persists its
   state through the storage backend and stops. If the storage refuses the write the process stays loaded, with its
@@ -101,7 +101,10 @@ This is the section that decides correctness. In a read action's preparation, wh
    returns only candidate rows. For OLTP-sized working sets this is cheap; for a query that would return a large
    result the host should not be in a branch. When the overlay has no entry for the resource, nothing is stripped and
    the database pages as usual.
-2. **After the data layer:** take the base results and the overlay slice for this resource, then:
+2. **After the data layer:** take the base results and the overlay entries this read can use, then (the branch process
+   hands over only the entries of the rows the base returned and the records that may satisfy the filter, so a read
+   costs what it returns, not the size of the overlay; Ramal.Prefilter rules records out with plain comparisons and
+   never one the filter accepts, ADR 0020):
    - drop every base row whose key is `:deleted` in the overlay;
    - replace every base row whose key is `:updated` with the overlay record;
    - add every `:created` and `:updated` overlay record that is not already present and that **matches the query's
@@ -449,3 +452,4 @@ action (ADR 0016).
 | 22 | `ramal_inspector` requires `:actor`; `Ramal.branch/2` and `Ramal.fork/2` can be limited per domain by `:max_active_branches` and `:branch_rate` of `Ramal.Supervisor`, both off by default | A page that acts for nobody lets anyone who reaches the route merge as no one, and an unlimited fork is a process and a row per call. The limits stay off so no host changes behaviour by upgrading. [ADR 0016](adr/0016-security-defaults.md) |
 | 23 | A branch has an optional `owner`, stored in the state JSON; `Ramal.list/2` takes `owner:` and `ramal_inspector` an `:owner` function, both off by default; an owner filters, it does not authorize | A host serving several users otherwise keeps its own id-to-user table to show each person their branches. A column would need a migration for hosts that do not scope. [ADR 0018](adr/0018-branch-owner.md) |
 | 24 | `Ramal.context/1` makes the shared context public; `Ramal.Tools` offers six branch tools as data and one `call/3`, without merge, approve or reject, scoped by host options; no dependency on `ash_ai` | Tool servers call Ash with `context:` and cannot use `run/2`; an agent proposes and a person decides; the roadmap rules out a dependency on an agent framework. [ADR 0019](adr/0019-agent-tools.md) |
+| 25 | A read asks the branch process for the overlay entries it can use, not the whole slice; Ramal.Prefilter rules out overlay records with plain comparisons before the runtime filter, and `Ramal.run/2` asks for the status alone | Copying the overlay to the caller and filtering every overlay record with `Ash.Filter.Runtime` made the cost of a read, and of a get-and-update, grow with the overlay (measured in `bench/`). [ADR 0020](adr/0020-read-selects-overlay.md) |

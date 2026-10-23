@@ -4,6 +4,7 @@ defmodule Ramal.PreparationTest do
 
   require Ash.Query
 
+  alias Ash.Filter.Runtime
   alias Ramal.{Branch.Server, Overlay}
   alias Ramal.Test.Farm.{HerdVet, Vet}
   alias Ramal.Test.Plain
@@ -130,6 +131,62 @@ defmodule Ramal.PreparationTest do
       assert read.(Ash.Query.filter(Herd, head == 30)) == []
       assert read.(Ash.Query.filter(Herd, name == "R7")) == []
       assert read.(Ash.Query.filter(Herd, head < 40)) == ["R8", "R9"]
+    end
+
+    test "a filtered read agrees with filtering the unfiltered read of the same branch", %{
+      branch: branch,
+      herds: h,
+      paddocks: p
+    } do
+      for i <- 1..40 do
+        put(branch, :created, new_herd(name: "N#{rem(i, 7)}", head: i, paddock_id: p.l18.id))
+      end
+
+      put(branch, :updated, %{h.r7 | head: 31, name: "R7b"})
+      put(branch, :updated, %{h.r8 | head: 5})
+      put(branch, :deleted, h.r9)
+
+      everything = inside(branch, fn -> Ash.read!(Herd, authorize?: false) end)
+      assert length(everything) == 3 + 40 - 1
+
+      filters = [
+        Ash.Query.filter(Herd, head > 20),
+        Ash.Query.filter(Herd, head <= 5 or head >= 38),
+        Ash.Query.filter(Herd, name == "R7b"),
+        Ash.Query.filter(Herd, name != "N3" and head < 30),
+        Ash.Query.filter(Herd, head not in [1, 2, 3, 31] and head < 33),
+        Ash.Query.filter(Herd, head in [5, 31, 99]),
+        Ash.Query.filter(Herd, contains(name, "N") and head > 10),
+        Ash.Query.filter(Herd, paddock_id == ^p.l07.id),
+        Ash.Query.filter(Herd, id == ^h.r9.id),
+        Ash.Query.filter(Herd, id == ^h.r7.id),
+        Ash.Query.filter(Herd, false)
+      ]
+
+      for query <- filters do
+        {:ok, expected} =
+          Runtime.filter_matches(Farm, everything, query.filter)
+
+        read = fn query -> inside(branch, fn -> Ash.read!(query, authorize?: false) end) end
+
+        assert read.(query) |> Enum.map(& &1.id) |> Enum.sort() ==
+                 expected |> Enum.map(& &1.id) |> Enum.sort(),
+               "filter #{inspect(query.filter)}"
+
+        sorted =
+          query
+          |> Ash.Query.sort(head: :desc, id: :asc)
+          |> Ash.Query.limit(4)
+          |> Ash.Query.offset(1)
+
+        assert read.(sorted) |> Enum.map(& &1.id) ==
+                 expected
+                 |> Enum.sort_by(&{-&1.head, &1.id})
+                 |> Enum.drop(1)
+                 |> Enum.take(4)
+                 |> Enum.map(& &1.id),
+               "filter #{inspect(query.filter)} sorted and paged"
+      end
     end
 
     test "a deleted row vanishes", %{branch: branch, herds: h} do
