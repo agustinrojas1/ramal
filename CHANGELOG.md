@@ -12,6 +12,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Fixed
 
 - `ramal_live`: a UUID in a diff (the row key and the before and after cells) no longer wraps in the middle of a group in the narrow column. It keeps to one line, cut short with an ellipsis, and the whole id is the tooltip.
+- `distinct` on a calculation inside a branch is applied over the branch's view, as 0.3.0 did for attributes: the base query is read without it and the patched rows are made distinct in memory with `Ash.Query.apply_to/3`, so a row the branch changed counts under its new value, a row it created gets its group, and a destroyed row no longer stands for one. A query that selects only some attributes, or a distinct on an aggregate, keeps the data layer's distinct and does not see the branch.
 
 ## [0.3.0] - 2026-10-23
 
