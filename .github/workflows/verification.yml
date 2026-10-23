@@ -1,0 +1,57 @@
+name: Verification
+
+# The formal models under verification/: the TLA+ model of the branch lifecycle, checked with TLC, and the Bend proofs
+# of the overlay and merge rules. Runs when they or the code they model change.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "verification/**"
+      - "lib/ramal/overlay.ex"
+      - "lib/ramal/branch.ex"
+      - "lib/ramal/branch/server.ex"
+      - "lib/ramal/capture.ex"
+      - "lib/ramal/merge.ex"
+      - ".github/workflows/verification.yml"
+
+jobs:
+  tla:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The runner image ships a JDK, which is all TLC needs.
+      - name: Install TLC 1.8.0
+        run: |
+          mkdir -p verification/.tools
+          curl -fsSL -o verification/.tools/tla2tools.jar \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+          echo "d4a12081bb7acd49d6d6158e818d8d69f8eb3f9a1f140cb39d20d50c4ce77f44  verification/.tools/tla2tools.jar" | sha256sum -c -
+      - name: Model-check
+        run: verification/check.sh tla
+
+  bend:
+    runs-on: ubuntu-latest
+    env:
+      BEND_NO_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Bend 2.0.38
+        run: |
+          name=bend-2.0.38-linux-x64.tar.gz
+          curl -fsSL -o "/tmp/$name" "https://github.com/bendlang/bend/releases/download/v2.0.38/$name"
+          echo "f19d088b079c9e1a8834ecd153b7d58c11a5f8f9ab1bdb78dbc96a6bf49aaa81  /tmp/$name" | sha256sum -c -
+          mkdir -p "$HOME/.bend/bin" && tar -xzf "/tmp/$name" -C /tmp
+          mv /tmp/bend/bend2 /tmp/bend/guide "$HOME/.bend/"
+          mv /tmp/bend/bin/bend "$HOME/.bend/bin/bend"
+          echo "$HOME/.bend/bin" >> "$GITHUB_PATH"
+      # --verdict checks the proofs again with BendTT, Bend's kernel proved in Lean; it builds the kernel with Lean.
+      - name: Install Lean 4.34.0 for the BendTT kernel
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o /tmp/elan-init.sh
+          sh /tmp/elan-init.sh -y --default-toolchain leanprover/lean4:v4.34.0
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Check the proofs
+        run: verification/check.sh bend
+        env:
+          BEND_FLAGS: --verdict

@@ -61,7 +61,10 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
 - Idle branches unload: after `idle_timeout` (default 5 minutes, a `Ramal.Supervisor` option) the server persists its
   state through the storage backend and stops. If the storage refuses the write the process stays loaded, with its
   overlay, and tries again at the next idle timeout (`[:ramal, :branch, :persist_failed]`). A branch is also persisted when it is created, discarded, and when the
-  supervisor shuts down; writes in between live only in the process (ADR 0003). `Ramal.branch/2`, `run/2`, `fork/1`, `diff/1`, `merge/2` and `discard/1` all accept a branch id and
+  supervisor shuts down; writes in between live only in the process (ADR 0003).
+- Running actions: a captured write belongs to its action until the action ends. The server keeps its undo under the
+  writer's pid and monitors it; a merge or a proposal waits for running actions, a fork leaves their writes out, another
+  process's write to the same row is refused (`:row_busy`), and a writer that dies is undone (ADR 0033). `Ramal.branch/2`, `run/2`, `fork/1`, `diff/1`, `merge/2` and `discard/1` all accept a branch id and
   rehydrate the process on demand. The host never needs to know whether the process is alive.
 - Limits: `max_active_branches` and `branch_rate`, `Ramal.Supervisor` options, both off by default. The internal module Ramal.Limits checks
   them in `branch/2` and `fork/2` before anything is created, per domain: the first caps the open and proposed branches
@@ -71,7 +74,8 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
 - Memory: the branch process points equal terms at one copy (`Ramal.Overlay.share/3`, `Ramal.Branch.share/1`): a message and an ETS table copy a term in full, so without it each row would cost its snapshot, its record and the bookkeeping fields of both. `max_heap_size` on the server process, a `Ramal.Supervisor` option, default 25 million words. A branch that
   exceeds it is killed and its last persisted state remains; a watcher process notices the untrappable kill, emits
   `[:ramal, :branch, :too_large]` and marks the branch, and the next use returns `{:error, :branch_too_large}` until
-  the branch is discarded (ADR 0003).
+  the branch is discarded (ADR 0003). A process also marks itself running and clears the mark in `terminate/2`, so one
+  that died unmarked is not loaded again from the storage it was ahead of (ADR 0033).
 - "Current branch" is process-local. `Ramal.run(branch, fun)` stores the branch id in the process dictionary
   (Ramal.Current) for the duration of `fun`, restoring the previous state afterwards even when `fun` raises. The
   first hook that runs also copies the id into the query's or changeset's Ash `shared` context, because Ash runs some
@@ -509,3 +513,4 @@ action (ADR 0016).
 | 29 | `Ramal.branch/2` refuses a domain with a resource that has write actions and neither uses `Ramal.Resource` nor opts out | A write to such a resource reached the database from inside a branch with no signal. [ADR 0024](adr/0027-domain-coverage.md) |
 | 30 | An aggregate a read loads is recomputed after the patch from the related records read through the branch; kinds and shapes it cannot do keep the database's value and emit the unpatched event | The database's aggregate never saw the overlay, and a row the branch changed came back with `Ash.NotLoaded`. The cost is a read of the related rows per recomputed row. [ADR 0029](adr/0029-declared-aggregates-in-branches.md) |
 | 31 | A paginated read of a resource the overlay touches reads the whole patched list, cuts the page in Elixir and gives Ash the rows with `set_result` and the count with `full_count` | The database cannot page rows it does not have, and Ash fixes `more?` and `count` from the database before any hook after the data layer can speak. The cost is a read of every matching row per page. [ADR 0030](adr/0030-pages-cut-from-the-patched-list.md) |
+| 32 | A captured write is held under its action's process until the action ends: merges and proposals wait, forks leave it out, other writers of the row get `:row_busy`, a dead writer is undone; a process that died without `terminate/2` is not reloaded from storage | The TLA+ model (`verification/tla`) found merges, forks and proposals taking writes of actions that then failed, overlay and log diverging, and a killed process reloaded behind its own writes. [ADR 0033](adr/0033-running-actions-hold-their-writes.md) |

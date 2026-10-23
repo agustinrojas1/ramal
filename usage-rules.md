@@ -80,6 +80,8 @@ test decides whether it happens.
   staleness check runs first, but a later `:merge_failed` lists `details.not_rolled_back`. Use Postgres where it matters.
 - **Notifications are dropped** for writes in a branch unless the resource has `ramal do notify_in_branch? true end`. They
   are not dropped when you use `Ramal.context/1`.
+- **Two processes writing one row of a branch**: while the first one's action runs, the second gets `:row_busy`; retry
+  once it ends. A merge or a proposal waits for running actions (up to four seconds), and a fork leaves their writes out.
 - **A proposed branch is frozen.** It refuses reads, writes and forks (`:not_open`); `diff/1` still works.
 - **Writes since the last save are lost** if the node crashes. A branch is saved on create, propose, discard, unload and
   shutdown, not on every write.

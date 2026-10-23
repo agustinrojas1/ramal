@@ -29,6 +29,10 @@ defmodule Ramal.Branch.Server do
   # How long a process started for a handed-over branch waits for it (see start_forked/2).
   @handoff_timeout 5_000
 
+  # How long a merge or a proposal waits for the actions running in the branch to end. Less than @call_timeout, so the
+  # process answers before its caller gives up and a claim is never granted to a caller that stopped waiting.
+  @wait_timeout 4_000
+
   # -- client side --------------------------------------------------------------------------------------------------
 
   @doc false
@@ -168,6 +172,12 @@ defmodule Ramal.Branch.Server do
       Supervisor.too_large?(id) ->
         {:error, too_large_error(id)}
 
+      # The process died without terminate/2 (a kill), and its watcher has not marked it yet. Storage is behind what the
+      # process held, so loading the branch from there would drop writes its callers were told succeeded.
+      Supervisor.running?(id) ->
+        Supervisor.mark_too_large(id)
+        {:error, too_large_error(id)}
+
       true ->
         with {:ok, branch} <- config.storage.fetch(id, config.storage_config) do
           start(branch, config)
@@ -179,14 +189,16 @@ defmodule Ramal.Branch.Server do
   def too_large_error(id) do
     Error.new(
       :branch_too_large,
-      "branch #{inspect(id)} exceeded max_heap_size and was stopped; its last persisted state remains, discard it or raise the limit",
+      "branch #{inspect(id)} exceeded max_heap_size and was stopped (or its process was killed); its last persisted " <>
+        "state remains, discard it or raise the limit",
       %{id: id}
     )
   end
 
   @doc """
   The branch for `Ramal.fork/2`. Rejected unless the branch is open and not claimed by a merge: the claimed branch's log
-  is about to be replayed, and a fork of it would replay the same writes a second time.
+  is about to be replayed, and a fork of it would replay the same writes a second time. The writes of actions that are
+  still running are left out, because those actions may yet fail and take them back.
   """
   @spec fork_source(String.t()) :: {:ok, Branch.t()} | {:error, Error.t()}
   def fork_source(id), do: call(id, :fork_source)
@@ -290,6 +302,43 @@ defmodule Ramal.Branch.Server do
   def write(id, fun) when is_function(fun, 1), do: call(id, {:write, fun})
 
   @doc """
+  Captures one write of an action (`Ramal.Capture`): like `write/2`, and when `fun` replies `{:ok, undo}` the process
+  keeps the undo under the calling process until the action ends (`release/1`) or takes the write back (`undo/2`). Until
+  then the write is the action's own, as an uncommitted row is a transaction's:
+
+    * a merge and a proposal wait for it, and a fork is taken without it;
+    * a write of the same row `ref` by another process is refused with `:row_busy`, as a row lock would make it wait;
+    * if the calling process dies, the write is taken back.
+
+  Rejected unless the branch is open, and while a merge or a proposal waits, for a process with no running action.
+  """
+  @spec capture(String.t(), Overlay.ref(), (Branch.t() -> {reply, Branch.t()})) ::
+          {:ok, reply, %{id: String.t(), domain: module}} | {:error, Error.t()}
+        when reply: term
+  def capture(id, ref, fun) when is_function(fun, 1), do: call(id, {:capture, ref, fun})
+
+  @doc """
+  Takes back writes of the calling process's running action (`Ramal.Branch.undo/2`) when the action failed.
+  """
+  @spec undo(String.t(), [Branch.undo()]) :: :ok | {:error, Error.t()}
+  def undo(id, undos), do: call(id, {:undo, undos})
+
+  @doc """
+  Tells the process that the calling process's action ended and its writes stand. Asynchronous: a later call of the same
+  process is handled after it. A branch with no process has no running action to end, so nothing is started for it.
+  """
+  @spec release(String.t()) :: :ok
+  def release(id) do
+    # A cast to a process that has just died is dropped, which is what a release of it needs; so no liveness check.
+    case Registry.lookup(Supervisor.registry(), id) do
+      [{pid, _}] -> GenServer.cast(pid, {:release, self()})
+      [] -> :ok
+    end
+
+    :ok
+  end
+
+  @doc """
   Claims the branch for a merge and returns it. While claimed the branch refuses reads of its overlay, writes, discards
   and a second claim, so two merges cannot replay the same log. The claim ends with `finish_merge/2`, or when the
   caller dies.
@@ -349,6 +398,7 @@ defmodule Ramal.Branch.Server do
          discarded = Branch.discard(branch),
          :ok <- config.storage.put(discarded, config.storage_config) do
       Supervisor.clear_too_large(id)
+      Supervisor.clear_running(id)
       Telemetry.branch(:discard, discarded)
       :ok
     end
@@ -357,8 +407,9 @@ defmodule Ramal.Branch.Server do
   # -- server side --------------------------------------------------------------------------------------------------
 
   @impl true
-  def init({:handoff, _id, ref, config}) do
+  def init({:handoff, id, ref, config}) do
     flags(config)
+    Supervisor.mark_running(id)
     {:ok, process_state(nil, config), {:continue, {:handoff, ref}}}
   end
 
@@ -367,6 +418,7 @@ defmodule Ramal.Branch.Server do
     branch = share(branch, config)
     watch(branch)
     Telemetry.branch(:load, branch)
+    Supervisor.mark_running(branch.id)
 
     {:ok, process_state(branch, config), config.idle_timeout}
   end
@@ -401,7 +453,11 @@ defmodule Ramal.Branch.Server do
       merging: nil,
       persisted: false,
       index: nil,
-      seen: nil
+      seen: nil,
+      # pid => %{monitor: ref, undos: [undo]}: the writes of actions that have not ended (capture/3)
+      running: %{},
+      # {tag, from, request, timer}: merges and proposals waiting for the running actions to end
+      waiting: []
     }
 
   @impl true
@@ -421,7 +477,7 @@ defmodule Ramal.Branch.Server do
 
   def handle_call(:fork_source, _from, state) do
     if usable?(state),
-      do: reply(state, {:ok, state.branch}),
+      do: reply(state, {:ok, without_running(state)}),
       else: reply(state, {:error, unavailable(state)})
   end
 
@@ -484,6 +540,44 @@ defmodule Ramal.Branch.Server do
     else
       reply(state, {:error, unavailable(state)})
     end
+  end
+
+  def handle_call({:capture, ref, fun}, {pid, _tag}, state) do
+    cond do
+      not usable?(state) ->
+        reply(state, {:error, unavailable(state)})
+
+      state.waiting != [] and not is_map_key(state.running, pid) ->
+        reply(state, {:error, closing(state)})
+
+      busy?(state, ref, pid) ->
+        reply(state, {:error, row_busy(state, ref)})
+
+      true ->
+        {reply, branch} = fun.(state.branch)
+        state = %{state | branch: branch}
+
+        state =
+          case reply do
+            {:ok, %{ref: _} = undo} -> hold(state, pid, undo)
+            _refused -> state
+          end
+
+        reply(state, {:ok, reply, %{id: branch.id, domain: branch.domain}})
+    end
+  end
+
+  def handle_call({:undo, undos}, {pid, _tag}, state) do
+    state = state |> take_back(undos) |> drop_undos(pid, undos)
+    reply(state, :ok)
+  end
+
+  # A merge or a proposal of a branch with actions running waits for them, as a lock would; see wait/3.
+  def handle_call({kind, _arg} = request, from, %{running: running} = state)
+      when kind in [:begin_merge, :propose] and map_size(running) > 0 do
+    if usable?(state),
+      do: wait(state, from, request),
+      else: reply(state, {:error, unavailable(state)})
   end
 
   def handle_call({:begin_merge, from}, {pid, _tag}, state) do
@@ -560,6 +654,7 @@ defmodule Ramal.Branch.Server do
   def handle_call(:discard, _from, %{merging: nil, branch: %{status: status}} = state)
       when status in [:open, :proposed, :discarded] do
     branch = Branch.discard(state.branch)
+    state = Enum.reduce(Map.keys(state.running), state, &drop_running(&2, &1))
 
     case persist(branch, state.config) do
       :ok ->
@@ -594,14 +689,54 @@ defmodule Ramal.Branch.Server do
     {:noreply, state, timeout(state)}
   end
 
+  # A process died in the middle of an action: the action did not happen, so its writes are taken back, as a database
+  # rolls back the transaction of a connection whose owner died.
+  def handle_info({:DOWN, ref, :process, pid, _reason}, %{running: running} = state)
+      when is_map_key(running, pid) do
+    state =
+      case running[pid] do
+        %{monitor: ^ref, undos: undos} ->
+          state |> take_back(undos) |> drop_running(pid) |> serve_waiting()
+
+        _other_monitor ->
+          state
+      end
+
+    {:noreply, state, timeout(state)}
+  end
+
+  def handle_info({:waited_too_long, tag}, state) do
+    case List.keytake(state.waiting, tag, 0) do
+      {{^tag, from, _request, _timer}, waiting} ->
+        GenServer.reply(from, {:error, busy_error(state)})
+        state = %{state | waiting: waiting}
+        {:noreply, state, timeout(state)}
+
+      nil ->
+        {:noreply, state, timeout(state)}
+    end
+  end
+
   def handle_info(_message, state), do: {:noreply, state, timeout(state)}
 
   @impl true
-  # A process that never received its branch has nothing to persist; storage already holds the fork.
-  def terminate(_reason, %{branch: nil}), do: :ok
-  def terminate(_reason, %{stop: stop}) when stop in [:discarded, :merged, :rejected], do: :ok
+  def handle_cast({:release, pid}, state) do
+    state = state |> drop_running(pid) |> serve_waiting()
+    {:noreply, state, timeout(state)}
+  end
 
-  def terminate(_reason, %{branch: branch, config: config, stop: stop, persisted: persisted}) do
+  @impl true
+  def terminate(reason, state) do
+    stopped(reason, state)
+  after
+    if state.branch, do: Supervisor.clear_running(state.branch.id)
+  end
+
+  # A process that never received its branch has nothing to persist; storage already holds the fork.
+  defp stopped(_reason, %{branch: nil}), do: :ok
+  defp stopped(_reason, %{stop: stop}) when stop in [:discarded, :merged, :rejected], do: :ok
+
+  defp stopped(_reason, %{branch: branch, config: config, stop: stop, persisted: persisted}) do
     # Persist before announcing the unload, so an observer who sees the event can already rehydrate the branch. On a
     # shutdown there is no process left to keep, so a failed write is reported instead of announced as an unload.
     with false <- persisted,
@@ -614,9 +749,113 @@ defmodule Ramal.Branch.Server do
 
   defp reply(state, reply), do: {:reply, reply, state, timeout(state)}
 
-  # A branch being merged must not unload: the merge would lose its claim.
-  defp timeout(%{merging: nil, config: config}), do: config.idle_timeout
+  # A branch being merged must not unload: the merge would lose its claim. Nor one with actions running: their writes
+  # would be stored as if they had ended, and a death of their process would go unnoticed.
+  defp timeout(%{merging: nil, running: running, waiting: [], config: config})
+       when map_size(running) == 0,
+       do: config.idle_timeout
+
   defp timeout(_state), do: :infinity
+
+  # -- running actions --------------------------------------------------------------------------------------------
+
+  defp hold(state, pid, undo) do
+    running =
+      Map.update(state.running, pid, %{monitor: Process.monitor(pid), undos: [undo]}, fn held ->
+        %{held | undos: [undo | held.undos]}
+      end)
+
+    %{state | running: running}
+  end
+
+  # A write is taken back only from an open branch: a discarded one holds nothing, and nothing else can happen while an
+  # action runs, since a merge and a proposal wait for it.
+  defp take_back(%{branch: %{status: :open} = branch} = state, undos),
+    do: %{state | branch: Branch.undo(branch, undos)}
+
+  defp take_back(state, _undos), do: state
+
+  defp drop_undos(state, pid, undos) do
+    case state.running do
+      %{^pid => running} ->
+        case running.undos -- undos do
+          [] -> state |> drop_running(pid) |> serve_waiting()
+          left -> %{state | running: Map.put(state.running, pid, %{running | undos: left})}
+        end
+
+      _none ->
+        state
+    end
+  end
+
+  defp drop_running(state, pid) do
+    case Map.pop(state.running, pid) do
+      {nil, _running} ->
+        state
+
+      {held, running} ->
+        Process.demonitor(held.monitor, [:flush])
+        %{state | running: running}
+    end
+  end
+
+  defp busy?(state, ref, pid) do
+    Enum.any?(state.running, fn {other, held} ->
+      other != pid and Enum.any?(held.undos, &(&1.ref == ref))
+    end)
+  end
+
+  defp without_running(state) do
+    Enum.reduce(state.running, state.branch, fn {_pid, held}, branch ->
+      Branch.undo(branch, held.undos)
+    end)
+  end
+
+  defp wait(state, from, request) do
+    tag = make_ref()
+    timer = Process.send_after(self(), {:waited_too_long, tag}, @wait_timeout)
+    state = %{state | waiting: state.waiting ++ [{tag, from, request, timer}]}
+    {:noreply, state, timeout(state)}
+  end
+
+  # Once no action runs, the waiting requests are handled in the order they came, as if they had come now.
+  defp serve_waiting(%{running: running, waiting: [_ | _] = waiting} = state)
+       when map_size(running) == 0 do
+    Enum.reduce(waiting, %{state | waiting: []}, fn {_tag, from, request, timer}, state ->
+      Process.cancel_timer(timer)
+      {:reply, reply, state, _timeout} = handle_call(request, from, state)
+      GenServer.reply(from, reply)
+      state
+    end)
+  end
+
+  defp serve_waiting(state), do: state
+
+  defp closing(state) do
+    Error.new(
+      :not_open,
+      "branch #{inspect(state.branch.id)} is waiting for the actions running in it to end before a merge or a " <>
+        "proposal, and takes no new ones",
+      %{id: state.branch.id, status: :closing}
+    )
+  end
+
+  defp row_busy(state, {resource, key} = ref) do
+    Error.new(
+      :row_busy,
+      "#{inspect(resource)} #{inspect(key)} was written in branch #{inspect(state.branch.id)} by an action that has " <>
+        "not ended; retry once it has",
+      %{id: state.branch.id, resource: resource, key: key, ref: ref}
+    )
+  end
+
+  defp busy_error(state) do
+    Error.new(
+      :timeout,
+      "branch #{inspect(state.branch.id)} still had actions running after #{@wait_timeout} ms; nothing was done",
+      %{id: state.branch.id, timeout: @wait_timeout}
+    )
+  end
 
   defp usable?(state), do: Branch.open?(state.branch) and state.merging == nil
 

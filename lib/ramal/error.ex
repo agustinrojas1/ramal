@@ -26,6 +26,7 @@ defmodule Ramal.Error do
   | `:task_in_action` | a captured write from a task that a hook of another captured action started |
   | `:unbranchable_resources` | the domain has resources that neither use `Ramal.Resource` nor opt out of it (`details.resources`) |
   | `:nested_branch` | `Ramal.run/2` was called inside another `Ramal.run/2`, or `Ramal.merge/2` inside one |
+  | `:row_busy` | a write to a row that another process's action wrote in the branch and has not ended (`details.resource`, `key`); retry once it has |
   | `:missing_snapshot` | an overlay entry that needs the base row as first seen has none recorded |
   | `:limit_reached` | `Ramal.branch/2` or `Ramal.fork/2` was refused by `:max_active_branches` or `:branch_rate` of `Ramal.Supervisor` (`details.limit`, `max`, and `active` or `window`) |
   | `:storage` | the storage backend failed |
@@ -58,6 +59,7 @@ defmodule Ramal.Error do
           | :unbranchable_resources
           | :nested_branch
           | :missing_snapshot
+          | :row_busy
           | :limit_reached
           | :storage
           | :timeout

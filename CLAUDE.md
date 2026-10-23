@@ -37,6 +37,7 @@ test/support/farm/           the test domain (Paddock, Herd, Move) and its repo
 docs/                        DESIGN.md, ROADMAP.md, agents.md (the guide for AI agents), ADRs under docs/adr/
 usage-rules.md               rules for coding agents that use Ramal, in the `usage_rules` format (ships in the Hex package)
 usage-rules/skills/ramal/    the skill for those agents (ships in the Hex package)
+verification/                the TLA+ model (tla/) and the Bend proofs (bend/); check.sh runs both, README.md says what they prove
 bench/                       a separate Mix project, never a dependency of the library
 examples/ash_ai/            a separate Mix project that runs AshAi tools in a branch, pinned to one ash_ai version; depends on ramal
 ramal_live/                  a separate Mix project, the LiveView inspector; depends on ramal, never the other way round

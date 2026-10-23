@@ -1,0 +1,4 @@
+.tools/
+tla/states/
+tla/tlc.out
+tla/*_TTrace_*

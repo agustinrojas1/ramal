@@ -254,7 +254,8 @@ defmodule Ramal do
   as `branch/2` (`:limit_reached`), counted for the parent's domain.
 
   Only an open branch can be forked, and not while a merge holds it: a fork of a branch being merged would replay the
-  same writes again (`:not_open`, ADR 0007).
+  same writes again (`:not_open`, ADR 0007). The writes of actions still running in the parent are left out of the
+  fork, because those actions may yet fail (ADR 0033).
 
   ## Options
 
@@ -529,6 +530,8 @@ defmodule Ramal do
 
     * `:proposed_by` - who proposes it, default `nil`
     * `:reason` - why, a string, default `nil`
+
+  Actions still running in the branch in other processes are waited for, up to four seconds (ADR 0033).
 
   Returns `{:error, %Ramal.Error{reason: :not_open}}` for a branch that is not open, including one already proposed.
   List the pending ones with `list(domain, status: :proposed)`; the diff to review is `diff/1`.
