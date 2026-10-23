@@ -229,7 +229,19 @@ Ramal.run!(branch, fn ->
 end)
 ```
 
-It supports `:count`, `:exists`, `:sum`, `:min`, `:max` and `:avg`.
+It supports `:count`, `:exists`, `:sum`, `:min`, `:max`, `:avg`, `:first` and `:list`. The last two follow the query's sort and accept `uniq?:` and `include_nil?:`.
+
+### Per-tenant branches
+
+A branch of a multitenant application works in one tenant: `Ramal.branch(MyApp.Farm, tenant: "acme")`. Reads and writes
+inside it must carry that tenant (`:tenant_mismatch` otherwise), other tenants' rows never enter its overlay, and the
+merge checks and replays in the tenant. Both the attribute and the schema-per-tenant strategies work.
+
+### Per-tenant branches
+
+A branch of a multitenant application works in one tenant: `Ramal.branch(MyApp.Farm, tenant: "acme")`. Reads and writes
+inside it must carry that tenant (`:tenant_mismatch` otherwise), other tenants' rows never enter its overlay, and the
+merge checks and replays in the tenant. Both the attribute and the schema-per-tenant strategies work.
 
 ### Per-tenant branches
 
@@ -290,23 +302,34 @@ Ramal is deliberately small, and it says what it does not do:
 
 - **Not a database branch.** No schema changes inside a branch and no branch-local indexes. `Ramal.run/2` cannot be nested.
 - **Aggregates loaded inside a branch are recomputed from the branch's rows,** which reads the related rows of each
-  returned row where the database would sum them in one query. `first`, `list` and `custom` aggregates, `uniq?`, and
-  an aggregate query with a limit keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
+  returned row where the database would sum them in one query. `custom` aggregates (data-layer SQL),
+  a join filter and a custom read action keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
   test can notice. A filter or sort on an aggregate sees the branch too, and when the branch changed a resource on its path
   that reads the aggregate for every row the rest of the filter matches. For one total over a large table,
   `Ramal.aggregate/4` is cheaper.
 - **Use `Ramal.load/3` to load onto a record the branch changed.** `Ash.load/3` reselects the foreign key from the
   database without running any hook, so after a herd moved paddock in the branch it still follows the old one. A load
   inside a read (`Ash.Query.load/2`) is patched.
-- **A filter or sort through a relationship the branch changed reads more.** Ramal checks that part of the filter in
-  memory on the rows the database returns for the rest, so keep attribute predicates next to it to narrow the read.
-- **Text sorts inside a branch use byte order,** not the database's collation, once the branch has changed that resource:
-  `Banana` sorts before `apple`. Numbers, dates and keys sort exactly.
+- **A filter or sort through a relationship the branch changed can read more.** Ramal checks that part of the filter in
+  memory on the rows the database returns for the rest, so keep attribute predicates next to it to narrow the read. A
+  filter through one `belongs_to` or `has_one` is narrowed in the database too, except under `not`; `exists`, longer
+  paths and `has_many` paths read every row the rest of the filter allows.
+- **Text sorts inside a branch follow the database's collation.** Once the branch has changed a resource, its reads are
+  sorted in Elixir; for a text key Ramal asks Postgres in one read-only query how it orders the distinct values (the
+  column's collation, `lower` for `citext`), so `apple` comes before `Banana` as it does after the merge. `:min` and `:max`
+  of a string do the same. A `C` column, a resource on another data layer, and every key that is not text keep their own
+  order. Two things still compare bytes: a keyset cursor on a text sort (page it by offset) and a comparison filter on text
+  (`name > "b"`) for the branch's rows ([ADR 0045](docs/adr/0045-text-sorted-by-the-databases-collation.md)).
 - **Every resource of the domain is covered or opts out.** `Ramal.branch/2` refuses a domain with a resource that has
   write actions and neither uses `Ramal.Resource` nor sets `branchable? false`; a resource that opts out is written for
   real, from a branch too. Only the branch's domain is checked: a resource of another domain works in the branch if it uses `Ramal.Resource`, and is written for real if it does not. Build a changeset in the same `Ramal.run/2` that runs it. A query prepared outside a branch and read inside it is patched.
-- **Bulk actions are refused** inside a branch, resources whose primary key the database generates cannot be
-  created in one (use UUIDs), and notifications are dropped unless a resource opts in with `notify_in_branch? true`.
+- **Notifications are dropped** unless a resource opts in with `notify_in_branch? true`.
+- **A key the database generates is a placeholder until the merge.** A row created with a `generated? true` integer or
+  UUID primary key (`integer_primary_key`, `gen_random_uuid()`) gets a key from a range no real key uses (integers from
+  `-2_147_483_648` up), and the merge renames it to the key the database gives the row, in the input of the later
+  actions too. `Ramal.Merge.Result.keys` maps each placeholder to its real key. A placeholder that a hook stores outside
+  the action's input, such as inside a JSON blob, is not renamed, and a `smallint` key is not supported. Other key
+  types, and composite keys, are still refused (`:database_generated_key`).
 - **Upserts work, with two exceptions.** An upsert looks its row up in the branch's view, so it updates a base row, a row
   the branch created, or creates one. An `upsert_condition` is refused (`:upsert_unsupported`), and `upsert?: true` given
   only to `Ash.create/2` at call time cannot be seen and acts as a create: set it on the action or pass it to
@@ -321,7 +344,8 @@ Ramal is deliberately small, and it says what it does not do:
   it for every node and the storage refuses the saves of a process that lost the branch after a netsplit, so state is
   never overwritten, but what that process held since its last save is lost and announced (`[:ramal, :branch, :fenced]`).
   Telemetry, rate limits and the heap-kill marks stay per node. See `Ramal.Supervisor`.
-- **A few many-to-many cases stay unsupported:** `type: :append_and_remove` with a link to remove is refused, and a paged relationship load or a `through` path of several hops sees the base links.
+- **Bulk actions run record by record** inside a branch, each one captured like a single action, so they cost what a loop costs. A bulk update or destroy of a query must allow `strategy: [:atomic, :stream]`.
+- **A `through` path with a many_to_many hop** (`through: [:herds, :vets]`) is left to the database, which returns nothing for it with or without a branch (AshPostgres 2.15 ignores the join resource). A `through` path of has_many and belongs_to hops sees the branch.
 - **Authorization is yours.** Anyone who holds a branch id can act on it. Ramal records who decided and never checks.
 - **Pre-1.0.** The public API may change before 1.0; the changelog says when it does.
 

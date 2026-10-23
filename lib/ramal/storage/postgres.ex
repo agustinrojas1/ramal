@@ -13,7 +13,7 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     filter of `Ramal.list/2`; nothing writes it, and it is `NULL` for an unowned branch. A table made by 0.3.0 or
     earlier gets it from the second migration `mix ramal.gen.migration` writes; until then everything but the `owner:`
     filter works.
-    `epoch` (bigint, default 0) is the fencing token of a cluster (ADR 0039): `claim/2` increments it, and `put/2` and
+    `epoch` (bigint, default 0) is the fencing token of a cluster (ADR 0044): `claim/2` increments it, and `put/2` and
     `mark_merged/2` of a branch that carries an epoch write only while the row still has it. Nothing reads it
     without `cluster: true`, so a table without the column works as before; `mix ramal.gen.migration` adds it.
     The branch process calls this module from its own process, so the repo's pool serves it like any other

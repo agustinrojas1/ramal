@@ -2,7 +2,7 @@ defmodule Ramal.Error do
   @moduledoc """
   The error every Ramal function returns as `{:error, %Ramal.Error{}}`.
 
-  When a Ramal error is raised inside an Ash action (for example a bulk action inside a branch), Ash returns it in
+  When a Ramal error is raised inside an Ash action (for example an upsert with an `upsert_condition` inside a branch), Ash returns it in
   the `errors` of an `Ash.Error.Invalid`; `find/2` pulls it out.
 
   `reason` is an atom from the closed list below, so a host can match on it. `message` says what happened in words
@@ -14,8 +14,8 @@ defmodule Ramal.Error do
   | `:not_open` | the branch is not in the status the call needs: open for `run/2`, `fork/2`, `merge/2` and `propose/2`, proposed for `approve/2` and `reject/2` |
   | `:stale` | the base moved under rows the branch read (`details.rows`) |
   | `:merge_failed` | a replayed action failed; `details` has `index`, `type`, `resource`, `action` and the Ash `error` |
-  | `:database_generated_key` | a branch cannot create a row whose primary key the database generates |
-  | `:bulk_unsupported` | a bulk create, update or destroy inside a branch |
+  | `:database_generated_key` | a branch cannot create a row whose primary key the database generates and that has no placeholder type (not a single integer or UUID `generated? true` key) |
+  | `:bulk_unsupported` | an action inside a branch that the capture hook did not wrap, refused before it could reach the data layer |
   | `:upsert_unsupported` | an upsert with an `upsert_condition` (or an identity `where` that cannot be evaluated for the new row) inside a branch |
   | `:atomic_unsupported` | an atomic update whose expression cannot be evaluated in Elixir inside a branch (`details.attribute`) |
   | `:partial_record` | an update or destroy of a record read with `Ash.Query.select/2`, whose full row could not be read inside the branch |
@@ -31,8 +31,9 @@ defmodule Ramal.Error do
   | `:missing_snapshot` | an overlay entry that needs the base row as first seen has none recorded |
   | `:limit_reached` | `Ramal.branch/2` or `Ramal.fork/2` was refused by `:max_active_branches` or `:branch_rate` of `Ramal.Supervisor` (`details.limit`, `max`, and `active` or `window`) |
   | `:not_started` | `Ramal.Supervisor` is not running |
+  | `:collation_failed` | the query that asks the database how it orders text failed, so a sort or a `:min`/`:max` of a string in a branch could not follow it (`details.error`) |
   | `:storage` | the storage backend failed |
-  | `:fenced` | a process of a cluster tried to write a branch that another process loaded after it did (`details.epoch`, ADR 0039); what it held since its last save is lost |
+  | `:fenced` | a process of a cluster tried to write a branch that another process loaded after it did (`details.epoch`, ADR 0044); what it held since its last save is lost |
   | `:timeout` | the branch process did not answer in time (`details.timeout` in ms); the request may still be carried out |
 
   ## Example
@@ -65,6 +66,7 @@ defmodule Ramal.Error do
           | :missing_snapshot
           | :row_busy
           | :limit_reached
+          | :collation_failed
           | :not_started
           | :storage
           | :fenced

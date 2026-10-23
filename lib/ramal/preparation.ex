@@ -14,6 +14,10 @@ defmodule Ramal.Preparation do
       `Ash.get/3` all see the patched rows.
     * A many_to_many load is one SQL query that joins the join table in the database. When the branch changed the join
       resource, a helper in lib/ramal/preparation/many_to_many.ex swaps that join for the patched join rows (ADR 0017).
+    * A relationship with a `through` path of several hops is one lateral join over the intermediate tables. When the
+      branch changed a resource after the first hop, or the destination, lib/ramal/preparation/lateral.ex walks the hops
+      with the patched reads instead and tags the destination rows with the sources that reach them (ADR 0046). A path
+      with a many_to_many hop stays with the database, which is wrong for it with or without a branch.
     * A relationship load runs a read on the related resource through its own preparation, in a task that does not
       inherit the process dictionary. The branch id therefore also travels in the query's `shared` context, which
       Ash copies into related queries (`lib/ash/actions/read/relationships.ex`).
@@ -37,8 +41,11 @@ defmodule Ramal.Preparation do
       decides `more?` from the database's rows, so the last `before_action` hook reads the whole patched list, cuts the
       page out of it (lib/ramal/preparation/paged.ex) and gives Ash the rows with `Ash.Query.set_result/2` and the count
       with the `full_count` context key, both honoured in `lib/ash/actions/read/read.ex` (Ash 3.37). Offset and keyset
-      pages, `count`, `more?` and the cursors are those of the patched list (ADR 0030). Without overlay entries for the
-      resource, and for a paged relationship load, the database pages as before.
+      pages, `count`, `more?` and the cursors are those of the patched list (ADR 0030). A relationship loaded with a page,
+      a limit or an offset is one lateral join that limits per source record: when the branch changed its destination or
+      its join resource, the rows of all the sources are read whole, tagged with their source and cut per source, and the
+      page is handed to Ash the same way (ADR 0040). Without overlay entries for the resource the database pages as
+      before.
     * `authorize_results` checks (the runtime half of a policy, which `Ash.Can` adds when `strict_check` cannot decide)
       run in the read action of Ash on the data layer's rows, before any `after_action` hook, so they would never see a row
       the branch created and would judge a row the branch changed or destroyed by the database's values. While the
@@ -57,7 +64,8 @@ defmodule Ramal.Preparation do
       expression (the data layer computes those too); a calculation with only `calculate/3` runs in Elixir on the
       patched rows already;
     * an aggregate the read loads is recomputed from the branch's rows after the patch (lib/ramal/preparation/aggregates.ex,
-      ADR 0029). The kinds and shapes it cannot do keep the database's value and emit `[:ramal, :read, :unpatched_aggregate]`.
+      ADR 0029). The kinds and shapes it cannot do (`custom`, a join filter, a custom read action) keep the database's value and emit
+      `[:ramal, :read, :unpatched_aggregate]`.
       A filter or sort on an aggregate is judged on the branch's numbers too: when the branch changed a resource on the
       aggregate's path the conjunct is evaluated in Elixir like a filter through a changed relationship (ADR 0032), and
       the aggregate is computed for the overlay's records, and for the rows a sort orders, before it is used;
@@ -66,11 +74,12 @@ defmodule Ramal.Preparation do
       `lib/ash/actions/read/read.ex`), so a foreign key the branch changed is not seen and the load follows the
       database's. Use `Ramal.load/3` (ADR 0031), pass `reuse_values?: true`, which skips the reselect, or load through a
       read (`Ash.Query.load/2`), which goes through this preparation;
-    * a sort on text uses byte order once the overlay touches the resource, where Postgres uses its collation, so mixed-case
-      text can come out in another order than outside the branch (ADR 0024);
+    * a sort on text, once the overlay touches the resource, orders by the rank Postgres gives each value under the
+      column's collation, from one read-only query per sort key (lib/ramal/collation.ex, ADR 0045), so `apple` comes before
+      `Banana` as it does in the database. A resource on another data layer keeps byte order. A keyset cursor on text, and a
+      comparison filter (`name > "b"`) on it, still compare bytes;
     * a paged read of a resource the overlay touches reads every row the filter matches and pages the list in Elixir,
-      so it costs what an unpaged read does, not one page (ADR 0030); a paged relationship load is still paged by the
-      database and patched afterwards.
+      so it costs what an unpaged read does, not one page (ADR 0030, and per source for a relationship load, ADR 0040).
 
   ## Example
 
@@ -79,11 +88,10 @@ defmodule Ramal.Preparation do
   """
   use Ash.Resource.Preparation
 
-  alias Ash.Actions.Sort
   alias Ash.Filter.Runtime
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
-  alias Ramal.{Current, Overlay, Prefilter, Resource, Telemetry}
+  alias Ramal.{Collation, Current, Overlay, Prefilter, Resource, Telemetry}
   alias Ramal.Preparation.{Aggregates, ManyToMany, Paged, Related}
 
   @impl true
@@ -162,9 +170,25 @@ defmodule Ramal.Preparation do
     warn_unpatched_aggregates(query, id)
 
     case ManyToMany.rewrite(query, id) do
-      {:ok, query, links} -> strip_paging(query, id, links, nil)
-      :skip -> relate(query, id)
-      {:error, error} -> Ash.Query.add_error(query, error)
+      {:ok, rewritten, links} ->
+        rewritten |> keep_lateral(query, links) |> strip_paging(id, links, nil)
+
+      :skip ->
+        relate(query, id)
+
+      {:error, error} ->
+        Ash.Query.add_error(query, error)
+    end
+  end
+
+  # A paged lateral load is paged per source record by `Ash.Actions.Read` after the hooks (`drop_pagination_extra/3`
+  # looks for the lateral join in the context of the query the hooks return), and the rows it gets from `page/2` are
+  # tagged with their source, so the query keeps the join. The data layer never runs it: the page is the result.
+  defp keep_lateral(rewritten, original, %{lateral_source: source}) do
+    if Paged.lateral_plan(original) do
+      Ash.Query.set_context(rewritten, %{data_layer: %{lateral_join_source: source}})
+    else
+      rewritten
     end
   end
 
@@ -186,7 +210,7 @@ defmodule Ramal.Preparation do
     end
   end
 
-  defp relax(query, %{kept: kept}), do: %{query | filter: kept}
+  defp relax(query, %{data_layer: filter}), do: %{query | filter: filter}
 
   defp strip_paging(query, id, links, related) do
     case Server.overlay?(id, query.resource) do
@@ -369,7 +393,44 @@ defmodule Ramal.Preparation do
     end
   end
 
+  # A paged relationship load (ADR 0038): the rows of every source record are read whole and each source is paged on its
+  # own, as the database's lateral join would. The count is the source record's own aggregate (`Aggregates`).
+  defp page(%{context: %{ramal: %{links: %{lateral_source: _}}}} = query, id) do
+    case Paged.lateral_plan(query) do
+      nil -> query
+      plan -> page_by_source(query, plan, id)
+    end
+  end
+
   defp page(query, _id), do: query
+
+  defp page_by_source(query, plan, id) do
+    sorted = Paged.stable_sort(query)
+
+    with {:ok, rows} <- read_whole_list(sorted, id),
+         {:ok, page} <- Paged.cut_by_source(sorted, plan, rows) do
+      query
+      |> Ash.Query.set_result(page)
+      |> Ash.Query.set_context(%{ramal: %{paged?: true, whole: rows}})
+      |> put_source_count(plan, rows)
+    else
+      {:error, error} -> Ash.Query.add_error(query, error)
+    end
+  end
+
+  # The count of a page of several sources is each source's own aggregate. The page of one source that `Ash.page/2` asks
+  # for next is read again, and Ash counts it with a query of its own, which AshPostgres cannot build for a lateral
+  # join (it fails the same way outside a branch), so that count is given here.
+  defp put_source_count(query, %{count?: true}, rows) do
+    {sources, _path} = query.context.ramal.links.lateral_source
+
+    case sources do
+      [_one] -> Ash.Query.set_context(query, %{full_count: length(rows)})
+      _many -> query
+    end
+  end
+
+  defp put_source_count(query, _plan, _rows), do: query
 
   defp page(query, plan, id) do
     sorted = Paged.stable_sort(query)
@@ -395,7 +456,8 @@ defmodule Ramal.Preparation do
     ramal = query.context.ramal
     private = query.context[:private] || %{}
 
-    # The checks run on the page, once, when this hook's list is the result (`after_data_layer/3`).
+    # The checks run on the page, once, when this hook's list is the result (`after_data_layer/3`). A paged load is read
+    # without its lateral join: the rows of all its sources are read together and tagged by `after_data_layer/3`.
     whole = %{
       Ash.Query.unset(query, [:page, :limit, :offset])
       | context: update_in(query.context, [:ramal], &Map.delete(&1, :authorize_results)),
@@ -407,6 +469,12 @@ defmodule Ramal.Preparation do
         after_transaction: [],
         around_transaction: []
     }
+
+    whole =
+      update_in(
+        whole.context[:data_layer],
+        &if(&1, do: Map.delete(&1, :lateral_join_source), else: &1)
+      )
 
     # The query's filter already holds what the policies added, and the rows are authorized when Ash reads the page.
     Resource.read_all(whole,
@@ -436,7 +504,7 @@ defmodule Ramal.Preparation do
     base_keys = Enum.map(results, &Resource.key(resource, &1))
 
     with {:ok, slice, overlay_rows} <-
-           Server.select(id, resource, base_keys, Prefilter.compile(query.filter)),
+           Server.select(id, resource, base_keys, Prefilter.compile(prefilter_filter(query))),
          {:ok, results} <- check_base_rows(query, results, slice, id),
          {:ok, matching} <- matching_keys(query, slice, id),
          {:ok, patched} <-
@@ -531,6 +599,11 @@ defmodule Ramal.Preparation do
       module.has_expression?()
   end
 
+  # The overlay records the prefilter keeps are those the conjuncts that reach no changed resource may accept. A
+  # narrowed conjunct is left out on purpose: it judges a row by the base's foreign key, an overlay record has its own.
+  defp prefilter_filter(%{context: %{ramal: %{related: %{kept: kept}}}}), do: kept
+  defp prefilter_filter(query), do: query.filter
+
   # The filter the overlay's records are judged by: the whole one, which a read with a relaxed data-layer filter keeps.
   defp full_filter(%{context: %{ramal: %{related: %{full: full}}}}), do: full
   defp full_filter(query), do: query.filter
@@ -605,10 +678,9 @@ defmodule Ramal.Preparation do
   defp apply_select(record, _query, _slice), do: record
 
   defp distinct(rows, %{context: %{ramal: %{distinct: %{fields: fields, sort: pick}}}} = query) do
-    {:ok,
-     rows
-     |> sort_by(pick, query)
-     |> Enum.uniq_by(fn row -> Enum.map(fields, &Map.get(row, &1)) end)}
+    with {:ok, sorted} <- sort_by(rows, pick, query) do
+      {:ok, Enum.uniq_by(sorted, fn row -> Enum.map(fields, &Map.get(row, &1)) end)}
+    end
   end
 
   # The query that `apply_to/3` runs has only the distinct fields and their pick order: the filter and the sort are
@@ -619,10 +691,16 @@ defmodule Ramal.Preparation do
 
   defp distinct(rows, _query), do: {:ok, rows}
 
-  defp sort_by(rows, pick, _query) when pick in [nil, []], do: rows
+  defp sort_by(rows, pick, _query) when pick in [nil, []], do: {:ok, rows}
 
+  # Text is ordered by the database's collation (`Ramal.Collation`, ADR 0045); everything else by Ash's runtime sort.
   defp sort_by(rows, pick, query),
-    do: Sort.runtime_sort(rows, pick, resource: query.resource, domain: query.domain)
+    do:
+      Collation.sort(rows, pick,
+        resource: query.resource,
+        domain: query.domain,
+        tenant: query.tenant
+      )
 
   # A sort through a relationship the branch changed is evaluated in memory first, with the relationship loaded through
   # the patched reads, as for a filter calculation (`load_in_memory/3`); the runtime sort then reuses those values
@@ -631,7 +709,7 @@ defmodule Ramal.Preparation do
     if memory_sort?(query) do
       memory_sort(rows, query, id)
     else
-      {:ok, Sort.runtime_sort(rows, sort, resource: query.resource, domain: query.domain)}
+      sort_by(rows, sort, query)
     end
   end
 
@@ -649,20 +727,98 @@ defmodule Ramal.Preparation do
           do: {calculation.name, calculation}
 
     with {:ok, loaded} <- load_related(rows, query),
-         {:ok, loaded} <- load_in_memory(loaded, calculations, query),
-         {:ok, loaded} <- load_aggregates(loaded, Related.aggregates(sort), query, id) do
-      sorted =
-        Sort.runtime_sort(loaded, sort,
-          resource: query.resource,
-          domain: query.domain,
-          lazy?: true,
-          rename_calcs?: false
-        )
-
+         {:ok, loaded} <- load_sort_calculations(loaded, calculations, query),
+         {:ok, loaded} <- load_aggregates(loaded, Related.aggregates(sort), query, id),
+         {:ok, sorted} <-
+           Collation.sort(loaded, sort,
+             resource: query.resource,
+             domain: query.domain,
+             tenant: query.tenant,
+             lazy?: true,
+             rename_calcs?: false
+           ) do
       # The relationships and calculations loaded to sort are not part of what the caller asked for.
       by_key = Map.new(rows, &{Resource.key(query.resource, &1), &1})
       {:ok, Enum.map(sorted, &Map.fetch!(by_key, Resource.key(query.resource, &1)))}
     end
+  end
+
+  # A sort calculation that only reads attributes, along to-one relationships, is evaluated here from the relationships
+  # loaded onto the rows, a nil relationship giving nil as in SQL. `Ash.load/3` cannot do it: it evaluates an
+  # expression calculation in memory only when every record has each path loaded (`Ash.Resource.loaded?/3` with
+  # `strict?: true`, deps/ash/lib/ash/actions/read/calculations.ex, `try_evaluate/5`), a record whose relationship is
+  # nil fails that check, and Ash then asks the data layer for the whole batch, which keeps the base's value on every
+  # row. Any other calculation (an aggregate or another calculation in it, a to-many path, an expression Ash.Expr
+  # cannot evaluate) still goes through `Ash.load/3`.
+  defp load_sort_calculations(records, calculations, query) do
+    {records, rest} =
+      calculations
+      |> Map.filter(fn {_name, calculation} -> data_layer_calculation?(calculation) end)
+      |> Enum.reduce({records, %{}}, fn {name, calculation}, {records, rest} ->
+        case evaluate_calculation(records, calculation, query) do
+          {:ok, records} -> {records, rest}
+          :error -> {records, Map.put(rest, name, calculation)}
+        end
+      end)
+
+    load_in_memory(records, rest, query)
+  end
+
+  defp evaluate_calculation(records, calculation, query) do
+    with {:ok, paths} <- Related.plain_paths(query.resource, calculation),
+         {:ok, records} <- load_paths(records, paths, query),
+         {:ok, values} <- evaluate_all(records, calculation, query) do
+      {:ok, attach_values(records, calculation, values)}
+    else
+      _error -> :error
+    end
+  end
+
+  defp load_paths(records, [], _query), do: {:ok, records}
+
+  defp load_paths(records, paths, query) do
+    Ash.load(records, Enum.map(paths, &Related.nested_load/1),
+      domain: query.domain,
+      tenant: query.tenant,
+      authorize?: false,
+      reuse_values?: true,
+      context: Map.take(query.context, [:shared])
+    )
+  end
+
+  defp evaluate_all(records, calculation, query) do
+    context = calculation.context
+
+    expression =
+      calculation.module
+      |> Ash.Resource.Calculation.expression(calculation.opts, context)
+      |> Ash.Expr.fill_template(
+        actor: context.actor,
+        tenant: context.tenant,
+        args: context.arguments,
+        context: context.source_context
+      )
+
+    Enum.reduce_while(records, {:ok, []}, fn record, {:ok, values} ->
+      case Ash.Expr.eval(expression, record: record, resource: query.resource) do
+        {:ok, %Ash.NotLoaded{}} -> {:halt, :error}
+        {:ok, value} -> {:cont, {:ok, [value | values]}}
+        _error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      :error -> :error
+    end
+  end
+
+  defp attach_values(records, %{load: load}, values) when not is_nil(load),
+    do: Enum.zip_with(records, values, &Map.put(&1, load, &2))
+
+  defp attach_values(records, %{name: name}, values) do
+    Enum.zip_with(records, values, fn record, value ->
+      %{record | calculations: Map.put(record.calculations, name, value)}
+    end)
   end
 
   defp load_related(rows, %{context: %{ramal: %{related: %{paths: [_ | _] = paths}}}} = query) do

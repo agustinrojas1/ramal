@@ -1,4 +1,4 @@
-# 0039. Branches in a cluster: global names and storage fencing
+# 0044. Branches in a cluster: global names and storage fencing
 
 Status: accepted, 2026-10-23.
 

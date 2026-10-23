@@ -12,15 +12,17 @@ A library. No OTP application of its own beyond `Ramal.Supervisor`, which the ho
 lib/ramal.ex                 public API (branch, run, fork, diff, merge, discard, current)
 lib/ramal/branch.ex          the Branch struct and pure functions over it
 lib/ramal/branch/server.ex   GenServer: one process per open branch
-lib/ramal/cluster.ex         the :via module over :global and the resolver for branches in a cluster (ADR 0039)
+lib/ramal/cluster.ex         the :via module over :global and the resolver for branches in a cluster (ADR 0044)
 lib/ramal/current.ex         the current branch id of the calling process (process dictionary and Ash shared context)
 lib/ramal/overlay.ex         the overlay map: apply, patch, diff (pure)
 lib/ramal/resource.ex        Spark extension: adds the read preparation and the write change
 lib/ramal/resource/transformer.ex  the extension's transformer (Spark needs a module for it)
 lib/ramal/preparation.ex     read side: strip limit/offset, patch results
 lib/ramal/preparation/aggregates.ex  aggregates a read loads, recomputed from the branch's rows after the patch (ADR 0029)
-lib/ramal/preparation/related.ex  filters and sorts through a relationship the branch changed: split out of the data-layer query (ADR 0025)
+lib/ramal/preparation/related.ex  filters and sorts through a relationship the branch changed: split out of the data-layer query (ADR 0025), narrowed for to-one paths (ADR 0047)
+lib/ramal/preparation/lateral.ex  a relationship load with a multi-hop `through` path, walked hop by hop over the branch's rows instead of the database's lateral join (ADR 0046)
 lib/ramal/preparation/paged.ex   what page a query asks for and the cut of it from the patched list, so a paginated read in a branch is paged after the patch (ADR 0030)
+lib/ramal/collation.ex       the database's collation for the text a branch sorts in Elixir: ranks from one query, so a sort and min/max of text agree with Postgres (ADR 0045)
 lib/ramal/prefilter.ex       cheap test that rules overlay records out of a read filter before the Ash runtime does
 lib/ramal/change.ex          the Change struct that diff returns
 lib/ramal/aggregate.ex       aggregates: pure computation over records, and the database-plus-overlay delta of Ramal.aggregate/4

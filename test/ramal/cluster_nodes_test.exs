@@ -1,5 +1,5 @@
 defmodule Ramal.ClusterNodesTest do
-  # Branches in a cluster (ADR 0039) on real nodes: two BEAM VMs started with :peer, sharing the test database, each
+  # Branches in a cluster (ADR 0044) on real nodes: two BEAM VMs started with :peer, sharing the test database, each
   # running Ramal.Supervisor with `cluster: true`. They are cut apart and joined again by disconnecting them. The nodes
   # take a second or two each to start, so this is the only module that does.
   use ExUnit.Case, async: false

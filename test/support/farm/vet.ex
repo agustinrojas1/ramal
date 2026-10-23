@@ -12,6 +12,11 @@ defmodule Ramal.Test.Farm.Vet do
 
   actions do
     defaults([:read, :destroy, create: :*, update: :*])
+
+    # A paginated list, so a relationship to vets can be loaded a page at a time.
+    read :list do
+      pagination(offset?: true, keyset?: true, countable: true, required?: false)
+    end
   end
 
   attributes do

@@ -23,7 +23,7 @@ defmodule Ramal.Supervisor do
     * `:branch_rate` - `{count, milliseconds}`: the most branches (created or forked) one domain may get in a window,
       default `nil`. Fixed windows, counted in memory on this node, and shared by `branch/2` and `fork/2`. Nodes do not
       add up: a cluster allows the rate on each node.
-    * `:cluster` - `true` to run branches in a cluster, default `false` (ADR 0039). Branch processes are then named with
+    * `:cluster` - `true` to run branches in a cluster, default `false` (ADR 0044). Branch processes are then named with
       `:global`, so one process serves a branch for every node, and the storage fences a process that lost the branch
       (see "Running in a cluster" below). The storage must define `c:Ramal.Storage.claim/2`: `Ramal.Storage.Postgres`
       does, with the `epoch` column `mix ramal.gen.migration` adds.

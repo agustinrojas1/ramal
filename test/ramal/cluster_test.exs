@@ -1,6 +1,6 @@
 defmodule Ramal.ClusterTest do
   # `cluster: true` on a single node: branch processes are named with :global and every load takes an epoch the storage
-  # fences writes with (ADR 0039). Two loads of one branch are made by claiming it from the storage directly, which is
+  # fences writes with (ADR 0044). Two loads of one branch are made by claiming it from the storage directly, which is
   # what a second node does; test/ramal/cluster_nodes_test.exs does it with real nodes. The ETS storage keeps the epochs
   # in this VM, so these tests need no database but the merge's.
   # Ramal.Supervisor is one per node and named, so these tests cannot run concurrently.

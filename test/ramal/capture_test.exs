@@ -5,7 +5,7 @@ defmodule Ramal.CaptureTest do
   require Ash.Query
 
   alias Ash.Resource.Info
-  alias Ramal.Test.Capture.{Announced, Counter, Flaky, Silent, Ticket}
+  alias Ramal.Test.Capture.{Announced, Counter, Flaky, Silent, Slug, Ticket}
 
   @admin %{role: :admin}
   @member %{role: :member}
@@ -134,6 +134,8 @@ defmodule Ramal.CaptureTest do
 
       assert [{:create, Herd, :create, params, nil, opts, %DateTime{}}] = branch.log
       assert params == %{name: "R10", head: 5}
+      assert {root, opts} = Keyword.pop(opts, :root)
+      assert is_integer(root)
       assert opts == [key: herd.id, tenant: nil, nested?: false]
     end
 
@@ -154,11 +156,19 @@ defmodule Ramal.CaptureTest do
       assert branch.log == []
     end
 
-    test "a primary key the database generates is refused with a message that says what to do",
+    test "a primary key the database generates gets a placeholder", %{} do
+      {:ok, branch} = Ramal.branch(Ramal.Test.Capture)
+
+      assert {:ok, %Ticket{id: id}} = inside(branch, fn -> Ash.create(Ticket, %{title: "t"}) end)
+      assert id == -2_147_483_647
+      assert [{{Ticket, ^id}, {:created, _record}}] = Map.to_list(state(branch).overlay)
+    end
+
+    test "a generated key that has no placeholder type is refused with a message that says what to do",
          %{} do
       {:ok, branch} = Ramal.branch(Ramal.Test.Capture)
 
-      assert {:error, error} = inside(branch, fn -> Ash.create(Ticket, %{title: "t"}) end)
+      assert {:error, error} = inside(branch, fn -> Ash.create(Slug, %{title: "t"}) end)
       assert reason_of(error) == :database_generated_key
       assert Exception.message(Ramal.Error.find(error)) =~ "uuid_primary_key"
       assert state(branch).overlay == %{}
@@ -439,6 +449,7 @@ defmodule Ramal.CaptureTest do
 
       assert move_opts[:nested?] == true
       assert herd_opts[:nested?] == false
+      assert move_opts[:root] == herd_opts[:root]
       assert Move |> Ash.read!(authorize?: false) == []
     end
 
@@ -459,56 +470,7 @@ defmodule Ramal.CaptureTest do
     end
   end
 
-  describe "bulk actions and upserts" do
-    test "a bulk create is refused and writes nothing", %{branch: branch} do
-      result =
-        inside(branch, fn ->
-          Ash.bulk_create([%{name: "R10", head: 1}, %{name: "R11", head: 2}], Herd, :create,
-            authorize?: false,
-            return_errors?: true,
-            return_records?: true
-          )
-        end)
-
-      assert %Ash.BulkResult{errors: [error | _]} = result
-      assert reason_of(error) == :bulk_unsupported
-      assert Exception.message(Ramal.Error.find(error)) =~ "once per record"
-      assert db_names() == ["R7", "R8", "R9"]
-      assert state(branch).overlay == %{}
-    end
-
-    test "a bulk destroy is refused and writes nothing", %{branch: branch} do
-      result =
-        inside(branch, fn ->
-          Ash.bulk_destroy(Herd, :destroy, %{},
-            authorize?: false,
-            return_errors?: true,
-            strategy: [:stream]
-          )
-        end)
-
-      assert %Ash.BulkResult{status: :error} = result
-      assert db_names() == ["R7", "R8", "R9"]
-      assert state(branch).overlay == %{}
-    end
-
-    test "a bulk update is refused and writes nothing", %{branch: branch} do
-      result =
-        inside(branch, fn ->
-          Ash.bulk_update(Herd, :update, %{head: 1}, authorize?: false, return_errors?: true)
-        end)
-
-      assert %Ash.BulkResult{status: :error} = result
-
-      assert Herd |> Ash.read!(authorize?: false) |> Enum.map(& &1.head) |> Enum.sort() == [
-               25,
-               30,
-               35
-             ]
-
-      assert state(branch).overlay == %{}
-    end
-
+  describe "upserts" do
     test "an upsert action runs in the branch" do
       {:ok, branch} = Ramal.branch(Ramal.Test.Capture)
 
@@ -817,34 +779,6 @@ defmodule Ramal.CaptureTest do
   end
 
   describe "tasks started inside run/2" do
-    test "Ash.bulk_create with max_concurrency is refused and writes nothing", %{branch: branch} do
-      for opts <- [
-            [max_concurrency: 2, batch_size: 1],
-            [max_concurrency: 2],
-            [max_concurrency: 4, batch_size: 2]
-          ] do
-        result =
-          inside(branch, fn ->
-            Ash.bulk_create(
-              [%{name: "B1", head: 1}, %{name: "B2", head: 1}, %{name: "B3", head: 1}],
-              Herd,
-              :create,
-              [authorize?: false, return_errors?: true, return_records?: true] ++ opts
-            )
-          end)
-
-        assert result.status == :error
-
-        assert Enum.any?(
-                 result.errors,
-                 &(Ramal.Error.find(&1) |> Map.get(:reason) == :bulk_unsupported)
-               )
-      end
-
-      assert db_names() == ["R7", "R8", "R9"]
-      assert overlay_size(branch) == 0
-    end
-
     test "a write from a Task is captured in the branch", %{branch: branch} do
       inside(branch, fn ->
         Task.async(fn -> Ash.create!(Herd, %{name: "TASK", head: 1}, authorize?: false) end)

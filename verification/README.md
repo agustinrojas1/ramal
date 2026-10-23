@@ -68,7 +68,7 @@ sizes in `MC.cfg`, and larger sizes are left out to keep the check to a few minu
 
 ## TLA+: a branch in a cluster
 
-[`tla/Cluster.tla`](tla/Cluster.tla) is a second, small model (ADR 0039), kept apart because `Ramal.tla` is about what the
+[`tla/Cluster.tla`](tla/Cluster.tla) is a second, small model (ADR 0044), kept apart because `Ramal.tla` is about what the
 processes of one node do and this is about nodes. It has one branch, three nodes that can each hold one process of it, a
 storage with a set of writes and an epoch, and `:global` as a view per node of who holds the branch. A step is a load (the
 storage's epoch goes up and the process has the state as of it), a write (acknowledged to a caller), an unload (a save,
@@ -100,7 +100,7 @@ inside its transaction), which `test/ramal/cluster_test.exs` and the storage tes
 [`bend/model.bend`](bend/model.bend) writes the overlay of `Ramal.Overlay` (an entry per row, combined by the table in
 its module doc), the read of one row, an action as one of create, set, add and delete that fails on a row it cannot
 apply to, the branch capturing a log of actions, and the merge replaying it on a table of rows.
-[`bend/LAWS.bend`](bend/LAWS.bend) states the laws and [`bend/PROOF.bend`](bend/PROOF.bend) proves all eleven:
+[`bend/LAWS.bend`](bend/LAWS.bend) states the laws and [`bend/PROOF.bend`](bend/PROOF.bend) proves all twelve:
 
 | law | meaning |
 |---|---|
@@ -112,6 +112,7 @@ apply to, the branch capturing a log of actions, and the merge replaying it on a
 | `replay_local`, `capture_local` | a row of the merged table, and a row's overlay entry, depend only on that row and the log's actions on it |
 | `fork_copies` | a fork's overlay starts equal to its parent's |
 | `key_refl`, `key_sound` | key comparison is equality |
+| `rename_shows_branch` | **a placeholder key is renamed without changing what the merge writes** (ADR 0042): for a row the branch created under a placeholder `p` that the database gave the key `r`, the merge replaying the log with `p` renamed to `r` writes at `r` the row a read in the branch returned at `p`, provided the branch never wrote `r` and `r` is as free in the merge's base as `p` was in the branch's |
 
 Lean was not needed: Bend expressed every law. Without tactics, a proof is a term built from case analysis, rewriting
 and the induction hypothesis; most of the work is the 32-way case split of `capture_reads`, where both sides compute.
@@ -125,6 +126,9 @@ and the induction hypothesis; most of the work is the 32-way case split of `capt
 - An action does the same thing to the same row at merge as in the branch. Policies, validations and hooks that read
   other rows can decide differently at merge; the merge then fails (`:merge_failed`) rather than write something else.
 - Each action writes one row. Writes made by hooks are nested and replayed by their outer action, not modelled here.
+- `rename_shows_branch` models the rename as a change of key in the log. That the code renames every occurrence of a
+  placeholder in an action's input (`rename_value/2` in `Ramal.Merge`) is tested, not proven, and a placeholder a hook
+  stores outside the input is not renamed (ADR 0042).
 
 **Not covered**: filtering, sorting, `limit` and `offset` of a patched read (`Ramal.Overlay.patch/4`), `diff/2`, and
 the relationship and aggregate paths. Those are tested with StreamData properties instead

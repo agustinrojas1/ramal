@@ -1,6 +1,6 @@
 ------------------------------ MODULE Cluster ------------------------------
 (***************************************************************************)
-(* One branch in a cluster of nodes that share a database (ADR 0039):      *)
+(* One branch in a cluster of nodes that share a database (ADR 0044):      *)
 (* `:global` names the branch process, every load of the branch takes the  *)
 (* next epoch from the storage, and a save is conditional on the epoch the *)
 (* process loaded with.                                                    *)

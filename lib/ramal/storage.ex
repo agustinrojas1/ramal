@@ -71,7 +71,7 @@ defmodule Ramal.Storage do
   @doc """
   Loads the branch for a process that is about to hold it, and fences every process that held it before.
 
-  Optional; `Ramal.Supervisor` with `cluster: true` needs it (ADR 0039). It increments the branch's epoch and returns the
+  Optional; `Ramal.Supervisor` with `cluster: true` needs it (ADR 0044). It increments the branch's epoch and returns the
   stored branch with `epoch` set to the new value, in one atomic step, so the caller has the state as of that epoch and
   no other. A missing branch is `{:error, %Ramal.Error{reason: :not_found}}`.
 

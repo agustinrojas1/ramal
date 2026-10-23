@@ -1,6 +1,6 @@
 defmodule Ramal.Cluster do
   @moduledoc false
-  # The registry of branch processes when `Ramal.Supervisor` runs with `cluster: true` (ADR 0039): a `:via` module over
+  # The registry of branch processes when `Ramal.Supervisor` runs with `cluster: true` (ADR 0044): a `:via` module over
   # `:global`, so that every node finds the one process of a branch, wherever it runs.
   #
   # `:global` registers a name on all connected nodes under a lock, and after a netsplit heals it finds a name two nodes

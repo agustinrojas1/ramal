@@ -861,7 +861,7 @@ defmodule Ramal.Branch.Server do
 
   defp reply(state, reply), do: {:reply, reply, state, timeout(state)}
 
-  # The storage refused a write of this process because another one loaded the branch after it (ADR 0039). Whatever it
+  # The storage refused a write of this process because another one loaded the branch after it (ADR 0044). Whatever it
   # held since its last save is gone for good, so the process announces that and stops without saving again.
   defp fence(state, error) do
     announce_fenced(state.branch, error)

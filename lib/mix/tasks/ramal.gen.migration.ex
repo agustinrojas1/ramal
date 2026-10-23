@@ -10,7 +10,7 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
 
     Three migrations make the table: `create_ramal_branches`; `add_ramal_branch_owner`, which adds the `owner` column
     Postgres generates from `state -> 'owner'` and its index (ADR 0021); and `add_ramal_branch_epoch`, which adds the
-    `epoch` column a cluster fences writes with (ADR 0039). A new install gets all three. A host that installed
+    `epoch` column a cluster fences writes with (ADR 0044). A new install gets all three. A host that installed
     0.3.0 or earlier already has the first and gets the other two; it is safe to run on a table that has the columns.
     Adding `owner` rewrites the table once, which is small; adding `epoch` does not rewrite it. The task writes whichever
     of the three are missing and refuses when none is. The epoch is only read with `cluster: true`, so a host that does not
