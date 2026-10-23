@@ -33,9 +33,13 @@ an existing application, so a host with them could not use a branch for creates.
 - The placeholder is visible before the merge, in the record the action returns, in `Ramal.diff/1` and in what an agent
   sees. It is not the key the row will have; `Result.keys` maps it to the real one.
 - A placeholder that a hook of another captured action stores outside the action's input, such as inside a JSON blob
-  or an attribute the action computes, is not renamed. Neither is one made by a hook (`nested?`) and used by a later
-  top-level entry: the nested entry is skipped at the merge, so its real key is unknown to the replay, and the later
-  entry fails with `:merge_failed`.
+  or an attribute the action computes, is not renamed.
+- A row a hook creates (`nested?`) with a placeholder key is renamed too, once the replay of its outermost action
+  creates it again (ADR 0041): the key plan lists it as `{:generated, placeholder}`, so the capture change forces no key
+  on that create and records the key the database gives, and the entries after it name the row by that key. The
+  attributes a caller set after `for_*` (`forced`) are renamed like the input. A bulk action (ADR 0036) is one captured
+  action per record, each with its own placeholder; an upsert (ADR 0038) that finds its row, in the base or in the
+  branch, takes that row's key and hands out no placeholder.
 - A real value that equals a placeholder (an integer near `-2^31` in user data) is renamed by mistake once a placeholder
   of that value exists in the log. A `smallint` key column is not supported: the placeholder does not fit it.
 - A data layer that does not generate the key (`Ash.DataLayer.Ets` with `integer_primary_key`) accepts the create in the

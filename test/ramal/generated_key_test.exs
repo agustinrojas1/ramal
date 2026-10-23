@@ -252,6 +252,49 @@ defmodule Ramal.GeneratedKeyTest do
     end
   end
 
+  describe "a row created by a hook" do
+    test "gets a placeholder, and a later action on it is replayed with the real key", %{
+      branch: branch
+    } do
+      existing = note!(%{body: "base"})
+
+      inside(branch, fn ->
+        Ash.update!(existing, %{}, action: :annotate, authorize?: false)
+
+        annotation = Note |> Ash.read!(authorize?: false) |> Enum.find(&(&1.body == "annotation"))
+
+        assert annotation.id < 0
+        Ash.update!(annotation, %{body: "edited"}, authorize?: false)
+      end)
+
+      assert {:ok, %Result{replayed: 2, keys: keys}} = Ramal.merge(branch, authorize?: false)
+      assert [%{body: "base"}, %{body: "edited", parent_id: parent, id: real}] = base_notes()
+      assert parent == existing.id
+      assert real > 0
+      assert Map.values(keys) == [real]
+    end
+
+    test "is renamed in an attribute the caller set after building the changeset", %{
+      branch: branch
+    } do
+      inside(branch, fn ->
+        parent = note!(%{body: "parent"})
+
+        Note
+        |> Ash.Changeset.for_create(:create, %{body: "child"}, authorize?: false)
+        |> Ash.Changeset.force_change_attribute(:parent_id, parent.id)
+        |> Ash.create!()
+      end)
+
+      assert {:ok, %Result{replayed: 2}} = Ramal.merge(branch, authorize?: false)
+
+      assert [%{id: parent_id, body: "parent"}, %{body: "child", parent_id: child_parent}] =
+               base_notes()
+
+      assert child_parent == parent_id
+    end
+  end
+
   describe "forks" do
     test "keep their own placeholders and each is renamed at its own merge", %{branch: branch} do
       inside(branch, fn -> note!(%{body: "parent"}) end)

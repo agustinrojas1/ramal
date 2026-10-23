@@ -206,7 +206,10 @@ This is the section that decides correctness. In a read action's preparation, wh
    the base rows the branch did not change, loading the relationships first with `reuse_values?: true` so the patched
    reads and the branch's foreign keys are used. Overlay records are judged by the whole filter. A sort on such a path
    loads the relationship and evaluates the calculation in memory. `Ramal.aggregate/4` leaves the delta for these
-   queries. The cost is a broader base read ([ADR 0025](adr/0025-relationship-filters-in-elixir.md)).
+   queries. The cost is a broader base read ([ADR 0025](adr/0025-relationship-filters-in-elixir.md)), narrowed for a leaf
+   through one changed `belongs_to` or `has_one`: the data-layer query keeps `(leaf and fk not in ^changed) or fk in ^matching`
+   (`has_one`: the leaf plus the sources the branch's related rows point at), and the Elixir check stays the final word
+   ([ADR 0047](adr/0047-relationship-filter-narrowing.md)).
 
 ### 4.2 How writes are captured
 
@@ -228,8 +231,11 @@ This is the section that decides correctness. In a read action's preparation, wh
 - Destroys mark the key `:deleted`. Updates of a `:created` row stay `:created` with the new record. The first write to
   an existing row keeps the row as the action found it in `base`, which `diff/1` compares against.
 - Every write is appended to the log as `{action_type, resource, action_name, params, actor, opts, at}`; `opts` has
-  `key`, `tenant` and `nested?`. A write made by a hook of another captured action (or by a managed relationship) is
-  `nested?: true`, and merge skips it because replaying the outer action runs the hook again. An update that changes
+  `key`, `tenant`, `nested?` and `root`, and `forced` when the caller set attributes after building the changeset
+  (`change_attribute/3`; the replay sets them again). A write made by a hook of another captured action (or by a
+  managed relationship) is `nested?: true`, and merge skips it because replaying the outer action runs the hook again;
+  `root` names the outermost action, and the replay gives the creates of its hooks the keys they had, so later entries
+  find those rows (ADR 0041). An update that changes
   no attribute is logged too, with the row left as it was and out of `diff/1`, because its hooks and managed
   relationships can write other rows and only the outer action can replay them (ADR 0014).
 - A failing action takes back its own writes and those of the actions its hooks ran.
@@ -536,7 +542,7 @@ action (ADR 0016).
 | 24 | `Ramal.context/1` makes the shared context public; `Ramal.Tools` offers six branch tools as data and one `call/3`, without merge, approve or reject, scoped by host options; no dependency on `ash_ai` | Tool servers call Ash with `context:` and cannot use `run/2`; an agent proposes and a person decides; the roadmap rules out a dependency on an agent framework. [ADR 0019](adr/0019-agent-tools.md) |
 | 25 | A read asks the branch process for the overlay entries it can use, not the whole slice; Ramal.Prefilter rules out overlay records with plain comparisons before the runtime filter, and `Ramal.run/2` asks for the status alone | Copying the overlay to the caller and filtering every overlay record with `Ash.Filter.Runtime` made the cost of a read, and of a get-and-update, grow with the overlay (measured in `bench/`). [ADR 0020](adr/0020-read-selects-overlay.md) |
 | 26 | The owner of a stored branch is a column Postgres generates from `state -> 'owner'`, with a partial hash index; `mix ramal.gen.migration` writes the migration that is missing, so 0.3.0 tables upgrade in place | A hot `owner:` filter scanned and parsed every `state` of the domain. A generated column needs no backfill, cannot disagree with `state`, and an old node writing the table during a deploy keeps it correct. A hash index because the owner is any term and a btree entry has a size limit. [ADR 0021](adr/0021-owner-column.md) |
-| 27 | A filter or sort through a relationship whose resource the branch changed is taken out of the data-layer query and evaluated in Elixir; `Ramal.aggregate/4` leaves the delta for it | The data layer joined the base's rows, so a renamed paddock left its herds matched by the old name. The cost is a broader base read. [ADR 0025](adr/0025-relationship-filters-in-elixir.md) |
+| 27 | A filter or sort through a relationship whose resource the branch changed is taken out of the data-layer query and evaluated in Elixir; `Ramal.aggregate/4` leaves the delta for it | The data layer joined the base's rows, so a renamed paddock left its herds matched by the old name. The cost is a broader base read, which a to-one path of one hop narrows with a rewritten conjunct. [ADR 0025](adr/0025-relationship-filters-in-elixir.md), [ADR 0047](adr/0047-relationship-filter-narrowing.md) |
 | 28 | Hooks check the branch again when the action runs; tasks started with `Task` inherit the branch through `$callers` | The branch was decided once, at build time, and lived in one process, so a changeset built elsewhere, a bulk task and a host task wrote for real. Ash 3.37 has no ambient context to set. [ADR 0023](adr/0026-branch-checked-at-execution.md) |
 | 29 | `Ramal.branch/2` refuses a domain with a resource that has write actions and neither uses `Ramal.Resource` nor opts out | A write to such a resource reached the database from inside a branch with no signal. [ADR 0024](adr/0027-domain-coverage.md) |
 | 30 | An aggregate a read loads is recomputed after the patch from the related records read through the branch; kinds and shapes it cannot do keep the database's value and emit the unpatched event | The database's aggregate never saw the overlay, and a row the branch changed came back with `Ash.NotLoaded`. The cost is a read of the related rows per recomputed row. [ADR 0029](adr/0029-declared-aggregates-in-branches.md) |

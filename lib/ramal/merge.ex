@@ -25,7 +25,10 @@ defmodule Ramal.Merge do
        the branch process keeps the branch as merged and writes it again when it is idle (ADR 0023).
 
   Rows a replayed create writes keep the primary key they had in the branch (the key is forced onto the changeset), so
-  later log entries and the branch's own diff still name the right rows.
+  later log entries and the branch's own diff still name the right rows. So do the rows a hook creates: the entries of
+  one action and of its hooks share a `root`, and the replay of the action gives its hooks' creates the keys they had,
+  in order (ADR 0041). Attributes the caller set on the changeset after `for_create` or
+  `for_update` (`Ash.Changeset.change_attribute/3`) are recorded with the entry as `forced` and set again by the replay.
 
   ## Options
 
@@ -40,9 +43,10 @@ defmodule Ramal.Merge do
   resources in `details.not_rolled_back`. `Ash.transact/3` runs the function as it is for such a data layer and returns
   its `{:error, _}` inside `{:ok, _}`, which the merge unwraps.
 
-  Known limits, documented in `docs/adr/0007-merge.md`: a branch works in one tenant (ADR 0034) and the staleness check reads with it, a top-level action
-  that targets a row created by a hook cannot be replayed, and changes made with `Ash.Changeset.change_attribute/3`
-  outside the action's own inputs are not in the log.
+  Known limits, documented in `docs/adr/0007-merge.md` and `docs/adr/0041-replay-keeps-hook-keys-and-caller-attributes.md`:
+  a branch works in one tenant (ADR 0034) and the staleness check reads with it, a hook that creates different rows
+  from one run to the next gives them the keys the replay's creates get, and arguments set after `for_create` or
+  `for_update` are not in the log.
 
   ## Example
 
@@ -51,7 +55,7 @@ defmodule Ramal.Merge do
 
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
-  alias Ramal.{Current, Error, Overlay, Resource, Supervisor, Telemetry}
+  alias Ramal.{Capture, Current, Error, Overlay, Resource, Supervisor, Telemetry}
   alias Ramal.Merge.Result
 
   @lock :for_update
@@ -378,11 +382,13 @@ defmodule Ramal.Merge do
   # `renames` maps the placeholder of a row whose key the database generates to the key the replayed create got
   # (ADR 0042). Every later entry is rewritten with it before it is replayed.
   defp replay(entries, fetched, opts) do
+    plans = key_plans(entries)
+
     entries
     |> Enum.reduce_while({:ok, Overlay.new(), 0, fetched, %{}}, fn {entry, index},
                                                                    {:ok, records, count, fetched,
                                                                     renames} ->
-      case replay_step(entry, index, entries, fetched, renames, opts) do
+      case replay_step(entry, index, entries, fetched, renames, {opts, plans}) do
         {:skip, fetched} ->
           {:cont, {:ok, records, count, fetched, renames}}
 
@@ -405,7 +411,7 @@ defmodule Ramal.Merge do
          entries,
          fetched,
          renames,
-         opts
+         {opts, plans}
        ) do
     if entry_opts[:nested?] do
       {:skip, %{}}
@@ -413,9 +419,13 @@ defmodule Ramal.Merge do
       entry = rename_entry(entry, renames)
       {row, fetched} = take_fetched(fetched, entry)
 
-      case replay_entry(entry, row, opts) do
+      case replay_entry(entry, row, opts, Map.get(plans, entry_opts[:root], [])) do
         {:ok, kind, ref, record} ->
-          renames = learn_rename(renames, entry, entry_opts, ref)
+          renames =
+            renames
+            |> learn_rename(entry, entry_opts, ref)
+            |> Map.merge(learn_planned(Capture.take_learned_keys()))
+
           {:ok, kind, ref, record, forget_upserted(fetched, ref, entry_opts), renames}
 
         {:error, error} ->
@@ -441,6 +451,12 @@ defmodule Ramal.Merge do
     end
   end
 
+  # The rows an entry's hooks created with a placeholder key got their real keys while the entry was replayed under its
+  # key plan (`Capture.take_learned_keys/0`); a later entry that names one of them by its placeholder finds it.
+  defp learn_planned(learned) do
+    Map.new(learned, fn {resource, placeholder, real} -> {placeholder, {resource, real}} end)
+  end
+
   # The placeholder values are unique within a branch (one counter, and random UUIDs), so a value names its row without
   # the resource.
   defp renamed_keys(renames) do
@@ -458,6 +474,12 @@ defmodule Ramal.Merge do
 
         _key ->
           entry_opts
+      end
+
+    entry_opts =
+      case entry_opts[:forced] do
+        nil -> entry_opts
+        forced -> Keyword.put(entry_opts, :forced, rename_value(forced, renames))
       end
 
     {type, resource, action, rename_value(params, renames), actor, entry_opts, at}
@@ -510,6 +532,35 @@ defmodule Ramal.Merge do
     end
   end
 
+  # The keys the hooks of each outermost action created in the branch, by the action's root, in the order they ran. A
+  # replay of the action creates those rows again and gives them these keys (ADR 0041). An upsert that found its row
+  # in the branch has the row's own key, so the replay's upsert is to find it again and takes no key.
+  defp key_plans(entries) do
+    entries
+    |> Enum.reduce(%{}, fn
+      {{:create, resource, _action, _params, _actor, entry_opts, _at}, _index}, plans ->
+        if entry_opts[:nested?] && entry_opts[:root] do
+          planned = {resource, planned_key(entry_opts)}
+          Map.update(plans, entry_opts[:root], [planned], &[planned | &1])
+        else
+          plans
+        end
+
+      _other, plans ->
+        plans
+    end)
+    |> Map.new(fn {root, plan} -> {root, Enum.reverse(plan)} end)
+  end
+
+  # A row with a placeholder key gets no forced key: the database gives it one, and the replay learns it (ADR 0042).
+  defp planned_key(entry_opts) do
+    case {entry_opts[:upsert], entry_opts[:generated_key?]} do
+      {{_identity, _fields, true}, _generated} -> :keep
+      {_created, true} -> {:generated, entry_opts[:key]}
+      {_created, _fixed} -> entry_opts[:key]
+    end
+  end
+
   defp take_fetched(fetched, {type, resource, _action, _params, _actor, entry_opts, _at})
        when type in [:update, :destroy] do
     if Ash.DataLayer.data_layer_can?(resource, {:lock, @lock}) do
@@ -532,7 +583,12 @@ defmodule Ramal.Merge do
         do: resource
   end
 
-  defp replay_entry({type, resource, action, params, recorded_actor, entry_opts, _at}, row, opts) do
+  defp replay_entry(
+         {type, resource, action, params, recorded_actor, entry_opts, _at},
+         row,
+         opts,
+         plan
+       ) do
     key = entry_opts[:key]
     actor = if Keyword.has_key?(opts, :actor), do: opts[:actor], else: recorded_actor
     authorize? = Keyword.get(opts, :authorize?, true)
@@ -541,21 +597,24 @@ defmodule Ramal.Merge do
 
     case type do
       :create ->
-        replay_create(resource, action, params, run_opts, entry_opts)
+        replay_create(resource, action, params, run_opts, entry_opts, plan)
 
       :update ->
         with {:ok, record} <- row_or_fetch(row, resource, key, entry_opts[:tenant]) do
           record
           |> Ash.Changeset.for_update(action, params, run_opts)
-          |> Ash.update(run_opts)
+          |> force_caller_changes(entry_opts)
+          |> run_planned(plan, &Ash.update(&1, run_opts))
           |> tag(:updated, ref)
         end
 
       :destroy ->
         with {:ok, record} <- row_or_fetch(row, resource, key, entry_opts[:tenant]) do
+          destroy_opts = Keyword.put(run_opts, :return_destroyed?, true)
+
           record
           |> Ash.Changeset.for_destroy(action, params, run_opts)
-          |> Ash.destroy(Keyword.put(run_opts, :return_destroyed?, true))
+          |> run_planned(plan, &Ash.destroy(&1, destroy_opts))
           |> tag(:deleted, ref)
         end
     end
@@ -565,7 +624,7 @@ defmodule Ramal.Merge do
   # It forces the key only when the branch found no row: a found row has its own key, and forcing the branch's would
   # conflict on the primary key instead of the identity. A create with a placeholder key (`generated_key?`) forces
   # nothing either: the database gives the row its key, and the record says which it is.
-  defp replay_create(resource, action, params, run_opts, entry_opts) do
+  defp replay_create(resource, action, params, run_opts, entry_opts, plan) do
     {run_opts, found?} =
       case entry_opts[:upsert] do
         nil ->
@@ -580,14 +639,18 @@ defmodule Ramal.Merge do
       end
 
     generated? = entry_opts[:generated_key?] == true
-    changeset = Ash.Changeset.for_create(resource, action, params, run_opts)
+
+    changeset =
+      resource
+      |> Ash.Changeset.for_create(action, params, run_opts)
+      |> force_caller_changes(entry_opts)
 
     changeset =
       if found? or generated?,
         do: changeset,
-        else: force_key(changeset, resource, entry_opts[:key])
+        else: Resource.force_key(changeset, entry_opts[:key])
 
-    case Ash.create(changeset, run_opts) do
+    case run_planned(changeset, plan, &Ash.create(&1, run_opts)) do
       {:ok, record} ->
         key = if generated?, do: Resource.key(resource, record), else: entry_opts[:key]
         {:ok, if(found?, do: :updated, else: :created), {resource, key}, record}
@@ -601,13 +664,15 @@ defmodule Ramal.Merge do
   defp tag({:error, _} = error, _kind, _ref), do: error
   defp tag(:ok, kind, ref), do: {:ok, kind, ref, nil}
 
-  defp force_key(changeset, resource, key) do
-    resource
-    |> Info.primary_key()
-    |> Enum.zip(key_values(key))
-    |> Enum.reduce(changeset, fn {field, value}, changeset ->
-      Ash.Changeset.force_change_attribute(changeset, field, value)
-    end)
+  defp run_planned(changeset, plan, run),
+    do: Capture.with_key_plan(plan, fn -> run.(changeset) end)
+
+  # What the caller set on the changeset outside the action's input, as the branch recorded it.
+  defp force_caller_changes(changeset, entry_opts) do
+    case entry_opts[:forced] do
+      nil -> changeset
+      forced -> Ash.Changeset.force_change_attributes(changeset, forced)
+    end
   end
 
   defp key_values(key) when is_tuple(key), do: Tuple.to_list(key)

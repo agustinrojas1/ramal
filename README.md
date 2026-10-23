@@ -301,8 +301,10 @@ Ramal is deliberately small, and it says what it does not do:
 - **Use `Ramal.load/3` to load onto a record the branch changed.** `Ash.load/3` reselects the foreign key from the
   database without running any hook, so after a herd moved paddock in the branch it still follows the old one. A load
   inside a read (`Ash.Query.load/2`) is patched.
-- **A filter or sort through a relationship the branch changed reads more.** Ramal checks that part of the filter in
-  memory on the rows the database returns for the rest, so keep attribute predicates next to it to narrow the read.
+- **A filter or sort through a relationship the branch changed can read more.** Ramal checks that part of the filter in
+  memory on the rows the database returns for the rest, so keep attribute predicates next to it to narrow the read. A
+  filter through one `belongs_to` or `has_one` is narrowed in the database too, except under `not`; `exists`, longer
+  paths and `has_many` paths read every row the rest of the filter allows.
 - **Text sorts inside a branch use byte order,** not the database's collation, once the branch has changed that resource:
   `Banana` sorts before `apple`. Numbers, dates and keys sort exactly.
 - **Every resource of the domain is covered or opts out.** `Ramal.branch/2` refuses a domain with a resource that has

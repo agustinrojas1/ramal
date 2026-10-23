@@ -1,6 +1,7 @@
 # 0025. A filter or sort through a relationship the branch changed is evaluated in Elixir
 
-Status: accepted, 2026-10-23. Amends [ADR 0004](0004-read-patching-hooks.md) and [ADR 0013](0013-aggregate-delta.md).
+Status: accepted, 2026-10-23. Amends [ADR 0004](0004-read-patching-hooks.md) and [ADR 0013](0013-aggregate-delta.md). Amended by
+[ADR 0047](0047-relationship-filter-narrowing.md), which keeps a narrowed form of a to-one conjunct in the data-layer query.
 
 ## Context
 

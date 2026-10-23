@@ -26,6 +26,19 @@ defmodule Ramal.Test.Serial.Note do
   actions do
     defaults([:read, :destroy, create: :*, update: :*])
 
+    # A hook that creates a row whose key the database generates: the Note that annotates this one.
+    update :annotate do
+      require_atomic?(false)
+      accept([])
+
+      change(fn changeset, _context ->
+        Ash.Changeset.after_action(changeset, fn _changeset, note ->
+          Ash.create!(__MODULE__, %{body: "annotation", parent_id: note.id}, authorize?: false)
+          {:ok, note}
+        end)
+      end)
+    end
+
     # An upsert on the code: a Note whose key the database generates, found by something other than its key.
     create :upsert do
       accept([:code, :body, :parent_id])

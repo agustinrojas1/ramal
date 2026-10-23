@@ -209,7 +209,7 @@ defmodule Ramal.Preparation do
     end
   end
 
-  defp relax(query, %{kept: kept}), do: %{query | filter: kept}
+  defp relax(query, %{data_layer: filter}), do: %{query | filter: filter}
 
   defp strip_paging(query, id, links, related) do
     case Server.overlay?(id, query.resource) do
@@ -503,7 +503,7 @@ defmodule Ramal.Preparation do
     base_keys = Enum.map(results, &Resource.key(resource, &1))
 
     with {:ok, slice, overlay_rows} <-
-           Server.select(id, resource, base_keys, Prefilter.compile(query.filter)),
+           Server.select(id, resource, base_keys, Prefilter.compile(prefilter_filter(query))),
          {:ok, results} <- check_base_rows(query, results, slice, id),
          {:ok, matching} <- matching_keys(query, slice, id),
          {:ok, patched} <-
@@ -597,6 +597,11 @@ defmodule Ramal.Preparation do
     Code.ensure_loaded?(module) and function_exported?(module, :has_expression?, 0) and
       module.has_expression?()
   end
+
+  # The overlay records the prefilter keeps are those the conjuncts that reach no changed resource may accept. A
+  # narrowed conjunct is left out on purpose: it judges a row by the base's foreign key, an overlay record has its own.
+  defp prefilter_filter(%{context: %{ramal: %{related: %{kept: kept}}}}), do: kept
+  defp prefilter_filter(query), do: query.filter
 
   # The filter the overlay's records are judged by: the whole one, which a read with a relaxed data-layer filter keeps.
   defp full_filter(%{context: %{ramal: %{related: %{full: full}}}}), do: full

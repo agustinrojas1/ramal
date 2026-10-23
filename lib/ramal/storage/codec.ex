@@ -64,6 +64,8 @@ defmodule Ramal.Storage.Codec do
     "tenant" => :tenant,
     "nested?" => :nested?,
     "upsert" => :upsert,
+    "root" => :root,
+    "forced" => :forced,
     "generated_key?" => :generated_key?
   }
 
