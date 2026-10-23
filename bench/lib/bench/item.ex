@@ -4,6 +4,7 @@ defmodule Bench.Domain do
 
   resources do
     resource(Bench.Item)
+    resource(Bench.Note)
   end
 end
 
@@ -29,5 +30,29 @@ defmodule Bench.Item do
     attribute(:name, :string, allow_nil?: false, public?: true)
     attribute(:score, :integer, allow_nil?: false, public?: true)
     attribute(:bucket, :integer, allow_nil?: false, public?: true)
+  end
+end
+
+defmodule Bench.Note do
+  @moduledoc false
+  # A second resource that no case writes to, so that a read of it shows what a branch with a large overlay of
+  # `Bench.Item` charges for a resource it did not touch.
+  use Ash.Resource,
+    domain: Bench.Domain,
+    data_layer: AshPostgres.DataLayer,
+    extensions: [Ramal.Resource]
+
+  postgres do
+    table("bench_notes")
+    repo(Bench.Repo)
+  end
+
+  actions do
+    defaults([:read, create: :*])
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:body, :string, allow_nil?: false, public?: true)
   end
 end

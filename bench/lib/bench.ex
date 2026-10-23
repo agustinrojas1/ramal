@@ -9,6 +9,7 @@ defmodule Bench do
       rows: 20_000,
       buckets: 100,
       overlay_sizes: [0, 100, 1_000],
+      other_overlay_sizes: [1_000, 10_000],
       runs: 30,
       warmup: 3,
       tree: %{depth: 3, branching: 4, keep: 2, mutate: 5}
@@ -17,13 +18,24 @@ defmodule Bench do
       rows: 500,
       buckets: 10,
       overlay_sizes: [0, 10, 50],
+      other_overlay_sizes: [50, 200],
       runs: 5,
       warmup: 1,
       tree: %{depth: 2, branching: 3, keep: 2, mutate: 3}
     }
   }
 
-  @cases [:fork, :diff, :read, :aggregate, :write, :merge, :fingerprint, :tree_search]
+  @cases [
+    :fork,
+    :diff,
+    :read,
+    :read_other,
+    :aggregate,
+    :write,
+    :merge,
+    :fingerprint,
+    :tree_search
+  ]
 
   @spec run(:full | :quick, keyword) :: [map]
   def run(profile_name, opts \\ []) do
