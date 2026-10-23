@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - **`Ramal.list/2` skips a stored branch it cannot decode** (with `Ramal.Storage.Postgres`) instead of failing for the whole domain, and emits `[:ramal, :storage, :unreadable]` with the branch id, the domain and a message that holds no stored value. `Ramal.get/1` of that id still returns the `:storage` error. One damaged row, or one written by a newer Ramal during a rolling deploy, no longer hides every other branch from `list/2` and the inspector.
 
+- **Documented that a branch holds only the writes of create, update and destroy actions.** A generic action and the outside effects of a hook (an HTTP call, an email, an Oban job, a `Repo` write) run for real while a branch is open. SECURITY.md, `docs/limits.md` and `usage-rules.md` now say so and how to make a hook skip itself.
+
 ### Fixed
 
 - **A stored branch whose state is not an object with a version no longer crashes the caller.** `Ramal.get/1` and `Ramal.list/2` (and a durable branch's write log) now return `{:error, %Ramal.Error{reason: :storage}}` for a `state` of `{}`, `null`, a list or a string, or a `version` that is not a number, as SECURITY.md says they do. Found by fuzzing the decoder with mutated states. Only someone who can already write the `ramal_branches` table can store such a value.
