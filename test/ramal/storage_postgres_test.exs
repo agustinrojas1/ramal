@@ -4,6 +4,7 @@ defmodule Ramal.Storage.PostgresTest do
 
   import Ramal.BranchCase, only: [eventually: 1, loaded?: 1]
 
+  alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
   alias Ramal.{Branch, Error}
   alias Ramal.Storage.Codec
@@ -59,6 +60,30 @@ defmodule Ramal.Storage.PostgresTest do
 
       assert {:ok, %{name: "renamed", status: :merged}} = Postgres.fetch(branch.id, @config)
       assert {:ok, [_one]} = Postgres.list(Farm, [], @config)
+    end
+
+    test "list skips a row it cannot decode and announces it; fetch still reports the error" do
+      good = branch()
+      bad = branch(name: "damaged")
+      :ok = Postgres.put(good, @config)
+      :ok = Postgres.put(bad, @config)
+      {:ok, uuid} = Ecto.UUID.dump(bad.id)
+      SQL.query!(TestRepo, "UPDATE ramal_branches SET state = '{}'::jsonb WHERE id = $1", [uuid])
+
+      :telemetry.attach(
+        "unreadable-test",
+        [:ramal, :storage, :unreadable],
+        fn _event, _measurements, metadata, pid -> send(pid, {:unreadable, metadata}) end,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach("unreadable-test") end)
+
+      assert {:ok, [^good]} = Postgres.list(Farm, [], @config)
+      assert_received {:unreadable, %{branch_id: id, domain: Farm, message: message}}
+      assert id == bad.id
+      refute message =~ "{}"
+      assert {:error, %Error{reason: :storage}} = Postgres.fetch(bad.id, @config)
     end
 
     test "an unknown id and an id that is not a UUID are both :not_found" do
@@ -125,8 +150,6 @@ defmodule Ramal.Storage.PostgresTest do
   end
 
   describe "the write log" do
-    alias Ecto.Adapters.SQL
-
     defp durable(wal \\ 0), do: branch(durable: true, wal: wal)
 
     defp delta(n),
