@@ -109,18 +109,14 @@ defmodule Ramal.Preparation.Aggregates do
   end
 
   defp opts(query, aggregate) do
-    private = query.context[:private] || %{}
-
     authorize =
-      cond do
-        aggregate.authorize? == false -> [authorize?: false]
-        Map.has_key?(private, :authorize?) -> [authorize?: private.authorize?]
-        true -> []
-      end
+      if aggregate.authorize? == false,
+        do: [authorize?: false],
+        else: Ramal.Ash.authorize_opts(query)
 
     [
       domain: query.domain,
-      actor: private[:actor],
+      actor: Ramal.Ash.actor(query),
       tenant: query.tenant,
       reuse_values?: true,
       context: Map.take(query.context, [:shared])

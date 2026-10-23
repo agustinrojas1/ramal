@@ -63,7 +63,6 @@ defmodule Ramal.Resource do
     sections: [@ramal],
     transformers: [Ramal.Resource.Transformer]
 
-  alias Ash.Actions.Read
   alias Ramal.Branch.Server
   alias Spark.Dsl.Extension
 
@@ -316,15 +315,14 @@ defmodule Ramal.Resource do
   # Every row `query` matches, whatever the read action's pagination. Ramal reads with it where it needs the whole set:
   # the staleness check of a merge and the rows of `Ramal.aggregate/4`. `Ash.read/2` returns a page, or fails with
   # `PaginationRequired`, for an action with `pagination required?: true`, and `page: false` fails the same way.
-  # `Ash.Actions.Read.unpaginated_read/3` is what Ash itself reads relationships with (`lib/ash/actions/read/read.ex`,
-  # Ash 3.37): it skips the action's `paginate` step and still runs the read preparations, so a branch patches the
-  # whole list once.
+  # `Ramal.Ash.unpaginated_read/2` is what Ash itself reads relationships with: it skips the action's `paginate` step
+  # and still runs the read preparations, so a branch patches the whole list once.
   @spec read_all(Ash.Query.t() | module, keyword) :: {:ok, [struct]} | {:error, term}
   def read_all(query, opts \\ []) do
     # Ash gives a read of an action with a `default_limit` that limit as its page even when the read skips pagination,
     # and `Ramal.Preparation` would cut it; the flag says this read wants the whole list.
     query = query |> Ash.Query.new() |> Ash.Query.set_context(%{ramal: %{whole?: true}})
-    Read.unpaginated_read(query, nil, opts)
+    Ramal.Ash.unpaginated_read(query, opts)
   end
 
   defp attribute_names(resource),

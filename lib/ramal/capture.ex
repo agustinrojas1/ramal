@@ -183,20 +183,17 @@ defmodule Ramal.Capture do
   end
 
   defp capture(changeset, id, origin) do
-    if upsert?(changeset) and changeset.context[:private][:upsert_condition] != nil do
+    if Ramal.Ash.upsert?(changeset) and Ramal.Ash.upsert_condition(changeset) != nil do
       Ash.Changeset.add_error(changeset, upsert_condition_error(changeset))
     else
       install(changeset, id, origin)
     end
   end
 
-  defp upsert?(changeset),
-    do: changeset.action_type == :create and changeset.context[:private][:upsert?] == true
-
   defp install(changeset, id, origin) do
     case Resource.ensure_tenant(changeset.resource, changeset.tenant, id) do
       :ok ->
-        upsert? = upsert?(changeset)
+        upsert? = Ramal.Ash.upsert?(changeset)
 
         changeset
         |> Ash.Changeset.set_context(Current.shared_context(id))
@@ -390,7 +387,7 @@ defmodule Ramal.Capture do
 
           changeset
           |> keep_generated_key(record, extra)
-          |> Ash.Changeset.set_result({:ok, result_record(kind, record, resource)})
+          |> Ramal.Ash.skip_data_layer({:ok, result_record(kind, record, resource)})
           |> settle_foreign_keys(id, {resource, key}, extra[:upsert])
 
         {:ok, {:error, :destroyed}, _summary} ->
@@ -636,11 +633,11 @@ defmodule Ramal.Capture do
   # is not a default, without the keys, and the update defaults come on top.
   defp plan_upsert(changeset, built) do
     resource = changeset.resource
-    name = changeset.context[:private][:upsert_identity]
+    name = Ramal.Ash.upsert_identity(changeset)
     identity = name && Info.identity(resource, name)
     keys = conflict_keys(resource, identity)
 
-    given = changeset.context[:private][:upsert_fields]
+    given = Ramal.Ash.upsert_fields(changeset)
     set = Map.keys(changeset.attributes) -- Map.get(changeset, :defaults, [])
 
     fields =
@@ -652,7 +649,7 @@ defmodule Ramal.Capture do
       keys: keys,
       values: Enum.map(keys, &{&1, Map.get(built, &1)}),
       fields: fields,
-      touch?: changeset.context[:private][:touch_update_defaults?] != false,
+      touch?: Ramal.Ash.touch_update_defaults?(changeset),
       found: nil
     }
   end
@@ -714,7 +711,7 @@ defmodule Ramal.Capture do
       end)
 
     changeset.resource
-    |> Ash.Query.do_filter(filter)
+    |> Ramal.Ash.do_filter(filter)
     |> add_where(upsert.definition)
     |> Ash.Query.limit(1)
     |> Ash.read_one(
@@ -729,7 +726,7 @@ defmodule Ramal.Capture do
   end
 
   defp add_where(query, %{where: where}) when not is_nil(where),
-    do: Ash.Query.do_filter(query, where)
+    do: Ramal.Ash.do_filter(query, where)
 
   defp add_where(query, _definition), do: query
 
@@ -794,8 +791,7 @@ defmodule Ramal.Capture do
         extra
 
     {changeset.action_type, changeset.resource, changeset.action.name, changeset.params,
-     changeset.context[:private][:actor], with_forced(opts, changeset, nested?),
-     DateTime.utc_now()}
+     Ramal.Ash.actor(changeset), with_forced(opts, changeset, nested?), DateTime.utc_now()}
   end
 
   # A nested entry is not replayed (the hook that made it runs again), so what its caller set is not needed.
