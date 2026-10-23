@@ -4,8 +4,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `Ramal.Change.redact/1` returns a change with the values of `sensitive?` attributes replaced by `"[redacted]"`.
+
 ### Security
 
+- `ramal_branch_diff` of `Ramal.Tools` no longer sends the values of `sensitive?` attributes to the model: they are returned as `[redacted]`, as the inspector shows them (#118).
+- `ramal_discard_branch` refuses a `:proposed` branch, so an agent cannot withdraw a proposal a person is reviewing (#118).
+- `SECURITY.md` has a section on the tools, and the `docs/agents.md` examples check the branch's owner before running in a branch the model or an MCP client named (#118).
 - The Release workflow publishes only from `main` and only for a commit whose CI run succeeded (it now starts from a successful CI run, or from a manual run on `main`), reads the Hex key from the `hex` environment in the two publish steps only, and pins its actions to commit SHAs. `CONTRIBUTING.md` says how to set the environment up; `SECURITY.md` names GitHub private vulnerability reporting as a channel (#119).
 
 ## [0.4.2] - 2026-10-23

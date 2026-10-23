@@ -132,6 +132,27 @@ defmodule Ramal.ToolsTest do
     end
   end
 
+  describe "sensitive attributes" do
+    alias Ramal.Test.Other
+    alias Ramal.Test.Other.Credential
+
+    test "a diff sends [redacted] for a sensitive attribute and the values of the others" do
+      opts = [domain: Other, owner: "session-1"]
+      id = open!(opts)
+
+      Ramal.run!(id, fn ->
+        Ash.create!(Credential, %{label: "ci", secret: "hunter2"}, authorize?: false)
+      end)
+
+      assert %{"changes" => [%{"kind" => "created", "changes" => changes}]} =
+               call!("ramal_branch_diff", %{"branch_id" => id}, opts)
+
+      assert %{"before" => "[redacted]", "after" => "[redacted]"} = changes["secret"]
+      assert %{"before" => nil, "after" => "ci"} = changes["label"]
+      refute inspect(changes) =~ "hunter2"
+    end
+  end
+
   describe "propose" do
     test "freezes the branch and records the configured proposer and the reason" do
       id = open!()
@@ -141,6 +162,16 @@ defmodule Ramal.ToolsTest do
 
       assert {:ok, %{status: :proposed, proposal: %{proposer: "planner", reason: "crowded"}}} =
                Ramal.get(id)
+    end
+
+    test "a proposed branch cannot be discarded through the tools, because a person is reviewing it" do
+      id = open!()
+      call!("ramal_propose_branch", %{"branch_id" => id, "reason" => "crowded"})
+
+      assert {:error, "proposed:" <> _} =
+               Tools.call("ramal_discard_branch", %{"branch_id" => id}, @opts)
+
+      assert {:ok, %{status: :proposed}} = Ramal.get(id)
     end
 
     test "needs a reason" do
