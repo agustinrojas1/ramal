@@ -238,18 +238,6 @@ A branch of a multitenant application works in one tenant: `Ramal.branch(MyApp.F
 inside it must carry that tenant (`:tenant_mismatch` otherwise), other tenants' rows never enter its overlay, and the
 merge checks and replays in the tenant. Both the attribute and the schema-per-tenant strategies work.
 
-### Per-tenant branches
-
-A branch of a multitenant application works in one tenant: `Ramal.branch(MyApp.Farm, tenant: "acme")`. Reads and writes
-inside it must carry that tenant (`:tenant_mismatch` otherwise), other tenants' rows never enter its overlay, and the
-merge checks and replays in the tenant. Both the attribute and the schema-per-tenant strategies work.
-
-### Per-tenant branches
-
-A branch of a multitenant application works in one tenant: `Ramal.branch(MyApp.Farm, tenant: "acme")`. Reads and writes
-inside it must carry that tenant (`:tenant_mismatch` otherwise), other tenants' rows never enter its overlay, and the
-merge checks and replays in the tenant. Both the attribute and the schema-per-tenant strategies work.
-
 ### Per-user branches
 
 Pass `owner:` to `Ramal.branch/2` and `Ramal.list(domain, owner: user_id)` shows each user their own. It is a filter, not
