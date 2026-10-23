@@ -13,7 +13,7 @@ defmodule Ramal.Preparation.Related do
   # rest stays in the data-layer query, so Postgres still narrows the rows by them. A conjunct that is an `or` or a
   # `not` is one unit, removed whole when any of its refs is affected. Removing a conjunct only widens the candidate
   # rows, never narrows them, so no row the full filter accepts is lost. The cost is a broader base read, and an
-  # in-memory check of the removed conjuncts for each base row the branch did not change.
+  # in-memory check of the removed conjuncts for each base row the branch did not change; ADR 0047 narrows it below.
   #
   # An aggregate in a filter or sort (`herd_count >= 2`) is one more way to reach a relationship: the data layer counts
   # the base's herds, so its ref counts as reaching every resource on the aggregate's path, and a conjunct that
@@ -24,8 +24,43 @@ defmodule Ramal.Preparation.Related do
   # the path of an `exists(...)` prefixed to the refs inside it, and with the refs of an expression calculation when
   # asked to expand calculations. A filter that names an aggregate holds an `Ash.Query.Aggregate` as the ref's
   # attribute, and a sort on one holds it in place of the field name (`{%Ash.Query.Aggregate{}, :desc}`).
+  #
+  # Narrowing (ADR 0047). Taking a conjunct out of the data-layer query makes the database return every row the other
+  # conjuncts allow. For a leaf that reaches one changed `belongs_to` or `has_one` of one hop the query can keep a
+  # rewritten form of it, which judges the rows whose related row the branch did not change by the base as before and
+  # the others by the branch's version of the related row:
+  #
+  #     (paddock.name == "L07" and (is_nil(paddock_id) or paddock_id not in ^changed)) or paddock_id in ^matching
+  #
+  # `changed` are the keys of the related rows the branch has entries for (created, updated and destroyed), `matching`
+  # those whose branch version satisfies the leaf (`Ash.Filter.Runtime.filter_matches/3` on the overlay's record, and a
+  # blank record for a destroyed one, which is what the LEFT JOIN gives a missing row: `is_nil(paddock.name)` holds).
+  # The `is_nil(paddock_id)` keeps a row without a related row on the database's judgement, where `not in` would make
+  # it unknown. A `has_one` keeps its leaf as it is and adds `source_attribute in ^values`, the destination attribute
+  # values of the branch's versions of the related rows, because the overlay does not hold the version a changed row
+  # had in the base and so cannot name the sources it moved away from; those are only extra candidates, which the
+  # check in Elixir drops. For the same reason a `has_one` leaf that a missing related row satisfies
+  # (`is_nil(first_herd.name)`) is not narrowed: a source that lost its row starts to match, and the overlay cannot say
+  # which.
+  #
+  # The rewrite only narrows. The conjunct stays among `removed`, so every row the database returns is checked in
+  # Elixir as before; what the rewrite has to guarantee is that it never excludes a row the conjunct accepts. That
+  # holds for a tree of `and` and `or` over such leaves (Kleene logic is monotone in them, so a leaf that is wrong only
+  # where the true answer is unknown cannot change whether the tree is true). A `not` over a leaf that reaches the
+  # changed relationship is not: the rewrite is exact about "true" and says "false" where the runtime says "unknown",
+  # which `not` would turn into a match or a miss, so such a conjunct is left to Elixir whole. So is a leaf with an
+  # `exists`, a calculation, an aggregate, a path of more than one hop, a root attribute next to the related one, a
+  # `many_to_many`/`has_many` path, or a relationship with its own filter, read action, manual definition or `through`
+  # path (ADR 0046).
+  # Confirmed in `lib/ash/filter/filter.ex` (3.37): `Ash.Filter.map/2` visits a `Ref` through the function and stops
+  # on `{:halt, expression}`, which is how the leaf is rebuilt with the path taken off; `Ash.Filter.parse/2` takes the
+  # keyword form (`[paddock_id: [in: ids], or: [...], not: [...]]`) and returns hydrated expressions that can sit next
+  # to the ones of the query; `Ash.Filter.list_refs/5` lists the refs of a leaf; `Ash.Filter.Runtime.filter_matches/4`
+  # (`lib/ash/filter/runtime.ex`) keeps a record unless the filter gives `false` or `nil`, which is how an unknown counts
+  # as no match.
 
-  alias Ash.Query.BooleanExpression
+  alias Ash.Filter.Runtime
+  alias Ash.Query.{BooleanExpression, Not, Ref}
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
 
@@ -33,6 +68,7 @@ defmodule Ramal.Preparation.Related do
   @type plan :: %{
           required(:full) => Ash.Filter.t() | nil,
           required(:kept) => Ash.Filter.t() | nil,
+          required(:data_layer) => Ash.Filter.t() | nil,
           required(:removed) => Ash.Filter.t() | nil,
           required(:select) => [atom],
           required(:sort?) => boolean,
@@ -45,16 +81,23 @@ defmodule Ramal.Preparation.Related do
   """
   @spec affected?(Ash.Query.t(), String.t()) :: {:ok, boolean} | {:error, Ramal.Error.t()}
   def affected?(query, id) do
-    with {:ok, plan} <- plan(query, id), do: {:ok, plan != :safe}
+    with {:ok, plan} <- plan(query, id, narrow?: false), do: {:ok, plan != :safe}
   end
 
   @doc """
   `:safe` when the data layer's filter and sort can be trusted, or the `t:plan/0`: `removed` is the filter to evaluate
-  in Elixir on the base rows, `kept` what the data layer keeps, `full` the whole filter for the overlay's records, and
-  `select` the attributes the Elixir check needs on a base row that selects only some.
+  in Elixir on the base rows, `kept` the conjuncts that reach no changed resource, `data_layer` the filter the database
+  gets (`kept`, plus the narrowed form of each conjunct that has one, ADR 0047), `full` the whole filter for the
+  overlay's records, and `select` the attributes the Elixir check needs on a base row that selects only some.
+
+  ## Options
+
+    * `:narrow?` - whether to build the narrowed conjuncts, which read the branch's entries of the related resource.
+      Defaults to `true`; the check of `affected?/2` does not need them.
   """
-  @spec plan(Ash.Query.t(), String.t()) :: {:ok, :safe | plan} | {:error, Ramal.Error.t()}
-  def plan(query, id) do
+  @spec plan(Ash.Query.t(), String.t(), keyword) ::
+          {:ok, :safe | plan} | {:error, Ramal.Error.t()}
+  def plan(query, id, opts \\ []) do
     filter_refs = refs(query.filter)
     sort_refs = Enum.flat_map(List.wrap(query.sort), &sort_refs(query.resource, &1))
 
@@ -62,12 +105,12 @@ defmodule Ramal.Preparation.Related do
       {:ok, :safe}
     else
       with {:ok, changed} <- changed_resources(query.resource, filter_refs ++ sort_refs, id) do
-        {:ok, build(query, changed, sort_refs)}
+        build(query, changed, sort_refs, id, Keyword.get(opts, :narrow?, true))
       end
     end
   end
 
-  defp build(query, changed, sort_refs) do
+  defp build(query, changed, sort_refs, id, narrow?) do
     {kept, removed} =
       query.filter
       |> conjuncts()
@@ -76,18 +119,241 @@ defmodule Ramal.Preparation.Related do
       end)
 
     sort? = Enum.any?(sort_refs, &affected_ref?(&1, query.resource, changed))
+    context = %{resource: query.resource, domain: query.domain, changed: changed, id: id}
 
     if removed == [] and not sort? do
-      :safe
+      {:ok, :safe}
     else
-      %{
-        full: query.filter,
-        kept: filter_of(query.filter, kept),
-        removed: filter_of(query.filter, removed),
-        select: selects(query.resource, Enum.flat_map(removed, &refs/1) ++ sort_refs),
-        sort?: sort?,
-        paths: sort_paths(query.resource, sort_refs, changed)
-      }
+      plan(
+        query,
+        %{kept: kept, removed: removed, sort?: sort?, sort_refs: sort_refs, changed: changed},
+        context,
+        narrow?
+      )
+    end
+  end
+
+  defp plan(query, parts, context, narrow?) do
+    %{kept: kept, removed: removed, sort?: sort?, sort_refs: sort_refs, changed: changed} = parts
+
+    with {:ok, narrowed} <- if(narrow?, do: narrow_all(removed, context), else: {:ok, []}) do
+      {:ok,
+       %{
+         full: query.filter,
+         kept: filter_of(query.filter, kept),
+         data_layer: filter_of(query.filter, kept ++ narrowed),
+         removed: filter_of(query.filter, removed),
+         select: selects(query.resource, Enum.flat_map(removed, &refs/1) ++ sort_refs),
+         sort?: sort?,
+         paths: sort_paths(query.resource, sort_refs, changed)
+       }}
+    end
+  end
+
+  # The narrowed form of each removed conjunct that has one (ADR 0047). A conjunct without stays out of the data-layer
+  # query, as before.
+  defp narrow_all(removed, context) do
+    Enum.reduce_while(removed, {:ok, []}, fn conjunct, {:ok, narrowed} ->
+      case narrow_expression(conjunct, context) do
+        {:ok, expression} -> {:cont, {:ok, [expression | narrowed]}}
+        :skip -> {:cont, {:ok, narrowed}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp narrow_expression(
+         %BooleanExpression{op: op, left: left, right: right} = expression,
+         context
+       )
+       when op in [:and, :or] do
+    with {:ok, left} <- narrow_expression(left, context),
+         {:ok, right} <- narrow_expression(right, context) do
+      {:ok, %{expression | left: left, right: right}}
+    end
+  end
+
+  # See the moduledoc note: under a `not` the rewrite could turn "unknown" into a match or a miss.
+  defp narrow_expression(%Not{expression: inner} = expression, context) do
+    if reaches_changed?(inner, context), do: :skip, else: {:ok, expression}
+  end
+
+  defp narrow_expression(leaf, context) do
+    if reaches_changed?(leaf, context), do: narrow_leaf(leaf, context), else: {:ok, leaf}
+  end
+
+  defp reaches_changed?(expression, %{resource: resource, changed: changed}),
+    do: Enum.any?(refs(expression), &affected_ref?(&1, resource, changed))
+
+  defp narrow_leaf(leaf, context) do
+    case single_hop(leaf, context.resource) do
+      {:ok, %{type: :belongs_to} = relationship} -> narrow_belongs_to(leaf, relationship, context)
+      {:ok, %{type: :has_one} = relationship} -> narrow_has_one(leaf, relationship, context)
+      :error -> :skip
+    end
+  end
+
+  # The relationship a leaf reaches when it is the one the rewrite can handle: every ref is a plain attribute of the
+  # same one-hop path, and nothing else that Ash evaluates in a way the rewrite cannot reproduce on the related row
+  # alone.
+  defp single_hop(leaf, resource) do
+    with [%{relationship_path: [name]} | _] <- Ash.Filter.list_refs(leaf, false, false, false),
+         true <- pure_leaf?(leaf, name),
+         %{type: type} = relationship when type in [:belongs_to, :has_one] <-
+           Info.relationship(resource, name),
+         true <- plain_relationship?(relationship) do
+      {:ok, relationship}
+    else
+      _other -> :error
+    end
+  end
+
+  defp plain_relationship?(relationship) do
+    is_nil(Map.get(relationship, :filter)) and is_nil(Map.get(relationship, :read_action)) and
+      is_nil(Map.get(relationship, :manual)) and Map.get(relationship, :no_attributes?) != true and
+      is_nil(Map.get(relationship, :through)) and
+      (relationship.type != :belongs_to or
+         Info.primary_key(relationship.destination) == [relationship.destination_attribute])
+  end
+
+  defp pure_leaf?(%Ref{relationship_path: [name], attribute: %Ash.Resource.Attribute{}}, name),
+    do: true
+
+  defp pure_leaf?(%Ref{}, _name), do: false
+
+  defp pure_leaf?(%{__operator__?: true, left: left, right: right}, name),
+    do: pure_leaf?(left, name) and pure_leaf?(right, name)
+
+  defp pure_leaf?(%{__function__?: true, arguments: arguments}, name),
+    do: Enum.all?(arguments, &pure_leaf?(&1, name))
+
+  defp pure_leaf?(%MapSet{} = set, name), do: Enum.all?(set, &pure_leaf?(&1, name))
+  defp pure_leaf?(list, name) when is_list(list), do: Enum.all?(list, &pure_leaf?(&1, name))
+  defp pure_leaf?({key, value}, name) when is_atom(key), do: pure_leaf?(value, name)
+
+  defp pure_leaf?(%module{}, _name),
+    do:
+      module not in [
+        Ash.Query.Exists,
+        Ash.Query.Call,
+        Ash.Query.Parent,
+        Ash.Query.Not,
+        Ash.Query.BooleanExpression,
+        Ash.Query.Calculation,
+        Ash.Query.Aggregate,
+        Ash.CustomExpression
+      ]
+
+  defp pure_leaf?(_literal, _name), do: true
+
+  # A belongs_to whose destination attribute is the primary key: one related row per source row, so the branch's version
+  # of that row decides the leaf for the source rows that point at it.
+  defp narrow_belongs_to(leaf, relationship, context) do
+    destination = relationship.destination
+    attribute = relationship.destination_attribute
+
+    with {:ok, keys} <- Server.keys(context.id, destination),
+         {:ok, slice, _count} <- Server.select(context.id, destination, [], nil),
+         {:ok, matching} <- matching_values(leaf, destination, slice, attribute, context),
+         {:ok, blank?} <- matches_blank?(leaf, destination, context) do
+      present = MapSet.new(Map.keys(slice))
+      deleted = Enum.reject(keys, &MapSet.member?(present, &1))
+      matching = if blank?, do: matching ++ deleted, else: matching
+      rewrite_belongs_to(leaf, relationship.source_attribute, keys, matching, context)
+    end
+  end
+
+  defp matching_values(leaf, destination, slice, attribute, context) do
+    records = for {_key, {_kind, record}} <- slice, do: record
+
+    with {:ok, matches} <-
+           Runtime.filter_matches(
+             context.domain,
+             records,
+             on_destination(leaf, destination)
+           ) do
+      {:ok, Enum.map(matches, &Map.fetch!(&1, attribute))}
+    end
+  end
+
+  # A destroyed related row is what a LEFT JOIN finds when there is none: every attribute is `nil`.
+  defp matches_blank?(leaf, destination, context) do
+    with {:ok, matches} <-
+           Runtime.filter_matches(
+             context.domain,
+             [struct(destination)],
+             on_destination(leaf, destination)
+           ) do
+      {:ok, matches != []}
+    end
+  end
+
+  defp on_destination(leaf, destination) do
+    expression =
+      Ash.Filter.map(leaf, fn
+        %Ref{} = ref -> {:halt, %{ref | relationship_path: []}}
+        other -> other
+      end)
+
+    %Ash.Filter{resource: destination, expression: expression}
+  end
+
+  defp rewrite_belongs_to(leaf, source_attribute, changed, matching, context) do
+    guard = [
+      or: [
+        [{source_attribute, [is_nil: true]}],
+        [not: [{source_attribute, [in: changed]}]]
+      ]
+    ]
+
+    with {:ok, guard} <- parse(context.resource, guard) do
+      add_sources(
+        BooleanExpression.optimized_new(:and, leaf, guard),
+        source_attribute,
+        matching,
+        context
+      )
+    end
+  end
+
+  # The leaf as it is, or one more candidate set: the sources whose related row is one the branch has.
+  defp add_sources(expression, _attribute, [], _context), do: {:ok, expression}
+
+  defp add_sources(expression, attribute, values, context) do
+    case parse(context.resource, [{attribute, [in: values]}]) do
+      {:ok, extra} -> {:ok, BooleanExpression.optimized_new(:or, expression, extra)}
+      :skip -> :skip
+    end
+  end
+
+  defp parse(resource, statement) do
+    case Ash.Filter.parse(resource, statement) do
+      {:ok, %Ash.Filter{expression: expression}} -> {:ok, expression}
+      {:error, _error} -> :skip
+    end
+  end
+
+  # A has_one: the leaf stays as the database judges it, and the sources the branch's versions of the related rows point
+  # at are added as candidates (see the moduledoc note on why the old ones cannot be named).
+  #
+  # A leaf that a source without a related row satisfies (`is_nil(first_herd.name)`) is not narrowed: a source whose
+  # related row the branch destroyed or moved to another source starts to satisfy it, the overlay does not hold which
+  # sources those are (a `:deleted` entry has no record, an update has only the new one), and the database judges them
+  # by the base, where they still have their row.
+  defp narrow_has_one(leaf, relationship, context) do
+    with {:ok, slice, _count} <- Server.select(context.id, relationship.destination, [], nil),
+         {:ok, false} <- matches_blank?(leaf, relationship.destination, context) do
+      values =
+        for {_key, {_kind, record}} <- slice,
+            value = Map.get(record, relationship.destination_attribute),
+            value != nil,
+            uniq: true,
+            do: value
+
+      add_sources(leaf, relationship.source_attribute, values, context)
+    else
+      {:ok, true} -> :skip
+      {:error, _} = error -> error
     end
   end
 

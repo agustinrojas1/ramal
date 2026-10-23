@@ -52,6 +52,9 @@ defmodule Ramal.Test.Farm.Paddock do
   relationships do
     has_many(:herds, Ramal.Test.Farm.Herd, public?: true)
 
+    # One herd per paddock in the narrowing tests (ADR 0047); the seeds' L07 has two, so they do not read it.
+    has_one(:first_herd, Ramal.Test.Farm.Herd, public?: true)
+
     # Paths through other relationships: every hop is read through the lateral join of AshPostgres (ADR 0046).
     has_many(:herd_moves, Ramal.Test.Farm.Move, public?: true, through: [:herds, :moves])
 

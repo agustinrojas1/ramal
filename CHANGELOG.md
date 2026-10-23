@@ -12,6 +12,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- A filter through a `belongs_to` or `has_one` the branch changed (`Herd |> filter(paddock.name == "L07")` after the branch renamed a paddock) keeps a rewritten form in the data-layer query, so the database returns the herds of the paddocks the filter accepts and the ones the branch changed instead of every herd; the check in memory is unchanged, so the answers are the same and `base_rows` of the `[:ramal, :read, :patch]` event shrinks. A leaf under `not`, `exists`, a longer path or a `has_many` path is still left to Elixir whole. ADR 0047.
 - Docs: `bench/README.md` and the README's benchmark figures come from a rerun of the full benchmark and `bench.memory` on 0.6.1, with the noise between two runs stated; the raw samples are in `bench/results/published/`.
 
 ### Fixed

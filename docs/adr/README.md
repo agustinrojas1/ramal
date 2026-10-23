@@ -28,7 +28,7 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0022](0022-compact-state.md) | The stored state is compact (version 2) | accepted |
 | [0023](0023-merge-commit-is-final.md) | A merge whose transaction committed is never reported as failed | accepted |
 | [0024](0024-text-sort-order.md) | A text sort inside a branch is byte order, and Ramal does not guess a collation | accepted |
-| [0025](0025-relationship-filters-in-elixir.md) | A filter or sort through a relationship the branch changed is evaluated in Elixir | accepted |
+| [0025](0025-relationship-filters-in-elixir.md) | A filter or sort through a relationship the branch changed is evaluated in Elixir | accepted, amended by 0047 |
 | [0026](0026-branch-checked-at-execution.md) | The branch is checked when the action runs, and tasks inherit it | accepted |
 | [0027](0027-domain-coverage.md) | A domain a branch cannot cover is refused | accepted |
 | [0028](0028-late-binding-queries.md) | A query prepared outside a branch is bound when it runs | accepted |
@@ -45,3 +45,4 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0039](0039-first-list-and-uniq-aggregates.md) | `first`, `list` and `uniq?` aggregates are computed over the branch | accepted |
 | [0040](0040-relationship-pages-cut-per-source.md) | A relationship page is cut from the patched rows, per source record | accepted |
 | [0046](0046-through-paths-walked-over-the-branch.md) | A `through` path of several hops is walked over the branch's rows | accepted |
+| [0047](0047-relationship-filter-narrowing.md) | A filter through a changed to-one relationship is narrowed in the data-layer query | accepted |
