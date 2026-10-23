@@ -147,7 +147,7 @@ defmodule Ramal.Resource do
   end
 
   @doc """
-  Checks that `tenant`, the one a query or changeset on `resource` carries, is the tenant of branch `id` (ADR 0033).
+  Checks that `tenant`, the one a query or changeset on `resource` carries, is the tenant of branch `id` (ADR 0034).
 
   `:ok` when `tenant` is `nil`, when `resource` is not multitenant, or when it is the branch's tenant (compared as the
   data layer sees it, `Ash.ToTenant`). Otherwise `{:error, %Ramal.Error{reason: :tenant_mismatch}}` for a branch

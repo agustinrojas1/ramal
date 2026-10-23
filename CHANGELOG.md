@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
-- **A branch can work in one tenant**: `Ramal.branch(domain, tenant: tenant)`. Reads and writes of multitenant resources inside it must carry that tenant (`:tenant_mismatch` otherwise), the other tenants' rows never enter its overlay, the merge staleness check reads with the tenant, and a fork keeps it. A branch without a tenant still refuses multitenant resources used with one (`:multitenancy_unsupported`), now with a message that says to create it with `tenant:`. The internal check `ensure_untenanted/2` became `ensure_tenant/3`. Tested on Postgres with both strategies, attribute and schema-per-tenant (context), merge into the tenant's schema included. ADR 0033.
+- **A branch can work in one tenant**: `Ramal.branch(domain, tenant: tenant)`. Reads and writes of multitenant resources inside it must carry that tenant (`:tenant_mismatch` otherwise), the other tenants' rows never enter its overlay, the merge staleness check reads with the tenant, and a fork keeps it. A branch without a tenant still refuses multitenant resources used with one (`:multitenancy_unsupported`), now with a message that says to create it with `tenant:`. The internal check `ensure_untenanted/2` became `ensure_tenant/3`. Tested on Postgres with both strategies, attribute and schema-per-tenant (context), merge into the tenant's schema included. ADR 0034.
 
 ## [0.5.0] - 2026-10-23
 

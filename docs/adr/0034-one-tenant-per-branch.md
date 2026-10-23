@@ -1,4 +1,4 @@
-# 0033. One tenant per branch
+# 0034. One tenant per branch
 
 Status: accepted, 2026-10-23. Supersedes ADR 0009 for branches created with a tenant.
 

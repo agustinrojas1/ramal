@@ -1,6 +1,6 @@
 # 0009. Multitenancy is refused inside a branch
 
-Status: accepted, 2026-10-22; for a branch that has a tenant superseded by ADR 0033. Follow-up to ADR 0007 (open question 6 in the design).
+Status: accepted, 2026-10-22; for a branch that has a tenant superseded by ADR 0034. Follow-up to ADR 0007 (open question 6 in the design).
 
 ## Context
 

@@ -15,7 +15,7 @@ defmodule Ramal.Branch do
   * `metadata` - a map the host uses freely; Ramal only adds `forked_from` to a fork
   * `owner` - who the host says the branch belongs to, `nil` unless given at `branch/2` or `fork/2`. Ramal never
     interprets it: `Ramal.list/2` can filter by it (ADR 0018) and nothing else reads it
-  * `tenant` - the one tenant the branch works in, `nil` unless given at `branch/2` (ADR 0033). A fork keeps it
+  * `tenant` - the one tenant the branch works in, `nil` unless given at `branch/2` (ADR 0034). A fork keeps it
   * `proposal` - `nil` until `Ramal.propose/2`; then `t:proposal/0`
 
   Nothing here touches a process or storage, so it is tested with plain data.
@@ -122,7 +122,7 @@ defmodule Ramal.Branch do
     * `:metadata` - a map for the host, default `%{}`
     * `:owner` - who the branch belongs to, any term, default `nil` (see `Ramal.list/2`)
     * `:tenant` - the tenant the branch works in, default `nil`: the branch then refuses multitenant resources used with
-      a tenant (ADR 0033)
+      a tenant (ADR 0034)
 
   ## Example
 
