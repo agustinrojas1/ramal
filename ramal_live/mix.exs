@@ -74,6 +74,7 @@ defmodule RamalLive.MixProject do
       main: "readme",
       source_ref: "v#{@version}",
       source_url_pattern: "#{@source_url}/blob/v#{@version}/ramal_live/%{path}#L%{line}",
+      assets: %{"../assets" => "assets"},
       extras: ["README.md"]
     ]
   end

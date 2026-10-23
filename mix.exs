@@ -71,10 +71,14 @@ defmodule Ramal.MixProject do
     [
       main: "readme",
       logo: "assets/logo/ramal-mark.svg",
+      # The README images and the Livebook notebook are linked by their HexDocs URLs: Hex.pm renders the README from the
+      # package, where relative paths do not resolve, and the GitHub raw URLs 404 while the repository is private.
+      assets: %{"assets" => "assets"},
       source_ref: "v#{@version}",
       extras:
         [
           "README.md",
+          "demo/ramal_tour.livemd",
           "docs/DESIGN.md",
           "docs/ROADMAP.md",
           "docs/agents.md",
