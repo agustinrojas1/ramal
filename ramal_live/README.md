@@ -1,15 +1,34 @@
 # RamalLive
 
-A LiveView inspector for [Ramal](https://github.com/agustinrojas1/ramal) branches.
-
-![The inspector with four open branches, each moving herd R7 to a different paddock, shown as columns of before and after rows](https://raw.githubusercontent.com/agustinrojas1/ramal/main/assets/inspector.png)
+**A live inspector for [Ramal](https://github.com/agustinrojas1/ramal) branches: see every alternative state of your data side by side, and merge, discard or approve them with a click.**
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ramal_live.svg)](https://hex.pm/packages/ramal_live) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal__live-blue.svg)](https://hexdocs.pm/ramal_live)
 
-It shows the open and proposed branches of one Ash domain as columns. Each column has the branch's name, status, age and
-overlay size, and its `Ramal.diff/1` as before and after rows. Buttons fork, merge and discard an open branch and approve
-or reject a proposal; merge, discard, approve and reject ask for a second click first. While the page is open, Ramal's
-telemetry updates the columns, and only the branch that changed is read again.
+![The inspector with four open branches, each moving herd R7 to a different paddock, shown as columns of before and after rows](https://raw.githubusercontent.com/agustinrojas1/ramal/main/assets/inspector.png)
+
+[Ramal](https://hex.pm/packages/ramal) gives an Ash application Git-style branches of its data: a branch is a process
+that holds a few changes on top of your database, and nothing reaches the database until the branch is merged. That is
+easy to use from code and hard to *see*. RamalLive is the page that shows it: one column per branch, with what that
+branch would change.
+
+## What you see
+
+It shows the open and proposed branches of one Ash domain as columns:
+
+- **The header:** the branch's name, status, age and overlay size, who proposed it and why, and which branch it was forked from.
+- **The diff:** the branch's `Ramal.diff/1` as before and after rows, one per attribute that changed. A created row has
+  no before values and a deleted row no after values. Attributes marked `sensitive?: true` show as `[redacted]`.
+- **The buttons:** fork, merge and discard on an open branch; approve and reject on a proposal. Merge, discard, approve and
+  reject ask for a second click first.
+- **Live updates:** while the page is open, Ramal's telemetry updates the columns as an agent or a request writes to a
+  branch, and only the branch that changed is read again.
+
+## Who it is for
+
+- **You, while building** an agent or a what-if feature on Ramal: watch the branches your code opens, see what each one
+  changed and why a merge was refused as stale.
+- **A reviewer** who approves or rejects what an agent proposed with `Ramal.propose/2`, reading the diff before deciding.
+- **An operator** who needs to find and discard branches that were left open.
 
 There is no JavaScript, no Tailwind and no asset pipeline. The page is a LiveView with inline CSS (slate for the base line,
 copper for branches, light and dark themes), mounted by your router inside your own `live_session`, so it uses your
@@ -63,7 +82,7 @@ For a development tool with no users, return a constant (`def actor(_socket), do
 
 ## Try it
 
-A runnable demo, the one the screenshot above and the animation below come from, lives in `examples/farm_demo.exs`. It is a single file that installs its own
+You do not need an app of your own to see the inspector. A runnable demo, the one the screenshot above and the animation below come from, lives in `examples/farm_demo.exs`. It needs Elixir 1.18+, Docker (for Postgres) and a clone of the repository. It is a single file that installs its own
 dependencies with `Mix.install` (so the first start compiles for a few minutes), runs a [Phoenix
 Playground](https://github.com/phoenixframework/phoenix_playground) app on a seeded farm in Postgres, and mounts the
 inspector with the `ramal_inspector` line above.
@@ -73,7 +92,7 @@ docker compose up -d db                 # from the repository root: Postgres on 
 elixir ramal_live/examples/farm_demo.exs
 ```
 
-Open <http://localhost:4000> and press **Explore 4 alternatives**. Four branches open one after the other, each moves herd R7
+Open <http://localhost:4000> and press **Explore 4 alternatives**. Here is what happens. Four branches open one after the other, each moves herd R7
 out of paddock L07 into a different paddock, and the columns fill in as the writes happen. Merge one: the database now has
 R7 in its new paddock, and merging any other column is refused as stale, because that branch read R7 where it used to be.
 **Reset** discards every branch and seeds the farm again.

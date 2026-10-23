@@ -1,73 +1,97 @@
 <p align="center">
-  <img src="assets/logo/ramal-mark-dark.svg" width="120" alt="Ramal">
+  <img src="https://raw.githubusercontent.com/agustinrojas1/ramal/main/assets/logo/ramal-mark-dark.svg" width="120" alt="Ramal">
 </p>
 
 <h1 align="center">Ramal</h1>
 
-<p align="center"><b>Data branches as BEAM processes.</b></p>
+<p align="center"><b>Git-style branches for your Ash application's data, as BEAM processes.</b><br>Fork it, change it, diff it, merge it back, or throw it away. Nothing touches your database until you say so.</p>
 
 [![Hex.pm](https://img.shields.io/hexpm/v/ramal.svg)](https://hex.pm/packages/ramal) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal-blue.svg)](https://hexdocs.pm/ramal)
 
-> **Status: 0.2, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, exact aggregates and the LiveView inspector work and are tested on Postgres; the API may still change before 1.0. The design is in [docs/DESIGN.md](docs/DESIGN.md), the decisions in [docs/adr](https://github.com/agustinrojas1/ramal/tree/main/docs/adr), the plan in [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status: 0.2, on [Hex](https://hex.pm/packages/ramal).** Branches, diff, merge, proposals, exact aggregates and the LiveView inspector work and are tested on Postgres. The API may still change before 1.0.
 
-Ramal gives an [Ash](https://ash-hq.org) application Git-style branches of its data. A branch is a process holding an overlay over your database: fork it, let an agent or a person change things inside it, diff it, and merge it back through your own actions, with a human in the loop. No second database, no containers, no branch quota.
+## What it does
+
+Ramal lets an [Ash](https://ash-hq.org) application try something on its real data without doing it.
+
+You open a **branch**. Inside the branch your own code runs unchanged: the same Ash actions, the same validations and
+policies, the same reads. But every write lands in a small overlay held by a process instead of in Postgres, and every
+read sees your database **plus** what the branch changed. When you are done you can look at exactly what changed
+(`diff`), copy the branch to explore a variation (`fork`), apply it for real (`merge`), or drop it (`discard`).
+
+```
+              ┌─ branch A: move herd R7 to paddock L18 ─┐
+              │                                          │
+ Postgres ────┼─ branch B: move herd R7 to paddock L03 ──┼──▶  diff ──▶ merge one (through your real actions)
+ (untouched)  │                                          │              the others are now stale and refuse
+              └─ branch C: split herd R7 in two ─────────┘
+```
+
+A branch is one Erlang process and one map. There is no second database, no copied tables, no container and no branch
+quota, so a program can open as many alternatives as it needs.
 
 ```elixir
 {:ok, branch} = Ramal.branch(MyApp.Farm, name: "move herd R7 to paddock L18")
 
 Ramal.run!(branch, fn ->
-  # Runs the real action, validations and policies included. The row lands in the branch, never in Postgres.
+  # Your real action, validations and policies included. The row lands in the branch, never in Postgres.
   Ash.update!(herd, %{paddock_id: paddock.id})
-  # A read inside the branch sees base rows plus what the branch changed.
+  # A read inside the branch sees the base rows plus what the branch changed.
   Ash.read!(MyApp.Farm.Herd)
 end)
 
-{:ok, copy} = Ramal.fork(branch)              # a second branch that starts where this one is
-{:ok, changes} = Ramal.diff(branch)           # a list of %Ramal.Change{}, computed without querying the database
-{:ok, merged} = Ramal.merge(branch, actor: admin)   # replays the branch through the real actions, in one transaction
-:ok = Ramal.discard(copy)
+{:ok, copy}    = Ramal.fork(branch)                  # a second branch that starts where this one is
+{:ok, changes} = Ramal.diff(branch)                  # a list of %Ramal.Change{}, computed without querying the database
+{:ok, result}  = Ramal.merge(branch, actor: admin)   # replays the branch through the real actions, in one transaction
+:ok            = Ramal.discard(copy)
 ```
 
-`merge/2` refuses when a row the branch saw has changed in the database since (`on_stale: :error`, the default), and
-fails as a whole, leaving the database untouched, when any replayed action is no longer valid.
+## Why it exists
 
-When an agent proposes and a person decides, freeze the branch as a proposal instead of merging it. Ramal records who
-proposed and who decided, and leaves the question of who may decide to your own policies:
+Agents, planners and people who ask "what if?" need many cheap, alternate states of the same data. The usual tools each
+give you only part of that:
 
-```elixir
-{:ok, branch} = Ramal.branch(MyApp.Farm)
-Ramal.run!(branch, fn -> Ash.update!(herd, %{paddock_id: paddock.id}, authorize?: false) end)
-{:ok, _proposed} = Ramal.propose(branch, proposed_by: agent, reason: "R7 is crowding L07")
+- **A transaction** is one alternate state, tied to one connection, gone when the request ends.
+- **A copy of the database** (or a branching database) is a real second state, but expensive to create and to keep many of.
+  In a [2026 study from Columbia's DAPLab](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html),
+  Neon ran into its cap on active branches, and Dolt created branches cheaply but read and joined slowly inside them. The
+  authors conclude that agents "need databases that can support thousands of cheap alternate realities without giving up
+  normal query performance", and add: "That system does not exist yet."
+- **Your own draft tables** mean building and maintaining a second copy of your domain logic.
 
-{:ok, pending} = Ramal.list(MyApp.Farm, status: :proposed)   # what a reviewer sees
-{:ok, changes} = Ramal.diff(branch)                          # what the reviewer reads
-{:ok, result} = Ramal.approve(branch, decided_by: manager, actor: manager)   # merges; or Ramal.reject(branch, ...)
-```
+On the BEAM a branch can be a process with a map, and Ash already gives you actions, validations and policies to replay.
+That combination is the whole library.
 
-Count a state without reading the table: `Ramal.aggregate/4` takes the database's answer for the rows the branch did not
-touch and adds the rows it did, so it costs what the overlay holds, not what the table holds.
+## What you can build with it
 
-```elixir
-Ramal.run!(branch, fn ->
-  Ash.create!(MyApp.Farm.Herd, %{name: "R10", head: 5})
-  Ramal.aggregate!(MyApp.Farm.Herd, :sum, :head)   # the base total plus 5
-end)
-```
+- **AI agents that explore alternatives.** Give an agent a branch instead of your database. It can try five plans,
+  read the results of each, score them, keep the best and throw the rest away, and it cannot damage real data while it
+  does. A tree search that forks promising states is exactly what a branch is cheap at (see the [benchmark](#benchmark)).
+- **What-if planning.** "What happens to pasture capacity if we move this herd?" Run the real move in a branch, read
+  the numbers (`Ramal.aggregate/4` gives exact counts and sums for the branch), and discard it if you do not like the answer.
+- **Preview and staging of edits.** Show a user the result of a change before it exists: the form edits a branch, the page
+  renders the branch's reads and the diff, and "Save" merges.
+- **Approvals and review.** An agent or a junior user proposes a change with `Ramal.propose/2`; a reviewer reads the diff
+  and approves (which merges) or rejects. The proposer, the decider and the reasons are recorded on the branch.
+- **Safe dry runs.** Run a series of record-level actions in a branch and read the diff to see what they would do, then
+  merge or discard.
+- **Several drafts at once.** A user keeps three versions of a plan open and compares them; each is its own branch and
+  survives restarts when you use the Postgres storage.
 
-## Why
+## How it works, in four lines
 
-Agents, planners and people who evaluate what-if scenarios need many cheap alternate states of the same data. Transactions give you one per connection and nothing that survives a request. Branching databases trade one need for the other: in a [2026 study from Columbia's DAPLab](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html), Neon ran into its cap on active branches, and Dolt created branches cheaply but read and joined slowly inside them. The authors conclude that agents "need databases that can support thousands of cheap alternate realities without giving up normal query performance", and add: "That system does not exist yet."
+1. **A branch is an overlay.** It holds the rows it created, updated or deleted, keyed by resource and primary key, plus a log of the writes.
+2. **Reads are patched.** A Spark extension adds a preparation to your read actions: Postgres answers as usual, and the
+   branch's overlay is applied on top (deleted rows dropped, changed rows replaced, new rows added if they match the query's filter, then sorted and paged).
+3. **Writes are captured.** The extension adds a change to your create, update and destroy actions that, inside a branch,
+   puts the result in the overlay instead of calling the data layer. Ash does all its normal work first.
+4. **Merge replays through your actions.** The log is replayed through the real actions, in one transaction, after checking
+   that no row the branch saw has changed in the database since. A branch that is no longer valid fails as a whole and leaves the database untouched.
 
-On the BEAM a branch is a process with a map. That is the whole library.
+Both hooks do nothing when no branch is active, and a test per hook proves it. The full design is in
+[docs/DESIGN.md](https://github.com/agustinrojas1/ramal/blob/main/docs/DESIGN.md).
 
-## What it is not
-
-- Not a database branch. No schema changes inside a branch, no branch-local indexes.
-- Aggregates and calculations computed in the database do not see the overlay (`[:ramal, :read, :unpatched_aggregate]` is emitted so tests can notice). `Ramal.aggregate/4` gives the exact count, sum, min, max, avg or exists for a branch: the database aggregates the rows the branch did not touch and the branch reads the ones it did, so the cost follows the size of the overlay, not of the table.
-- Bulk actions and upserts are refused inside a branch, resources whose primary key the database generates cannot be created in one, and notifications are dropped unless a resource opts in with `notify_in_branch? true`.
-- Meant for OLTP-sized working sets: the rows a session touches, not an analytics table.
-
-## Install
+## Quickstart
 
 Ramal is on [Hex](https://hex.pm/packages/ramal), with docs on [HexDocs](https://hexdocs.pm/ramal). Add it to `mix.exs`:
 
@@ -79,23 +103,143 @@ end
 
 Requires Elixir 1.18+ and Ash 3.x. AshPostgres is optional and only needed for the Postgres storage backend.
 
-Add the extension to each resource a branch should see, and the supervisor to your tree:
+**1. Add the extension to each resource a branch should see.**
 
 ```elixir
-use Ash.Resource, extensions: [Ramal.Resource], ...
+defmodule MyApp.Farm.Herd do
+  use Ash.Resource,
+    domain: MyApp.Farm,
+    data_layer: AshPostgres.DataLayer,
+    extensions: [Ramal.Resource]
 
+  # ...
+end
+```
+
+**2. Add the supervisor to your tree.**
+
+```elixir
 children = [
   MyApp.Repo,
   {Ramal.Supervisor, storage: Ramal.Storage.Postgres, repo: MyApp.Repo}
 ]
 ```
 
-`mix ramal.gen.migration` writes the migration for the `ramal_branches` table. Without `storage:` branches live in
-ETS and are lost when the supervisor stops.
+Run `mix ramal.gen.migration` for the `ramal_branches` table. Without `storage:` branches live in ETS and are lost when
+the supervisor stops, which is fine for development and tests.
+
+**3. Branch.**
+
+```elixir
+{:ok, branch} = Ramal.branch(MyApp.Farm, name: "what if")
+
+Ramal.run!(branch, fn ->
+  Ash.create!(MyApp.Farm.Herd, %{name: "R10", head: 5})
+end)
+
+{:ok, [change]} = Ramal.diff(branch)
+change.kind      #=> :created
+change.changes   #=> %{name: {nil, "R10"}, head: {nil, 5}, ...}
+
+Ash.read!(MyApp.Farm.Herd)       # outside the branch: no R10
+Ramal.merge(branch)              # now R10 is in Postgres, created by your real create action
+```
+
+Every function that takes a branch also takes its id, and starts the branch process from storage if it is not running,
+so a request can keep only the id.
+
+## A closer look
+
+### Merging safely
+
+`merge/2` records a fingerprint of every database row the branch reads or writes. At merge time it checks them again
+inside the transaction. By default (`on_stale: :error`) it refuses when one has changed or disappeared, and it fails as a
+whole, leaving the database untouched, if any replayed action is no longer valid:
+
+```elixir
+{:ok, a} = Ramal.branch(MyApp.Farm)
+{:ok, b} = Ramal.fork(a)           # both started from the same farm
+
+# ... each moves herd R7 to a different paddock inside its own branch ...
+
+{:ok, _} = Ramal.merge(a)
+{:error, %Ramal.Error{reason: :stale}} = Ramal.merge(b)   # R7 is no longer where b read it
+```
+
+Pass `on_stale: :ignore`, or a function that decides per stale row, when you know better.
+
+### Proposals: an agent proposes, a person decides
+
+```elixir
+{:ok, branch} = Ramal.branch(MyApp.Farm)
+Ramal.run!(branch, fn -> Ash.update!(herd, %{paddock_id: paddock.id}, authorize?: false) end)
+{:ok, _proposed} = Ramal.propose(branch, proposed_by: agent, reason: "R7 is crowding L07")
+
+{:ok, pending} = Ramal.list(MyApp.Farm, status: :proposed)   # what a reviewer sees
+{:ok, changes} = Ramal.diff(branch)                          # what the reviewer reads
+{:ok, result}  = Ramal.approve(branch, decided_by: manager, actor: manager)   # merges; or Ramal.reject(branch, ...)
+```
+
+A proposed branch is frozen: it refuses further writes, so the diff the reviewer reads is the diff that gets merged.
+Ramal records who proposed and who decided, and leaves the question of *who may decide* to your own policies.
+
+### Exact numbers for a branch
+
+`Ramal.aggregate/4` takes the database's answer for the rows the branch did not touch and adds the rows it did, so it
+costs what the overlay holds, not what the table holds.
+
+```elixir
+Ramal.run!(branch, fn ->
+  Ash.create!(MyApp.Farm.Herd, %{name: "R10", head: 5})
+  Ramal.aggregate!(MyApp.Farm.Herd, :sum, :head)   # the base total plus 5
+end)
+```
+
+It supports `:count`, `:exists`, `:sum`, `:min`, `:max` and `:avg`.
+
+### Per-user branches
+
+Pass `owner:` to `Ramal.branch/2` and `Ramal.list(domain, owner: user_id)` shows each user their own. It is a filter, not
+access control; the [security notes](https://github.com/agustinrojas1/ramal/blob/main/SECURITY.md) say where the line is.
+
+## Key features
+
+- **Real actions inside a branch.** Validations, policies, hooks, defaults and managed relationships run as they do outside.
+- **Fork, diff, merge, discard** as ordinary function calls, plus **proposals** with a recorded proposer and decider.
+- **Persistent.** With `Ramal.Storage.Postgres` a branch is saved when it is created, proposed, discarded, unloaded or when the supervisor shuts down, so it survives restarts; idle branches unload from memory and come back on demand.
+- **Staleness detection** at merge, with a choice of what to do about it.
+- **Exact aggregates** for a branch without scanning the table.
+- **Many-to-many** links changed in a branch are seen by `many_to_many` loads and by `manage_relationship`.
+- **Telemetry** for every branch lifecycle step, every patched read and every captured write.
+- **Safety valves.** Optional per-domain limits on open branches and on the rate of new ones, a heap limit on each branch
+  process, and the `sensitive?` attributes of a stored actor are dropped from the saved branch.
+- **A LiveView inspector** in a separate package, [`ramal_live`](#inspector).
+- **No Phoenix in core, AshPostgres optional.** The library adds one supervisor to your tree and nothing else.
+
+## Honest limits
+
+Ramal is deliberately small, and it says what it does not do:
+
+- **Not a database branch.** No schema changes inside a branch, no branch-local indexes, and a branch lives on one node.
+- **Aggregates and calculations declared on a resource and computed in the database do not see the overlay.** Use
+  `Ramal.aggregate/4`. Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a test can notice when this happens.
+- **Bulk actions and upserts are refused** inside a branch, resources whose primary key the database generates cannot be
+  created in one (use UUIDs), multitenancy is refused inside a branch, and notifications are dropped unless a resource opts in with `notify_in_branch? true`.
+- **Reads fetch candidate rows and patch them in memory.** That is cheap for the rows a session touches and wrong for an
+  analytics table: Ramal is meant for OLTP-sized working sets.
+- **Merge is slower than a SQL statement,** because it replays each change through your action. That is the price of
+  merging through your own rules.
+- **Writes since the last save are lost if the node crashes.** A branch is saved at the moments listed above, not on every write.
+- **A few many-to-many cases stay unsupported:** `type: :append_and_remove` with a link to remove is refused, and a paged relationship load or a `through` path of several hops sees the base links.
+- **Authorization is yours.** Anyone who holds a branch id can act on it. Ramal records who decided and never checks.
+- **Pre-1.0.** The public API may change before 1.0; the changelog says when it does.
+
+The complete list, with the reasons, is in the [design document](https://github.com/agustinrojas1/ramal/blob/main/docs/DESIGN.md)
+and the [ADRs](https://github.com/agustinrojas1/ramal/tree/main/docs/adr).
 
 ## Inspector
 
-[`ramal_live/`](https://github.com/agustinrojas1/ramal/tree/main/ramal_live) is a separate package with a LiveView page that shows the open and proposed branches as
+[`ramal_live`](https://github.com/agustinrojas1/ramal/tree/main/ramal_live) is a separate package with a LiveView page that shows the open and proposed branches as
 columns, each with its diff as before and after rows, and buttons to fork, merge, discard, approve and reject. It is
 mounted by your router inside your own `live_session`, so it uses your LiveView socket and JavaScript, and has no asset
 pipeline. Ramal itself never depends on it.
@@ -104,12 +248,13 @@ pipeline. Ramal itself never depends on it.
 ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: {MyAppWeb.Inspector, :actor}
 ```
 
-To see it move before wiring it into an app, `elixir ramal_live/examples/farm_demo.exs` starts a seeded farm where one button
-opens four branches that each move a herd to a different paddock, and merging one makes the others stale.
+![The Ramal inspector with four open branches, each moving herd R7 to a different paddock, shown as columns of before and after rows](https://raw.githubusercontent.com/agustinrojas1/ramal/main/assets/inspector.png)
 
-![The Ramal inspector with four open branches, each moving herd R7 to a different paddock, shown as columns of before and after rows](assets/inspector.png)
-
-See the [ramal_live README](https://github.com/agustinrojas1/ramal/blob/main/ramal_live/README.md) for the setup and [ADR 0015](docs/adr/0015-inspector-mounting.md) for why it is built this way.
+To see it move before wiring it into an app, run the demo from a clone of the repository: `docker compose up -d db`, then
+`elixir ramal_live/examples/farm_demo.exs`. It starts a seeded farm where one button opens four branches that each move
+a herd to a different paddock, and merging one makes the others stale. The
+[ramal_live README](https://github.com/agustinrojas1/ramal/blob/main/ramal_live/README.md) has the steps and the setup, and
+[ADR 0015](https://github.com/agustinrojas1/ramal/blob/main/docs/adr/0015-inspector-mounting.md) explains why it is built this way.
 
 ## Benchmark
 
@@ -120,6 +265,14 @@ See the [ramal_live README](https://github.com/agustinrojas1/ramal/blob/main/ram
 - **Where it loses:** reading 2,000 rows inside a branch takes about 10 ms against about 1 ms for raw SQL, and merging replays every change through your action at about 0.7 ms each, against one SQL statement for the baseline.
 
 The figures are indicative. Run `mix bench` on your own hardware before drawing a conclusion; the file also says how it differs from the DAPLab study quoted above.
+
+## Learn more
+
+- [HexDocs](https://hexdocs.pm/ramal): the API, with an example on every function.
+- [Design](https://github.com/agustinrojas1/ramal/blob/main/docs/DESIGN.md) and [roadmap](https://github.com/agustinrojas1/ramal/blob/main/docs/ROADMAP.md): how it works and what comes next.
+- [Architecture decision records](https://github.com/agustinrojas1/ramal/tree/main/docs/adr): why each choice was made.
+- [Security notes](https://github.com/agustinrojas1/ramal/blob/main/SECURITY.md): what Ramal enforces and what it leaves to you.
+- [Changelog](https://github.com/agustinrojas1/ramal/blob/main/CHANGELOG.md) and [contributing](https://github.com/agustinrojas1/ramal/blob/main/CONTRIBUTING.md).
 
 ## Name
 
