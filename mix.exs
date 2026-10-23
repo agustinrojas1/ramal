@@ -37,7 +37,7 @@ defmodule Ramal.MixProject do
 
   defp deps do
     [
-      {:ash, "~> 3.36"},
+      ash_dep(),
       {:spark, "~> 2.7"},
       # Already in the tree through Ash. Declared because Ramal.Error implements Splode.Error: Ash turns any other
       # exception raised inside an action into a string, which would lose the `reason` a host matches on.
@@ -53,6 +53,17 @@ defmodule Ramal.MixProject do
       {:ex_doc, "~> 0.38", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
+  end
+
+  # The Ash requirement is the default unless RAMAL_ASH_VERSION is set, which only the Ash matrix in CI does (the
+  # `ash-matrix` job in .github/workflows/ci.yml). A host never sets it, and Hex resolves a dependency's requirements
+  # from the published package metadata, so this cannot leak into a host's build.
+  defp ash_dep do
+    case System.get_env("RAMAL_ASH_VERSION", "") do
+      "" -> {:ash, "~> 3.36"}
+      "main" -> {:ash, github: "ash-project/ash", branch: "main", override: true}
+      requirement -> {:ash, requirement, override: true}
+    end
   end
 
   defp aliases do
