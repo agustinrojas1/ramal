@@ -169,7 +169,8 @@ This is the section that decides correctness. In a read action's preparation, wh
    usual. A paged relationship load keeps being paged by the database and patched afterwards
    ([ADR 0030](adr/0030-pages-cut-from-the-patched-list.md)).
 6. **Policies:** the query's filter, including one a policy added, is applied to overlay records. Checks that act on
-   results (`authorize_results`) run before the `after_action` hooks and so do not see overlay records.
+   results (`authorize_results`) are taken off the query once the overlay touches the resource and run on the patched
+   rows in the `after_action` hook ([ADR 0037](adr/0037-result-checks-run-on-the-patched-rows.md)).
 7. **Many-to-many:** the join resource is a resource like any other and gets its own overlay entries, keyed by its
    primary key (a tuple when the key is the pair of foreign keys). Covered by tests with a join resource that has such a
    key ([ADR 0014](adr/0014-many-to-many-join-resources.md)). A read of the join resource and a load of its
