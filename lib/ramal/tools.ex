@@ -260,10 +260,15 @@ defmodule Ramal.Tools do
     end
   end
 
-  @statuses Map.new(
-              ~w(open proposed merged rejected discarded),
-              &{&1, String.to_existing_atom(&1)}
-            )
+  # Spelled out: `String.to_existing_atom/1` at compile time depends on another module having been compiled first in
+  # the same VM, so it failed on an incremental `mix compile` (and could on a parallel one).
+  @statuses %{
+    "open" => :open,
+    "proposed" => :proposed,
+    "merged" => :merged,
+    "rejected" => :rejected,
+    "discarded" => :discarded
+  }
 
   defp status_filter(args) do
     case args["status"] do
