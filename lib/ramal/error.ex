@@ -22,6 +22,9 @@ defmodule Ramal.Error do
   | `:multitenancy_unsupported` | a multitenant resource used with a tenant inside a branch |
   | `:branch_too_large` | the branch process exceeded `max_heap_size` and was stopped |
   | `:no_branchable_resources` | the domain has no resource that opted in with `Ramal.Resource` |
+  | `:branch_mismatch` | a changeset or query was built under one branch (or none) and run under another (`details.built`, `current`) |
+  | `:task_in_action` | a captured write from a task that a hook of another captured action started |
+  | `:unbranchable_resources` | the domain has resources that neither use `Ramal.Resource` nor opt out of it (`details.resources`) |
   | `:nested_branch` | `Ramal.run/2` was called inside another `Ramal.run/2`, or `Ramal.merge/2` inside one |
   | `:missing_snapshot` | an overlay entry that needs the base row as first seen has none recorded |
   | `:limit_reached` | `Ramal.branch/2` or `Ramal.fork/2` was refused by `:max_active_branches` or `:branch_rate` of `Ramal.Supervisor` (`details.limit`, `max`, and `active` or `window`) |
@@ -50,6 +53,9 @@ defmodule Ramal.Error do
           | :partial_record
           | :branch_too_large
           | :no_branchable_resources
+          | :branch_mismatch
+          | :task_in_action
+          | :unbranchable_resources
           | :nested_branch
           | :missing_snapshot
           | :limit_reached

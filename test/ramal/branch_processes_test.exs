@@ -45,6 +45,19 @@ defmodule Ramal.BranchProcessesTest do
       assert {:ok, []} = Ramal.list(Plain)
     end
 
+    test "refuses a domain with a resource that has write actions and no extension, naming it" do
+      assert {:error, %Error{reason: :unbranchable_resources, details: details}} =
+               Ramal.branch(Ramal.Test.Uncovered)
+
+      assert details == %{domain: Ramal.Test.Uncovered, resources: [Ramal.Test.Uncovered.Note]}
+      assert {:ok, []} = Ramal.list(Ramal.Test.Uncovered)
+    end
+
+    test "accepts a domain whose other resources opt out explicitly or have no write action" do
+      assert {:ok, _branch} = Ramal.branch(Ramal.Test.OptedOut)
+      assert Ramal.Resource.uncovered(Ramal.Test.OptedOut) == []
+    end
+
     test "creates an open branch, starts its process and makes it readable by id" do
       assert {:ok, branch} =
                Ramal.branch(Farm, name: "what if", metadata: %{ticket: 1})
@@ -110,8 +123,9 @@ defmodule Ramal.BranchProcessesTest do
       Ramal.run!(a, fn ->
         assert Ramal.current().id == a.id
 
-        # A task does not inherit the branch; it can run another one without it counting as nested.
-        assert Task.async(fn -> Ramal.current() end) |> Task.await() == nil
+        # A task started inside run/2 is in the same branch (ADR 0026), and it can still run another one without that
+        # counting as nested.
+        assert Task.async(fn -> Ramal.current().id end) |> Task.await() == a.id
 
         assert Task.async(fn -> Ramal.run!(b, fn -> Ramal.current().id end) end) |> Task.await() ==
                  b.id

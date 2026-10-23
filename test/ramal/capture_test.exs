@@ -681,4 +681,177 @@ defmodule Ramal.CaptureTest do
       assert state(branch).overlay == %{}
     end
   end
+
+  describe "the branch is checked when the action runs, not only when the changeset is built" do
+    defp overlay_size(branch), do: map_size(state(branch).overlay)
+
+    test "a create changeset built outside run/2 is refused inside it and writes nothing", %{
+      branch: branch
+    } do
+      changeset =
+        Ash.Changeset.for_create(Herd, :create, %{name: "OUTSIDE", head: 1}, authorize?: false)
+
+      result = inside(branch, fn -> Ash.create(changeset, authorize?: false) end)
+
+      assert {:error, error} = result
+      assert reason_of(error) == :branch_mismatch
+      assert db_names() == ["R7", "R8", "R9"]
+      assert overlay_size(branch) == 0
+    end
+
+    test "an update and a destroy changeset built outside run/2 are refused inside it", %{
+      herds: herds,
+      branch: branch
+    } do
+      update = Ash.Changeset.for_update(herds.r7, :update, %{head: 99}, authorize?: false)
+      destroy = Ash.Changeset.for_destroy(herds.r8, :destroy, %{}, authorize?: false)
+
+      assert {:error, error} = inside(branch, fn -> Ash.update(update, authorize?: false) end)
+      assert reason_of(error) == :branch_mismatch
+      assert {:error, error} = inside(branch, fn -> Ash.destroy(destroy, authorize?: false) end)
+      assert reason_of(error) == :branch_mismatch
+
+      assert db_names() == ["R7", "R8", "R9"]
+      assert Ash.get!(Herd, herds.r7.id, authorize?: false).head == herds.r7.head
+      assert overlay_size(branch) == 0
+    end
+
+    test "a changeset built inside run/2 and run after it returns is refused instead of captured",
+         %{
+           herds: herds,
+           branch: branch
+         } do
+      create =
+        inside(branch, fn ->
+          Ash.Changeset.for_create(Herd, :create, %{name: "LATER", head: 1}, authorize?: false)
+        end)
+
+      update =
+        inside(branch, fn ->
+          Ash.Changeset.for_update(herds.r7, :update, %{head: 99}, authorize?: false)
+        end)
+
+      assert {:error, error} = Ash.create(create, authorize?: false)
+      assert reason_of(error) == :branch_mismatch
+      assert {:error, error} = Ash.update(update, authorize?: false)
+      assert reason_of(error) == :branch_mismatch
+
+      assert db_names() == ["R7", "R8", "R9"]
+      assert overlay_size(branch) == 0
+    end
+
+    test "a changeset built under one branch and run under another is refused" do
+      {:ok, one} = Ramal.branch(Farm)
+      {:ok, two} = Ramal.branch(Farm)
+
+      changeset =
+        inside(one, fn ->
+          Ash.Changeset.for_create(Herd, :create, %{name: "X", head: 1}, authorize?: false)
+        end)
+
+      assert {:error, error} = inside(two, fn -> Ash.create(changeset, authorize?: false) end)
+      assert reason_of(error) == :branch_mismatch
+      assert overlay_size(one) == 0
+      assert overlay_size(two) == 0
+    end
+
+    test "a changeset that carries the branch in its context still runs outside run/2", %{
+      branch: branch
+    } do
+      Ash.create!(Herd, %{name: "CTX", head: 1},
+        authorize?: false,
+        context: Ramal.context(branch)
+      )
+
+      assert db_names() == ["R7", "R8", "R9"]
+      assert overlay_size(branch) == 1
+    end
+
+    test "a query prepared inside run/2 and read after it returns is refused", %{branch: branch} do
+      query = inside(branch, fn -> Ash.Query.for_read(Herd, :read, %{}, authorize?: false) end)
+
+      assert {:error, error} = Ash.read(query, authorize?: false)
+      assert reason_of(error) == :branch_mismatch
+    end
+
+    # Ash refuses an atomic bulk update of a query that has a hook, so Ramal cannot install one on a query built
+    # outside a branch. This pins the documented limit: prepare the query inside run/2.
+    test "a query prepared outside run/2 is not patched inside it (documented limit)", %{
+      branch: branch
+    } do
+      outside = Ash.Query.for_read(Herd, :read, %{}, authorize?: false)
+
+      names =
+        inside(branch, fn ->
+          Ash.create!(Herd, %{name: "IN", head: 1}, authorize?: false)
+          {names(Ash.read!(outside)), names(Ash.read!(Herd, authorize?: false))}
+        end)
+
+      assert names == {["R7", "R8", "R9"], ["IN", "R7", "R8", "R9"]}
+    end
+  end
+
+  describe "tasks started inside run/2" do
+    test "Ash.bulk_create with max_concurrency is refused and writes nothing", %{branch: branch} do
+      for opts <- [
+            [max_concurrency: 2, batch_size: 1],
+            [max_concurrency: 2],
+            [max_concurrency: 4, batch_size: 2]
+          ] do
+        result =
+          inside(branch, fn ->
+            Ash.bulk_create(
+              [%{name: "B1", head: 1}, %{name: "B2", head: 1}, %{name: "B3", head: 1}],
+              Herd,
+              :create,
+              [authorize?: false, return_errors?: true, return_records?: true] ++ opts
+            )
+          end)
+
+        assert result.status == :error
+
+        assert Enum.any?(
+                 result.errors,
+                 &(Ramal.Error.find(&1) |> Map.get(:reason) == :bulk_unsupported)
+               )
+      end
+
+      assert db_names() == ["R7", "R8", "R9"]
+      assert overlay_size(branch) == 0
+    end
+
+    test "a write from a Task is captured in the branch", %{branch: branch} do
+      inside(branch, fn ->
+        Task.async(fn -> Ash.create!(Herd, %{name: "TASK", head: 1}, authorize?: false) end)
+        |> Task.await()
+      end)
+
+      assert db_names() == ["R7", "R8", "R9"]
+      assert overlay_size(branch) == 1
+    end
+
+    test "a write from a Task started by a hook of a captured action is refused", %{
+      branch: branch
+    } do
+      result =
+        inside(branch, fn ->
+          Herd
+          |> Ash.Changeset.for_create(:create, %{name: "OUTER", head: 1}, authorize?: false)
+          |> Ash.Changeset.after_action(fn _changeset, herd ->
+            # An ETS resource, so the task needs no database connection while the outer action holds the sandbox's.
+            case Task.async(fn -> Ash.create(Counter, %{}, authorize?: false) end)
+                 |> Task.await() do
+              {:ok, _counter} -> {:ok, herd}
+              {:error, error} -> {:error, error}
+            end
+          end)
+          |> Ash.create(authorize?: false)
+        end)
+
+      assert {:error, error} = result
+      assert reason_of(error) == :task_in_action
+      assert db_names() == ["R7", "R8", "R9"]
+      assert overlay_size(branch) == 0
+    end
+  end
 end
