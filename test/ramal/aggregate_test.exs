@@ -4,8 +4,8 @@ defmodule Ramal.AggregateTest do
 
   require Ash.Query
 
-  alias Ash.DataLayer.Ets
   alias Ramal.Aggregate
+  alias Ramal.Test.Ets
   alias Ramal.Test.Other.{Note, Slot}
 
   doctest Ramal.Aggregate
@@ -299,7 +299,7 @@ defmodule Ramal.AggregateTest do
   describe "Ramal.aggregate/4 with a composite primary key" do
     setup do
       start_supervised!(Ramal.Supervisor)
-      on_exit(fn -> Ets.stop(Slot) end)
+      on_exit(fn -> Ets.reset(Slot) end)
 
       for {day, bay, load, weight} <- [
             {~D[2026-01-01], "a", 10, "1.5"},

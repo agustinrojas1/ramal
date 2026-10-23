@@ -198,11 +198,11 @@ defmodule Ramal.MergeTest do
   end
 
   describe "on a data layer that cannot roll back (ETS)" do
-    alias Ash.DataLayer.Ets
+    alias Ramal.Test.Ets
     alias Ramal.Test.Other.Note
 
     setup do
-      on_exit(fn -> Ets.stop(Note) end)
+      on_exit(fn -> Ets.reset(Note) end)
       kept = Ash.create!(Note, %{text: "kept"})
       moved = Ash.create!(Note, %{text: "moved"})
       {:ok, branch} = Ramal.branch(Ramal.Test.Other)
