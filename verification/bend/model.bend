@@ -10,6 +10,8 @@
 #   capture     the branch runs the action on what it sees  Ramal.Capture, Ramal.Branch.put_write/6
 #   run         the merge replays the log on the base       Ramal.Merge.replay/3
 #   put_entry   a fork copies its parent entry by entry     Ramal.Overlay.merge_into/2
+#   rename      the merge swaps a placeholder key for the   Ramal.Merge.rename_entry/2 (ADR 0039)
+#               key the database gave the row
 #
 # A row is a Nat, a missing row is None. An action is one of four kinds; one
 # that is invalid for the row it finds (a create over an existing row, an
@@ -250,3 +252,15 @@ def only(+j: Nat, log: List<&2, Write>) -> List<&2, Op>:
       Nil{}
     case At{k, op} <> rest:
       only.keep(Nat.is_eq(j, k), op, only(j, rest))
+
+# Placeholder keys (ADR 0038)
+# ---------------------------
+
+# The merge replays the log with the key of the row the branch created under a
+# placeholder p renamed to the key r the database gave it.
+def rename(+p: Nat, +r: Nat, log: List<&2, Write>) -> List<&2, Write>:
+  match log:
+    case Nil{}:
+      Nil{}
+    case At{+k, op} <> rest:
+      At{pick(Nat, Nat.is_eq(k, p), r, k), op} <> rename(p, r, rest)

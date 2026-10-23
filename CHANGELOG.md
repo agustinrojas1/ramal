@@ -11,6 +11,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- `verification/`: a twelfth Bend law, `rename_shows_branch`, proves that renaming a placeholder key to the key the database gave the row leaves what the merge writes equal to what a read in the branch returned.
+
 - Docs: `bench/README.md` and the README's benchmark figures come from a rerun of the full benchmark and `bench.memory` on 0.6.1, with the noise between two runs stated; the raw samples are in `bench/results/published/`.
 
 ### Fixed
