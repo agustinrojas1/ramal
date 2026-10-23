@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - **`mix ramal.doctor`.** Runs every Ash behaviour Ramal relies on against the Ash the host runs, one line per assumption with its tier and result, and exits with status 1 when a core one is broken. Run it after upgrading Ash. The checks run on small ETS resources inside Ramal, so they need no repo or configuration (ADR 0049).
 - **Fail closed on an incompatible Ash.** When the host's Ash or AshPostgres is outside the tested range, `Ramal.Supervisor` also runs those checks at boot and emits `[:ramal, :ash, :contract]`. If a core assumption is broken, every read and write inside a branch is refused with the new `Ramal.Error` reason `:ash_incompatible` instead of risking a write to the database or a wrong read. If an extended one is broken, only its feature is refused: bulk actions, upserts, or relationship loads paged per record. Inside the tested range nothing runs at boot, and outside a branch nothing changes.
+- **Upstream links.** `Ramal.Ash`'s docs link the four Ash issues that ask for a public contract in place of an internal Ramal relies on (ash#3069 to ash#3072).
 
 ## [0.8.0] - 2026-10-23
 
