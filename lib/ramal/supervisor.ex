@@ -10,9 +10,9 @@ defmodule Ramal.Supervisor do
   It starts a `Registry` keyed by branch id, a `DynamicSupervisor` for the branch processes, and owns the ETS
   tables the library needs. There is one instance per node; its configuration lives in `:persistent_term`.
 
-  At start it logs a warning, once, when the host's Ash or AshPostgres is outside the versions `Ramal.Ash` is tested
-  with. Outside them it also runs Ramal's Ash contract (`mix ramal.doctor` runs the same checks), logs the assumptions
-  that are broken, and emits `[:ramal, :ash, :contract]`; a branch then refuses the work that relies on a broken one with
+  At start it logs a warning for each of Ash and AshPostgres that is outside the versions `Ramal.Ash` is tested with.
+  Outside them it also runs Ramal's Ash contract (`mix ramal.doctor` runs the same checks), logs one more warning with its
+  result, naming the assumptions that are broken, and emits `[:ramal, :ash, :contract]`; a branch then refuses the work that relies on a broken one with
   `:ash_incompatible` (ADR 0049). It never refuses to start.
 
   A branch lives on one node. To let every node of a cluster use the same branches, see `:cluster` below.
