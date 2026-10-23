@@ -20,8 +20,13 @@ defmodule Ramal.Capture do
     * An update runs `fully_atomic_changeset` first and, when it succeeds, updates the row in the database without
       calling any hook. `atomic/3` therefore reports `{:not_atomic, reason}` while a branch is current, and
       the resource transformer sets `require_atomic? false` so Ash falls back to the path above.
-    * Bulk actions call the data layer directly and never look at the result, so they are refused. Upserts too:
-      the branch cannot know whether the row exists in the base.
+    * A bulk action runs a changeset that has an `around_action` hook one record at a time, through the same create,
+      update or destroy as a single action (`split_and_run_simple/7` in `lib/ash/actions/helpers.ex`, called from
+      `lib/ash/actions/{create,update,destroy}/bulk.ex`). The hook above is that `around_action`, so inside a branch
+      every record of `Ash.bulk_create/4`, `Ash.bulk_update/4` and `Ash.bulk_destroy/4` is captured and logged as its
+      own action, and the data layer's bulk call gets no records. A bulk update or destroy of a query picks its
+      strategy before that: the atomic ones are refused through `atomic/3`, so the caller must allow `:stream`.
+    * Upserts are refused: the branch cannot know whether the row exists in the base.
 
   A failed action leaves the branch as it found it: the writes of the action and of the actions its hooks ran are
   taken back. A write made by a hook of another captured action is logged with `nested?: true`, because replaying the
@@ -45,7 +50,7 @@ defmodule Ramal.Capture do
   alias Ramal.Branch.Server
 
   @frame :ramal_capture_frame
-  @bulk_markers [:bulk_create, :bulk_update, :bulk_destroy]
+  @wrapped :ramal_wrapped
 
   @impl true
   def change(changeset, _opts, _context) do
@@ -84,20 +89,16 @@ defmodule Ramal.Capture do
 
       _id ->
         {:not_atomic,
-         "a Ramal branch is current, so the write is captured instead of run in the database"}
+         "a Ramal branch is current, so the write is captured instead of run in the database; " <>
+           "a bulk update or destroy inside a branch runs record by record, so allow `strategy: [:atomic, :stream]`"}
     end
   end
 
   defp capture(changeset, id, origin) do
-    cond do
-      Enum.any?(@bulk_markers, &Map.has_key?(changeset.context, &1)) ->
-        Ash.Changeset.add_error(changeset, bulk_error(changeset))
-
-      changeset.context[:private][:upsert?] ->
-        Ash.Changeset.add_error(changeset, upsert_error(changeset))
-
-      true ->
-        install(changeset, id, origin)
+    if changeset.context[:private][:upsert?] do
+      Ash.Changeset.add_error(changeset, upsert_error(changeset))
+    else
+      install(changeset, id, origin)
     end
   end
 
@@ -107,10 +108,20 @@ defmodule Ramal.Capture do
         changeset
         |> Ash.Changeset.set_context(Current.shared_context(id))
         |> Ash.Changeset.around_action(&around(&1, &2, id, origin))
+        |> Ash.Changeset.before_action(&ensure_wrapped/1)
 
       {:error, error} ->
         Ash.Changeset.add_error(changeset, error)
     end
+  end
+
+  # Fails closed: the write is captured only inside the `around_action` hook. Ash runs every changeset that has one
+  # singly, bulk actions included; if a path ever ran the before-action hooks without it, the data layer would be next,
+  # so the action is refused instead of written to the base.
+  defp ensure_wrapped(changeset) do
+    if changeset.context[@wrapped],
+      do: changeset,
+      else: Ash.Changeset.add_error(changeset, bulk_error(changeset))
   end
 
   # The frame counts how deeply captured actions nest in this process and keeps the undo records of their writes.
@@ -144,7 +155,11 @@ defmodule Ramal.Capture do
     nested? = frame.depth > 0
     mark = length(frame.undos)
     Process.put(@frame, %{frame | depth: frame.depth + 1})
-    changeset = Ash.Changeset.before_action(changeset, &write(&1, id, nested?))
+
+    changeset =
+      changeset
+      |> Ash.Changeset.set_context(%{@wrapped => true})
+      |> Ash.Changeset.before_action(&write(&1, id, nested?))
 
     try do
       result = callback.(changeset)
@@ -466,8 +481,8 @@ defmodule Ramal.Capture do
   defp bulk_error(changeset) do
     Error.new(
       :bulk_unsupported,
-      "#{inspect(changeset.resource)}.#{changeset.action.name} ran as a bulk action inside a branch; bulk actions " <>
-        "write through the data layer without calling the capture hook, so call the action once per record instead",
+      "#{inspect(changeset.resource)}.#{changeset.action.name} ran inside a branch without the capture hook around it, " <>
+        "so it would have written to the database; call the action once per record instead",
       %{resource: changeset.resource, action: changeset.action.name}
     )
   end

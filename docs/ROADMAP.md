@@ -89,6 +89,6 @@ Done; released in 0.6.0.
 
 - Schema changes inside a branch.
 - Distributed branches across nodes.
-- Nested branches, bulk actions and upserts inside a branch, and database-generated keys. Each is refused with a clear error.
+- Nested branches, upserts inside a branch, and database-generated keys. Each is refused with a clear error.
 - A query language or DSL of its own.
 - Any dependency on a specific LLM provider or agent framework. Ramal is below that layer.

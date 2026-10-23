@@ -1,6 +1,6 @@
 # 0005. Write capture: hook, atomic fallback, bulk, notifications and errors
 
-Status: accepted, 2026-10-22. Issue: #5. Resolves the `[confirm]` items in design section 4.2.
+Status: accepted, 2026-10-22; the bulk refusal is superseded by [ADR 0036](0036-bulk-actions-record-by-record.md). Issue: #5. Resolves the `[confirm]` items in design section 4.2.
 
 ## Context
 

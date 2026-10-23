@@ -261,22 +261,44 @@ defmodule Ramal.ManyToManyTest do
     end
 
     # `append_and_remove` unrelates the missing destinations with `Ash.bulk_destroy/4` on the join resource
-    # (`bulk_delete_unused_unrelate/8` in deps/ash/lib/ash/actions/managed_relationships.ex), and a branch refuses bulk
-    # actions (ADR 0005). ADR 0017 keeps the refusal.
-    test "append_and_remove is refused when it has a link to remove, and writes nothing", %{
+    # (`bulk_delete_unused_unrelate/8` in deps/ash/lib/ash/actions/managed_relationships.ex, with
+    # `strategy: [:atomic, :atomic_batches, :stream]`). Inside a branch the atomic strategies are refused, so Ash
+    # streams the join rows through the patched read and destroys each one with the captured action (ADR 0036).
+    test "append_and_remove removes and adds links in the branch, and the merge replays it", %{
+      branch: branch,
+      herds: herds,
+      ana: ana,
+      bruno: bruno
+    } do
+      inside(branch, fn ->
+        Ash.update!(herds.r7, %{vet_ids: [bruno.id]}, action: :set_vets, authorize?: false)
+        assert vets_of(herds.r7) == ["Bruno"]
+      end)
+
+      assert links() == [{herds.r7.id, ana.id}]
+      assert {:ok, changes} = Ramal.diff(branch)
+
+      assert summary(changes) ==
+               Enum.sort([
+                 {HerdVet, {herds.r7.id, ana.id}, :deleted},
+                 {HerdVet, {herds.r7.id, bruno.id}, :created}
+               ])
+
+      assert {:ok, %Result{replayed: 1}} = Ramal.merge(branch, authorize?: false)
+      assert links() == [{herds.r7.id, bruno.id}]
+    end
+
+    test "append_and_remove of a link the branch created removes it", %{
       branch: branch,
       herds: herds,
       bruno: bruno
     } do
-      assert {:ok, {:error, error}} =
-               Ramal.run(branch, fn ->
-                 Ash.update(herds.r7, %{vet_ids: [bruno.id]},
-                   action: :set_vets,
-                   authorize?: false
-                 )
-               end)
+      inside(branch, fn ->
+        add_vets(herds.r8, [bruno])
+        Ash.update!(herds.r8, %{vet_ids: []}, action: :set_vets, authorize?: false)
+        assert vets_of(herds.r8) == []
+      end)
 
-      assert %Error{reason: :bulk_unsupported, details: %{resource: HerdVet}} = Error.find(error)
       assert {:ok, []} = Ramal.diff(branch)
     end
   end
