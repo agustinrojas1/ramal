@@ -119,6 +119,14 @@ Run on 2026-10-23 in a cloud sandbox, Erlang/OTP 25, Elixir 1.18.4, Ash 3.37.0. 
 | 1,000 | 427,860 | 269,619 | 614,712 | 291,610 |
 | 5,000 | 1,972,202 | 1,194,788 | 2,835,054 | 1,284,779 |
 
+The stored JSON is what `Ramal.Storage.Postgres` writes to the `state` column. The compact codec (state version 2: ISO 8601 text for the common date structs, struct fields at their defaults left out, the parts of a record that many records share written once, a snapshot stored as its difference from the record) writes about a third of it:
+
+| rows updated | stored JSON bytes, state version 1 | state version 2 |
+|---|---|---|
+| 100 | 527,543 | 215,071 (-59%) |
+| 1,000 | 3,018,251 | 1,023,133 (-66%) |
+| 5,000 | 14,084,083 | 4,612,222 (-67%) |
+
 ## What this is not
 
 It is not a reproduction of the [DAPLab benchmark](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html) (BranchBench). The workload is modelled on the workload the article focuses on, a Monte Carlo tree search that keeps forking promising partial states, mutates, queries and prunes; ours is a fixed-shape tree search, not MCTS, and it does not use their harness, schemas or step counts. The article reports that Neon finished 33 of 1,000 steps before hitting its active branch limit and that Dolt finished 170 steps before a two-hour timeout; those are their figures from their harness, cited here and deliberately kept out of the tables above, which were not measured the same way. It compares one Postgres schema at one size on one machine; Neon, Dolt and other branching databases are not measured.

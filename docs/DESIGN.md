@@ -278,7 +278,7 @@ Serialization is `Ramal.Storage.Codec`, a pure module any text-based backend can
 `domain`, `name` and `status`; `state` holds the overlay (`resource`, `key`, `op`, `record`), the base (`resource`,
 `key`, `fingerprint`, `snapshot`), the log, the metadata and `inserted_at`. A record is `attrs` (each attribute dumped
 with `Ash.Type.dump_to_embedded/3` and loaded with `Ash.Type.cast_from_embedded/3`, both confirmed in Ash 3.37), the
-names of unloaded attributes, and the other struct fields when they differ from a fresh struct. Action input,
+names of unloaded attributes, and the other struct fields when they differ from a fresh struct. The state is compact (version 2, [ADR 0022](adr/0022-compact-state.md)): common date structs are ISO 8601 text, a struct lists only fields that differ from its default, shared record parts are written once, and a snapshot is stored as its difference from the record. Action input,
 primary keys, options and actors are stored as tagged terms; actors are stored as the term itself, not through a
 serializer (pass `actor:` to `merge/2` to replace a stored one). Atoms are never created from stored data. See
 [ADR 0008](adr/0008-postgres-storage.md).
