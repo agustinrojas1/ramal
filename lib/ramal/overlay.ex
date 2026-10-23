@@ -334,20 +334,7 @@ defmodule Ramal.Overlay do
   end
 
   defp change({resource, key}, {:updated, record}, {:ok, snapshot}, attributes) do
-    before = attributes.(snapshot)
-    after_attributes = attributes.(record)
-
-    changes =
-      before
-      |> Map.keys()
-      |> Enum.concat(Map.keys(after_attributes))
-      |> Enum.uniq()
-      |> Enum.flat_map(fn name ->
-        old = Map.get(before, name)
-        new = Map.get(after_attributes, name)
-        if old == new, do: [], else: [{name, {old, new}}]
-      end)
-      |> Map.new()
+    changes = changed(attributes.(snapshot), attributes.(record))
 
     if changes == %{} do
       {:ok, nil}
@@ -368,6 +355,28 @@ defmodule Ramal.Overlay do
        "the branch changed #{inspect(resource)} #{inspect(key)} but kept no copy of the row as it first saw it",
        %{resource: resource, key: key}
      )}
+  end
+
+  # The attributes whose value differs, as `{old, new}`; one that only one side has counts as `nil` on the other. Two
+  # folds, not the union of both key lists, which allocated and deduplicated them for every updated row.
+  defp changed(before, after_attributes) do
+    changes =
+      :maps.fold(
+        fn name, old, acc ->
+          new = Map.get(after_attributes, name)
+          if old == new, do: acc, else: Map.put(acc, name, {old, new})
+        end,
+        %{},
+        before
+      )
+
+    :maps.fold(
+      fn name, new, acc ->
+        if is_map_key(before, name) or new == nil, do: acc, else: Map.put(acc, name, {nil, new})
+      end,
+      changes,
+      after_attributes
+    )
   end
 
   # Ash structs carry bookkeeping under keys such as __meta__ and __metadata__; they are not row data.

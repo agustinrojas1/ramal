@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- `Ramal.diff/1` is about a third faster for a branch with many changes: it no longer builds and deduplicates a list of attribute names for every updated row, and `Ramal.Resource.attributes/1` makes one pass over the attribute names. Same changes, same order.
+
 ## [0.3.0] - 2026-10-23
 
 ### Added
