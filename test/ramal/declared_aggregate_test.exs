@@ -313,10 +313,44 @@ defmodule Ramal.DeclaredAggregateTest do
         assert close?(paddock.average_head, Aggregate.compute(:avg, :head, mine, Herd))
       end
 
+      counts =
+        Map.new(read_paddocks(), fn paddock ->
+          {paddock.name, Enum.count(herds, &(&1.paddock_id == paddock.id))}
+        end)
+
+      assert_filter_and_sort_match(counts)
+
       assert length(read_paddocks()) == length(state.paddocks)
     end)
 
     :ok = Ramal.discard(branch)
+  end
+
+  # A filter and a sort on the aggregate judge the same numbers a loaded one shows.
+  defp assert_filter_and_sort_match(counts) do
+    for minimum <- [0, 1, 2] do
+      expected =
+        counts
+        |> Enum.filter(fn {_name, count} -> count >= minimum end)
+        |> Enum.map(&elem(&1, 0))
+        |> Enum.sort()
+
+      read =
+        Paddock
+        |> Ash.Query.filter(herd_count >= ^minimum)
+        |> Ash.Query.sort(:name)
+        |> Ash.read!(authorize?: false)
+
+      assert Enum.map(read, & &1.name) == expected
+    end
+
+    sorted =
+      Paddock |> Ash.Query.sort(herd_count: :desc, name: :asc) |> Ash.read!(authorize?: false)
+
+    assert Enum.map(sorted, & &1.name) ==
+             counts
+             |> Enum.sort_by(fn {name, count} -> {-count, name} end)
+             |> Enum.map(&elem(&1, 0))
   end
 
   defp base,

@@ -175,10 +175,17 @@ defmodule Ramal.Preparation.Aggregates do
 
         aggregate.kind in Aggregate.kinds() and not aggregate.uniq? and
           aggregate.join_filters == %{} and
-          is_nil(aggregate.read_action) and is_nil(aggregate.implementation) and
+          default_read?(aggregate, destination) and is_nil(aggregate.implementation) and
           field_ok?(aggregate, destination) and query_ok?(aggregate.query)
     end
   end
+
+  # An aggregate named in a filter or sort has the destination's primary read action filled in; a declared one that was
+  # not given a `read_action` has none. Only another action is a custom one.
+  defp default_read?(%{read_action: nil}, _destination), do: true
+
+  defp default_read?(%{read_action: name}, destination),
+    do: match?(%{name: ^name}, Info.primary_action(destination, :read))
 
   defp field_ok?(%{kind: kind, field: nil}, _destination), do: kind in [:count, :exists]
 

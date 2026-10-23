@@ -145,8 +145,10 @@ This is the section that decides correctness. In a read action's preparation, wh
    every row when the branch changed a resource on its path and for the rows the overlay supplied otherwise (ADR 0029).
    `first`, `list` and `custom` aggregates, `uniq?`, a join filter, a custom read action, a field that is not an attribute
    and an aggregate query with a limit, offset or distinct keep the database's value and emit
-   `[:ramal, :read, :unpatched_aggregate]`, so a host can detect it in tests. A filter or sort on an aggregate is judged by the
-   data layer on the base rows. Expression calculations are evaluated in memory on the rows the branch created or changed.
+   `[:ramal, :read, :unpatched_aggregate]`, so a host can detect it in tests. A filter or sort on an aggregate is judged on the branch's
+   numbers (ADR 0032): the conjunct is taken out of the data-layer query when the branch changed a resource on the
+   aggregate's path, as for a relationship (section 9), and the aggregates the filter or sort names are computed over the
+   branch for the overlay's records, for the base rows the check reads and for the rows a sort orders. Expression calculations are evaluated in memory on the rows the branch created or changed.
    `Ramal.aggregate/4` (ADR 0011, ADR 0013) gives one total over a query: the database aggregates the rows the overlay does
    not touch and the branch reads only the ones it does.
 5. **Pagination:** Ash adds a page's limit and offset (or its keyset filter) after the `before_action` hooks, counts in

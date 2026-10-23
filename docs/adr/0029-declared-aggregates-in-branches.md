@@ -34,4 +34,4 @@ is a bug in any reading; the first is the second thing an Ash user tries after `
   aggregate over herds adds the herds to the merge staleness check.
 - The related reads use the query's actor and `authorize?`, and the aggregate's own `authorize?`, so the policies of the
   destination resource decide which rows count.
-- A filter or sort on a declared aggregate (`filter head_count > 10`) is still judged by the data layer on the base rows.
+- A filter or sort on a declared aggregate (`filter head_count > 10`) was left judged by the data layer on the base rows; [ADR 0032](0032-aggregate-filters-and-sorts.md) closes it.
