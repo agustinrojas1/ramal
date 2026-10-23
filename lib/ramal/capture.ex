@@ -65,6 +65,7 @@ defmodule Ramal.Capture do
 
   alias Ash.Error.Changes.StaleRecord
   alias Ash.Resource.Info
+  alias Ramal.Ash.Contract
   alias Ramal.{Branch, Current, Error, Resource, Telemetry}
   alias Ramal.Branch.Server
 
@@ -82,10 +83,22 @@ defmodule Ramal.Capture do
       {:ok, id, origin} ->
         # The replay of a nested fork's entries runs in a branch (a scratch copy of the parent), so its hooks' creates
         # take their planned keys here as they do when the merge writes to the database (ADR 0043).
-        capture(planned_key(changeset), id, origin)
+        case contract(changeset) do
+          :ok -> capture(planned_key(changeset), id, origin)
+          {:error, error} -> Ash.Changeset.add_error(changeset, error)
+        end
 
       {:conflict, process, carried} ->
         Ash.Changeset.add_error(changeset, Current.conflict(what(changeset), process, carried))
+    end
+  end
+
+  # The Ash assumptions this write relies on are checked where it runs (ADR 0049). With nothing broken each check is one
+  # `:persistent_term` read, and the error fails the action before any hook runs, so nothing reaches the data layer.
+  defp contract(changeset) do
+    with :ok <- Contract.ensure(:core),
+         :ok <- if(Ramal.Ash.bulk?(changeset), do: Contract.ensure(:bulk), else: :ok) do
+      if Ramal.Ash.upsert?(changeset), do: Contract.ensure(:upsert), else: :ok
     end
   end
 

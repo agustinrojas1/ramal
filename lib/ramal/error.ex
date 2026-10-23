@@ -38,6 +38,7 @@ defmodule Ramal.Error do
   | `:storage` | the storage backend failed; for a durable branch, an action whose writes could not be appended to the write log fails with it |
   | `:fenced` | a process of a cluster tried to write a branch that another process loaded after it did (`details.epoch`, ADR 0044); what it held since its last save is lost |
   | `:timeout` | the branch process did not answer in time (`details.timeout` in ms); the request may still be carried out |
+  | `:ash_incompatible` | a branch read or write is refused because an Ash assumption Ramal relies on is broken on the Ash this node runs (`details.assumption`, `ash`, `feature`); a core one refuses everything in a branch, an extended one its feature. `mix ramal.doctor` shows which (ADR 0049) |
 
   ## Example
 
@@ -77,6 +78,7 @@ defmodule Ramal.Error do
           | :storage
           | :fenced
           | :timeout
+          | :ash_incompatible
 
   @type t :: %__MODULE__{reason: reason, message: String.t(), details: map}
 

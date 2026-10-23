@@ -52,3 +52,4 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0046](0046-through-paths-walked-over-the-branch.md) | A `through` path of several hops is walked over the branch's rows | accepted |
 | [0047](0047-relationship-filter-narrowing.md) | A filter through a changed to-one relationship is narrowed in the data-layer query | accepted |
 | [0048](0048-durable-branches.md) | Durable branches store each action that ended | accepted |
+| [0049](0049-ash-contract-checked-where-ramal-runs.md) | Ramal checks its Ash contract where it runs | accepted |

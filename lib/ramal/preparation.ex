@@ -89,6 +89,7 @@ defmodule Ramal.Preparation do
   use Ash.Resource.Preparation
 
   alias Ash.Resource.Info
+  alias Ramal.Ash.Contract
   alias Ramal.Branch.Server
   alias Ramal.{Collation, Current, Overlay, Prefilter, Resource, Telemetry}
   alias Ramal.Preparation.{Aggregates, ManyToMany, Paged, Related}
@@ -105,8 +106,14 @@ defmodule Ramal.Preparation do
       :none ->
         Ash.Query.before_transaction(query, &bind_late/1)
 
+      # The Ash assumptions a read in a branch relies on are checked here, where the branch reads (ADR 0049). The
+      # relationship ones are checked in `rewrite/2`, where a lateral load is handled: Ash puts the source records of a
+      # load on the query after the preparations have run.
       {:ok, id, origin} ->
-        install(query, id, origin)
+        case Contract.ensure(:core) do
+          :ok -> install(query, id, origin)
+          {:error, error} -> Ash.Query.add_error(query, error)
+        end
 
       {:conflict, process, carried} ->
         Ash.Query.add_error(query, Current.conflict(what(query), process, carried))
@@ -135,7 +142,8 @@ defmodule Ramal.Preparation do
         query
 
       {:ok, id, origin} ->
-        query |> install(id, origin) |> before_transaction(id)
+        with :ok <- Contract.ensure(:core),
+             do: query |> install(id, origin) |> before_transaction(id)
 
       {:conflict, process, carried} ->
         {:error, Current.conflict(what(query), process, carried)}
@@ -170,6 +178,15 @@ defmodule Ramal.Preparation do
   defp rewrite(query, id) do
     warn_unpatched_aggregates(query, id)
 
+    # A lateral load is one Ramal walks over the branch's rows (ADR 0046, 0047), so it needs the relationship-pages
+    # assumptions; any other load is Ash's own and needs none.
+    case relationship_contract(query) do
+      :ok -> rewrite_patched(query, id)
+      {:error, error} -> Ash.Query.add_error(query, error)
+    end
+  end
+
+  defp rewrite_patched(query, id) do
     case ManyToMany.rewrite(query, id) do
       {:ok, rewritten, links} ->
         rewritten |> keep_lateral(query, links) |> strip_paging(id, links, nil)
@@ -180,6 +197,10 @@ defmodule Ramal.Preparation do
       {:error, error} ->
         Ash.Query.add_error(query, error)
     end
+  end
+
+  defp relationship_contract(query) do
+    if Ramal.Ash.lateral_load?(query), do: Contract.ensure(:relationship_pages), else: :ok
   end
 
   # A paged lateral load is paged per source record by `Ash.Actions.Read` after the hooks (`drop_pagination_extra/3`

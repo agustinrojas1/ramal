@@ -342,9 +342,11 @@ This is the section that decides correctness. In a read action's preparation, wh
 `:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:upsert_unsupported`, `:atomic_unsupported`, `:branch_too_large`,
 `:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`, `:timeout`, `:merge_failed`,
 `:multitenancy_unsupported`, `:tenant_mismatch`, `:partial_record`, `:branch_mismatch`, `:task_in_action`,
-`:unbranchable_resources`, `:row_busy`, `:limit_reached`. `lib/ramal/error.ex` holds the authoritative table.
+`:unbranchable_resources`, `:row_busy`, `:limit_reached`, `:ash_incompatible`. `lib/ramal/error.ex` holds the authoritative table.
 
 `Ramal.Ash` (public) is Ramal's contract with Ash: the Ash and AshPostgres versions the suite passes on, and the Ash internals Ramal relies on, so that a change in Ash has one place to look. `Ramal.Supervisor` compares the host's versions with it at boot and warns when they are outside the range. It never refuses to start.
+
+Ramal also checks that contract where it runs (ADR 0049). Ramal.Ash.Contract (internal) lists each assumption with its tier, the feature it serves, its tripwire test and a check; Ramal.Ash.Probe (internal, with its Ramal.Ash.Probe.* submodules) holds the small ETS resources and hooks the checks run on, which do not use `Ramal.Resource`. `mix ramal.doctor` (public) runs the checks on the host's Ash and prints each one. The supervisor runs them at boot outside the tested range. A broken core assumption makes every branch read and write fail with `:ash_incompatible`; a broken extended one makes only its feature fail.
 
 ### 5.1 Agent tools (ADR 0019)
 

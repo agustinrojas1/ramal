@@ -26,6 +26,7 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :read, :patch]` | a read inside a branch was patched with the overlay (measurements: `base_rows`, `overlay_rows`, `result_rows`, `duration`) |
   | `[:ramal, :read, :unpatched_aggregate]` | a read inside a branch selected an aggregate Ramal cannot compute over the overlay (`custom`, a join filter, a custom read action, ...), so it has the database's value |
   | `[:ramal, :write, :capture]` | a create, update or destroy inside a branch was put in the overlay instead of the data layer (metadata: `action_type`, `resource`, `action`, `nested?`) |
+  | `[:ramal, :ash, :contract]` | `Ramal.Supervisor` ran Ramal's Ash contract at boot, because Ash or AshPostgres is outside the range it is tested with (measurement `broken`, the number of broken assumptions; metadata `broken`, the ids of the broken ones, and `ash` and `ash_postgres`, the versions) |
 
   ## Example
 
@@ -93,6 +94,24 @@ defmodule Ramal.Telemetry do
       [:ramal, :branch, step],
       Map.put(measurements, :system_time, System.system_time()),
       Map.merge(%{branch_id: id, domain: domain}, extra)
+    )
+  end
+
+  @doc """
+  Emits `[:ramal, :ash, :contract]` after the boot-time run of Ramal's Ash contract, with the ids of the broken
+  assumptions and the Ash versions it ran on.
+
+  ## Example
+
+      iex> Ramal.Telemetry.ash_contract([], "3.38.0", "2.15.1")
+      :ok
+  """
+  @spec ash_contract([atom], String.t() | nil, String.t() | nil) :: :ok
+  def ash_contract(broken, ash, ash_postgres) do
+    :telemetry.execute(
+      [:ramal, :ash, :contract],
+      %{broken: length(broken)},
+      %{broken: broken, ash: ash, ash_postgres: ash_postgres}
     )
   end
 

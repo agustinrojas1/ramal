@@ -11,6 +11,8 @@ A library. No OTP application of its own beyond `Ramal.Supervisor`, which the ho
 ```
 lib/ramal.ex                 public API (branch, run, fork, diff, merge, discard, current)
 lib/ramal/ash.ex             Ramal's contract with Ash: the tested versions, the Ash internals it relies on, the seams that call them, the boot check (public)
+lib/ramal/ash/contract.ex    the Ash contract as data: each assumption with its tier, feature, tripwire and check; ensure/1 refuses branch work (internal, ADR 0049)
+lib/ramal/ash/probe.ex       the ETS resources and hooks the contract's checks run on; no Ramal.Resource (internal, ADR 0049)
 lib/ramal/branch.ex          the Branch struct and pure functions over it
 lib/ramal/branch/server.ex   GenServer: one process per open branch
 lib/ramal/cluster.ex         the :via module over :global and the resolver for branches in a cluster (ADR 0044)
@@ -37,6 +39,7 @@ lib/ramal/limits.ex          the optional per-domain limits on creating branches
 lib/ramal/telemetry.ex       event names and helpers
 lib/ramal/tools.ex           the branch tools for an LLM agent: definitions and call/3, no merge or approve (ADR 0019)
 lib/mix/tasks/               ramal.install, ramal.gen.migration
+lib/mix/tasks/ramal.doctor.ex  mix ramal.doctor: runs every Ash contract check on the host's Ash and exits 1 on a broken core one (public, ADR 0049)
 test/support/farm/           the test domain (Paddock, Herd, Move) and its repo
 docs/                        DESIGN.md, ROADMAP.md, agents.md (the guide for AI agents), ADRs under docs/adr/
 usage-rules.md               rules for coding agents that use Ramal, in the `usage_rules` format (ships in the Hex package)
@@ -59,7 +62,7 @@ Do not add a module `docs/DESIGN.md` does not name without first adding it there
 ## Code style
 
 - Small modules, pure functions where possible. The overlay, diff and merge logic are pure and tested without a database; only the hooks and storage touch Ash or Ecto.
-- Only `Ramal.Ash` touches an Ash internal (an `Ash.Actions` module, a `context.private` key, the lateral-join context); add a seam there with its tripwire test, never a direct call. `test/ramal/ash_seam_test.exs` enforces it.
+- Only `Ramal.Ash` touches an Ash internal (an `Ash.Actions` module, a `context.private` key, the lateral-join context); add a seam there with its tripwire test, never a direct call. `test/ramal/ash_seam_test.exs` enforces it. The exception is the contract under `lib/ramal/ash/`, whose checks name the internals on purpose (ADR 0049); a new assumption goes in `Ramal.Ash.Contract` with its tripwire test and its check.
 - Every public module has a `@moduledoc` that says what it is for and one example. Every public function has `@doc` and a `@spec`. Private helpers need neither.
 - Type and function names are English. The library name is Spanish; nothing else is.
 - Errors are `{:error, %Ramal.Error{}}` with a `reason` atom and a message a developer can act on. Raise only in the bang variants.

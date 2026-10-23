@@ -31,6 +31,7 @@ defmodule Ramal.DocsTest do
     names = documented_modules() |> Enum.map(&inspect/1) |> Enum.sort()
 
     assert names == [
+             "Mix.Tasks.Ramal.Doctor",
              "Mix.Tasks.Ramal.Gen.Migration",
              "Ramal",
              "Ramal.Aggregate",
