@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- **A calculation with its own module and an `expression/2` is now evaluated on the rows a branch created or changed** (it came back `Ash.NotLoaded`, and a filter or sort on it judged the database's values). Calculations with only `calculate/3` already ran on the patched rows.
 - **A query prepared outside `Ramal.run/2` and read inside it is now patched with the branch** (it read base data before). The preparation adds a `before_transaction` hook to every query; it installs the read hooks only when a branch is current when the query runs, so an atomic bulk update of a prepared query outside a branch still runs in the database. ADR 0028.
 
 ## [0.4.3] - 2026-10-23

@@ -136,6 +136,42 @@ defmodule Ramal.PreparationTest do
       assert sizes == %{"N1" => "large", "R7" => "small", "R8" => "large", "R9" => "small"}
     end
 
+    test "a calculation with its own module is evaluated on the rows the branch created or changed",
+         %{
+           branch: branch,
+           herds: h
+         } do
+      put(branch, :updated, %{h.r7 | head: 5, name: "r7x"})
+      n1 = put(branch, :created, new_herd(name: "N1", head: 50))
+
+      inside(branch, fn ->
+        rows = Ash.read!(Herd, load: [:doubled, :shouted], authorize?: false)
+
+        assert rows |> Map.new(&{&1.name, {&1.doubled, &1.shouted}}) == %{
+                 "N1" => {100, "N1"},
+                 "r7x" => {10, "R7X"},
+                 "R8" => {h.r8.head * 2, "R8"},
+                 "R9" => {h.r9.head * 2, "R9"}
+               }
+
+        assert Ash.get!(Herd, n1.id, load: [:doubled], authorize?: false).doubled == 100
+
+        # Filtering and sorting by the module calculation judge the branch's values too.
+        assert Herd
+               |> Ash.Query.filter(doubled > 50)
+               |> Ash.Query.sort(doubled: :desc)
+               |> Ash.Query.load(:doubled)
+               |> Ash.read!(authorize?: false)
+               |> Enum.map(&{&1.name, &1.doubled}) ==
+                 Enum.sort_by(
+                   [{"N1", 100}, {"R8", h.r8.head * 2}, {"R9", h.r9.head * 2}]
+                   |> Enum.filter(fn {_name, d} -> d > 50 end),
+                   &elem(&1, 1),
+                   :desc
+                 )
+      end)
+    end
+
     # Documents a limit (ADR 0024): the patched list is sorted in Elixir, where strings compare as bytes, while Postgres
     # uses the collation of the database, so mixed-case text can sort differently outside the branch.
     test "a text sort over a resource the branch touched uses byte order", %{branch: branch} do
