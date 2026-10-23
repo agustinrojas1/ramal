@@ -22,6 +22,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `Ramal.fork/2` is refused with `:not_open` while a merge holds the branch. Before, a fork of a log that was about to be replayed could be merged again and write the same rows twice.
 - A calculation that a read action loads in its own `prepare` is now evaluated on the rows the branch created or changed; before, those rows came back `NotLoaded` for it (#116).
 - `Ramal.aggregate/4` now sees a branch carried only by `context: Ramal.context(branch)`, in the options or in the query's context, as reads do; before, it answered with the base's numbers (#114).
+- An update or destroy through a record read with `Ash.Query.select/2` no longer stores a partial row in the branch or skips its staleness check: the full row is read inside the branch first, and the write is refused with `:partial_record` if that fails (#113).
 
 ## [0.4.2] - 2026-10-23
 

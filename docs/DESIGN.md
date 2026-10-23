@@ -243,7 +243,7 @@ This is the section that decides correctness. In a read action's preparation, wh
 `Ramal.Error` has `reason` (an atom from a documented list), `message`, and `details` (a map). Reasons in 0.1:
 `:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:upsert_unsupported`, `:atomic_unsupported`, `:branch_too_large`,
 `:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`, `:merge_failed`,
-`:multitenancy_unsupported`.
+`:multitenancy_unsupported`, `:partial_record`.
 
 ### 5.1 Agent tools (ADR 0019)
 
