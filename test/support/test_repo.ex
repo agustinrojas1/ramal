@@ -8,5 +8,5 @@ defmodule Ramal.TestRepo do
   # The test tenants are created inside each test's sandbox transaction and rolled back, so there is none to migrate.
   def all_tenants, do: []
 
-  def installed_extensions, do: ["ash-functions"]
+  def installed_extensions, do: ["ash-functions", "citext"]
 end

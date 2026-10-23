@@ -21,7 +21,9 @@ defmodule Ramal.Aggregate do
   each value in a `:list` and counts distinct non-nil values in a `:count`. A `:custom` aggregate is a data-layer module
   that produces SQL, so it is not here. `:sum` of decimals is a `Decimal`, `:avg` is a
   float (Ash types it as `:float`, `lib/ash/query/aggregate.ex`). `:min` and `:max` order values the way a runtime sort
-  does (the runtime sort in Ash.Actions.Sort), so dates, decimals and strings compare by their type.
+  does (the runtime sort in Ash.Actions.Sort), so dates and decimals compare by their type. Strings of an AshPostgres
+  resource compare by the collation of the column, which `Ramal.Collation` asks the database for (ADR 0045); the
+  function then reads from the database and raises `Ramal.Error` with reason `:collation_failed` if that fails.
 
   Confirmed against Ash 3.37 for the delta path: the aggregate action (`lib/ash/actions/aggregate.ex`) builds its query with
   `Ash.Query.for_read/4`, so the action's policies and preparations apply, but it does not run the `before_action` and
@@ -44,7 +46,7 @@ defmodule Ramal.Aggregate do
 
   alias Ash.Actions.Sort
   alias Ash.Resource.Info
-  alias Ramal.Resource
+  alias Ramal.{Collation, Resource}
 
   @kinds [:count, :exists, :sum, :min, :max, :avg, :first, :list]
 
@@ -68,7 +70,8 @@ defmodule Ramal.Aggregate do
   is not an attribute of `resource` when the kind is `:sum`, `:min`, `:max` or `:avg`. `:first`, `:list` and a `:count`
   of a field take whatever the records hold under `field`, so a calculation loaded onto them works too.
 
-  `opts` are `:uniq?` and `:include_nil?`, as on an Ash aggregate (both default to `false`).
+  `opts` are `:uniq?` and `:include_nil?`, as on an Ash aggregate (both default to `false`), and `:tenant`, which the
+  collation of a string column in a schema-per-tenant resource needs for `:min` and `:max`.
 
   ## Example
 
@@ -113,7 +116,7 @@ defmodule Ramal.Aggregate do
     if opts[:uniq?], do: uniq(values), else: values
   end
 
-  def compute(kind, field, records, resource, _opts) when kind in [:sum, :min, :max, :avg] do
+  def compute(kind, field, records, resource, opts) when kind in [:sum, :min, :max, :avg] do
     validate!(kind, field, resource)
 
     values =
@@ -121,7 +124,7 @@ defmodule Ramal.Aggregate do
       |> Enum.map(&Map.fetch!(&1, field))
       |> Enum.reject(&is_nil/1)
 
-    reduce(kind, field, values, resource)
+    reduce(kind, field, values, resource, opts[:tenant])
   end
 
   def compute(kind, field, _records, resource, _opts), do: validate!(kind, field, resource)
@@ -138,7 +141,7 @@ defmodule Ramal.Aggregate do
   Joins the database's answer for the rows outside the overlay with the branch's rows inside it. `base` is the
   database's value for `kind`: an integer for `:count`, a boolean for `:exists`, the value or `nil` for `:sum`, `:min`
   and `:max`, and `{sum, non_nil_count}` for `:avg`. `rows` are the branch's version of the overlaid rows that match the
-  query.
+  query. `opts` are those of `compute/5`.
 
   ## Example
 
@@ -151,17 +154,18 @@ defmodule Ramal.Aggregate do
       iex> Ramal.Aggregate.combine(:sum, :head, Ramal.Test.Farm.Herd, nil, [])
       nil
   """
-  @spec combine(kind, atom | nil, module, term, [map]) :: term
-  def combine(:count, _field, _resource, base, rows), do: base + length(rows)
-  def combine(:exists, _field, _resource, base, rows), do: base or rows != []
+  @spec combine(kind, atom | nil, module, term, [map], keyword) :: term
+  def combine(kind, field, resource, base, rows, opts \\ [])
+  def combine(:count, _field, _resource, base, rows, _opts), do: base + length(rows)
+  def combine(:exists, _field, _resource, base, rows, _opts), do: base or rows != []
 
-  def combine(kind, field, resource, base, rows) when kind in [:sum, :min, :max] do
+  def combine(kind, field, resource, base, rows, opts) when kind in [:sum, :min, :max] do
     validate!(kind, field, resource)
     values = base_values(base) ++ values(rows, field)
-    reduce(kind, field, values, resource)
+    reduce(kind, field, values, resource, opts[:tenant])
   end
 
-  def combine(:avg, field, resource, {base_sum, base_count}, rows) do
+  def combine(:avg, field, resource, {base_sum, base_count}, rows, _opts) do
     validate!(:avg, field, resource)
     branch = values(rows, field)
 
@@ -184,7 +188,7 @@ defmodule Ramal.Aggregate do
 
     with {:ok, base} <- database(exclude(query, keys), kind, field, opts),
          {:ok, rows} <- Resource.read_all(restrict(query, keys), opts) do
-      {:ok, combine(kind, field, resource, base, rows)}
+      {:ok, combine(kind, field, resource, base, rows, tenant: opts[:tenant] || query.tenant)}
     end
   end
 
@@ -277,19 +281,27 @@ defmodule Ramal.Aggregate do
     raise ArgumentError, "unknown aggregate kind #{inspect(kind)}; use one of #{inspect(@kinds)}"
   end
 
-  defp reduce(_kind, _field, [], _resource), do: nil
-  defp reduce(:sum, _field, values, _resource), do: sum(values)
-  defp reduce(:avg, _field, values, _resource), do: average(values)
+  defp reduce(_kind, _field, [], _resource, _tenant), do: nil
+  defp reduce(:sum, _field, values, _resource, _tenant), do: sum(values)
+  defp reduce(:avg, _field, values, _resource, _tenant), do: average(values)
 
-  defp reduce(kind, field, values, resource) do
-    # runtime_sort loads calculations onto records, so it needs real resource structs and not plain maps.
+  defp reduce(kind, field, values, resource, tenant) do
     sorted =
-      values
-      |> Enum.map(&struct(resource, [{field, &1}]))
-      |> Sort.runtime_sort([{field, :asc}], resource: resource, domain: Info.domain(resource))
+      case Collation.order_values(resource, field, values, tenant) do
+        {:ok, sorted} -> sorted
+        :runtime -> runtime_sorted(field, values, resource)
+        {:error, error} -> raise error
+      end
 
-    edge = if kind == :min, do: List.first(sorted), else: List.last(sorted)
-    Map.fetch!(edge, field)
+    if kind == :min, do: List.first(sorted), else: List.last(sorted)
+  end
+
+  # runtime_sort loads calculations onto records, so it needs real resource structs and not plain maps.
+  defp runtime_sorted(field, values, resource) do
+    values
+    |> Enum.map(&struct(resource, [{field, &1}]))
+    |> Sort.runtime_sort([{field, :asc}], resource: resource, domain: Info.domain(resource))
+    |> Enum.map(&Map.fetch!(&1, field))
   end
 
   defp sum(values) do
