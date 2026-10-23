@@ -271,7 +271,7 @@ defmodule Ramal do
          :ok <- Limits.check(parent.domain, :fork, config),
          fork = Branch.fork(parent, opts),
          :ok <- config.storage.put(fork, config.storage_config),
-         {:ok, _pid} <- Server.start(fork, config) do
+         {:ok, _pid} <- Server.start_forked(fork, config) do
       Telemetry.branch(:fork, fork, %{parent_id: parent.id})
       {:ok, fork}
     end
