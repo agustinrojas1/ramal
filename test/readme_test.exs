@@ -38,7 +38,7 @@ defmodule Ramal.ReadmeTest do
   end
 
   test "the proposal example in the README runs as written", %{herds: herds, paddocks: paddocks} do
-    # The proposal example is the block that calls `Ramal.propose/2` and ends in an approval, wherever it sits in the README.
+    # The proposal example is the block that ends in an approval, wherever it sits in the README.
     code =
       ~r/```elixir\n(.*?)```/s
       |> Regex.scan(File.read!(@readme), capture: :all_but_first)
