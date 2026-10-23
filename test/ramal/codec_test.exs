@@ -70,6 +70,20 @@ defmodule Ramal.Storage.CodecTest do
     assert loaded.parent == %{id: parent.id, log_length: 0}
   end
 
+  test "a nested fork keeps its placeholder count with its parent link and writes state version 3" do
+    {:ok, key, branch} = Branch.placeholder(Branch.new(Farm), Ash.Type.Integer)
+    child = Branch.fork(branch, nested: true)
+    child = %{child | merged_children: ["b1"]}
+
+    {:ok, state} = Codec.encode_state(child)
+    assert state["version"] == 3
+    assert state["next_placeholder"] == 1
+    assert key < 0
+    assert {:ok, loaded} = round_trip(child)
+    assert loaded == child
+    assert loaded.next_placeholder == 1
+  end
+
   test "a branch that is no nested fork is written as state version 2" do
     {:ok, state} = Codec.encode_state(Branch.new(Farm))
     assert state["version"] == 2
