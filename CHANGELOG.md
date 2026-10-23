@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- **Documented that a branch holds only the writes of create, update and destroy actions.** A generic action and the outside effects of a hook (an HTTP call, an email, an Oban job, a `Repo` write) run for real while a branch is open. SECURITY.md, `docs/limits.md` and `usage-rules.md` now say so and how to make a hook skip itself.
+
 ### Fixed
 
 - **A stored branch whose state is not an object with a version no longer crashes the caller.** `Ramal.get/1` and `Ramal.list/2` (and a durable branch's write log) now return `{:error, %Ramal.Error{reason: :storage}}` for a `state` of `{}`, `null`, a list or a string, or a `version` that is not a number, as SECURITY.md says they do. Found by fuzzing the decoder with mutated states. Only someone who can already write the `ramal_branches` table can store such a value.

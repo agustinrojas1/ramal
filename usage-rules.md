@@ -90,6 +90,10 @@ test decides whether it happens.
 - **A branch works in one tenant**: `Ramal.branch(domain, tenant: tenant)`. A multitenant resource used with another tenant is refused, and so is any tenant in a branch that has none.
 - **A data layer that cannot roll back** (`Ash.DataLayer.Ets`) keeps the writes of a replay that failed halfway: the
   staleness check runs first, but a later `:merge_failed` lists `details.not_rolled_back`. Use Postgres where it matters.
+- **Only create, update and destroy are held in a branch.** A generic action (`type :action`) runs as written, and a hook that
+  calls an API, sends an email, inserts an Oban job or writes with `Repo` does it for real, at branch time and again at
+  merge. Make such hooks skip themselves when `Ramal.current/0` returns a branch (inside `run/2`) or `Ramal.in_branch?/1` is true for their changeset (with `Ramal.context/1`), and do not offer a generic action with outside
+  effects to an agent that works in a branch.
 - **Notifications are dropped** for writes in a branch unless the resource has `ramal do notify_in_branch? true end`. They
   are not dropped when you use `Ramal.context/1`.
 - **Two processes writing one row of a branch**: while the first one's action runs, the second gets `:row_busy`; retry
