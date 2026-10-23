@@ -342,4 +342,63 @@ defmodule Ramal.GeneratedKeyTest do
       assert {:ok, %{next_placeholder: 0}} = Codec.decode_state(columns, encoded)
     end
   end
+
+  describe "a create whose hook creates a row of the same resource with a generated key" do
+    for {action, hook} <- [
+          create_with_sibling: "after_action",
+          create_with_sibling_early: "before_action"
+        ] do
+      test "each row keeps its own key when the #{hook} hook creates the sibling", %{
+        branch: branch
+      } do
+        {note, sibling} =
+          inside(branch, fn ->
+            note = Ash.create!(Note, %{body: "pair"}, action: unquote(action), authorize?: false)
+
+            sibling =
+              Note |> Ash.read!(authorize?: false) |> Enum.find(&(&1.body == "pair sibling"))
+
+            Ash.update!(sibling, %{code: "s"}, authorize?: false)
+            {note, sibling}
+          end)
+
+        refute note.id == sibling.id
+
+        assert {:ok, %Result{replayed: 2, keys: keys}} = Ramal.merge(branch, authorize?: false)
+
+        real_note = keys[{Note, note.id}]
+        real_sibling = keys[{Note, sibling.id}]
+        refute real_note == real_sibling
+
+        assert %{body: "pair", code: nil} = Ash.get!(Note, real_note, authorize?: false)
+
+        assert %{body: "pair sibling", code: "s"} =
+                 Ash.get!(Note, real_sibling, authorize?: false)
+      end
+    end
+  end
+
+  test "a managed parent of the same resource keeps its own key through a later update", %{
+    branch: branch
+  } do
+    {note, parent} =
+      inside(branch, fn ->
+        note =
+          Ash.create!(Note, %{body: "child", parent: %{body: "parent"}},
+            action: :create_with_parent,
+            authorize?: false
+          )
+
+        parent = Ash.get!(Note, note.parent_id, authorize?: false)
+        Ash.update!(parent, %{code: "p"}, authorize?: false)
+        {note, parent}
+      end)
+
+    assert {:ok, %Result{keys: keys}} = Ramal.merge(branch, authorize?: false)
+
+    assert %{body: "child"} = Ash.get!(Note, keys[{Note, note.id}], authorize?: false)
+
+    assert %{body: "parent", code: "p"} =
+             Ash.get!(Note, keys[{Note, parent.id}], authorize?: false)
+  end
 end
