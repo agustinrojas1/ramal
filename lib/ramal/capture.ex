@@ -71,7 +71,9 @@ defmodule Ramal.Capture do
         guard(changeset)
 
       {:ok, id, origin} ->
-        capture(changeset, id, origin)
+        # The replay of a nested fork's entries runs in a branch (a scratch copy of the parent), so its hooks' creates
+        # take their planned keys here as they do when the merge writes to the database (ADR 0043).
+        capture(planned_key(changeset), id, origin)
 
       {:conflict, process, carried} ->
         Ash.Changeset.add_error(changeset, Current.conflict(what(changeset), process, carried))

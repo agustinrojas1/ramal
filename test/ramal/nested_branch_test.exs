@@ -289,6 +289,78 @@ defmodule Ramal.NestedBranchTest do
       assert {:ok, %{status: :merged}} = Ramal.get(child.id)
     end
 
+    test "a row a hook created in the fork keeps its key in the parent, and a later action on it is replayed",
+         %{
+           parent: parent,
+           child: child,
+           herds: herds,
+           paddocks: paddocks
+         } do
+      Ash.update!(paddocks.l18, %{capacity_head: 500}, authorize?: false)
+
+      move =
+        inside(child, fn ->
+          Ash.update!(herds.r7, %{to_paddock_id: paddocks.l18.id},
+            action: :move_early,
+            authorize?: false
+          )
+
+          [move] = Ash.read!(Move, authorize?: false)
+          Ash.update!(move, %{moved_on: ~D[2026-01-01]}, authorize?: false)
+        end)
+
+      assert {:ok, %{replayed: 2}} = merge(child)
+
+      assert [%{id: id, moved_on: ~D[2026-01-01]}] =
+               inside(parent, fn -> Ash.read!(Move, authorize?: false) end)
+
+      assert id == move.id
+      assert Ash.read!(Move, authorize?: false) == []
+
+      assert {:ok, %{replayed: 2}} = merge(parent, actor: %{role: :admin})
+      assert [%{id: ^id, moved_on: ~D[2026-01-01]}] = Ash.read!(Move, authorize?: false)
+    end
+
+    test "a bulk update and a bulk create in the fork are replayed in the parent record by record",
+         %{
+           parent: parent,
+           child: child
+         } do
+      inside(child, fn ->
+        Ash.bulk_update!(Herd, :update, %{head: 1}, authorize?: false, strategy: [:stream])
+
+        Ash.bulk_create!([%{name: "B1", head: 2}, %{name: "B2", head: 3}], Herd, :create,
+          authorize?: false
+        )
+      end)
+
+      assert {:ok, %{replayed: 5}} = merge(child)
+      assert heads_in(parent) == %{"R7" => 1, "R8" => 1, "R9" => 1, "B1" => 2, "B2" => 3}
+      assert heads() == %{"R7" => 30, "R8" => 35, "R9" => 25}
+
+      assert {:ok, %{replayed: 5}} = merge(parent)
+      assert heads() == %{"R7" => 1, "R8" => 1, "R9" => 1, "B1" => 2, "B2" => 3}
+    end
+
+    test "an attribute the caller set after building the changeset survives both merges", %{
+      parent: parent,
+      child: child,
+      herds: herds
+    } do
+      inside(child, fn ->
+        herds.r7
+        |> Ash.Changeset.for_update(:update, %{name: "R7b"}, authorize?: false)
+        |> Ash.Changeset.force_change_attribute(:head, 99)
+        |> Ash.update!()
+      end)
+
+      assert {:ok, %{replayed: 1}} = merge(child)
+      assert heads_in(parent)["R7b"] == 99
+
+      assert {:ok, %{replayed: 1}} = merge(parent)
+      assert heads()["R7b"] == 99
+    end
+
     test "an upsert in the fork is replayed in the parent as an upsert", %{
       parent: parent,
       child: child,
