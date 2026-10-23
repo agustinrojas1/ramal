@@ -3,18 +3,19 @@ defmodule Ramal.OwnerTest do
   use Ramal.DataCase, async: false
 
   alias Ramal.{Branch, Storage.Codec}
+  alias Ramal.Storage.ETS
 
   # A storage written before owners existed: it takes the filters and ignores `:owner`.
   defmodule IgnoresOwner do
     @moduledoc false
     @behaviour Ramal.Storage
 
-    defdelegate put(branch, config), to: Ramal.Storage.ETS
-    defdelegate fetch(id, config), to: Ramal.Storage.ETS
-    defdelegate delete(id, config), to: Ramal.Storage.ETS
+    defdelegate put(branch, config), to: ETS
+    defdelegate fetch(id, config), to: ETS
+    defdelegate delete(id, config), to: ETS
 
     def list(domain, filters, config),
-      do: Ramal.Storage.ETS.list(domain, Keyword.delete(filters, :owner), config)
+      do: ETS.list(domain, Keyword.delete(filters, :owner), config)
   end
 
   defp ids(branches), do: branches |> Enum.map(& &1.id) |> Enum.sort()
