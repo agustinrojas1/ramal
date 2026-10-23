@@ -223,6 +223,10 @@ defmodule Ramal.ClusterTest do
       Process.exit(pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^pid, _}
       eventually(fn -> not loaded?(id) end)
+
+      # The watcher marks a killed process too large on its own DOWN message, which can arrive after ours: wait for the
+      # mark before clearing it, or it lands after the clear and the load below is refused.
+      eventually(fn -> Ramal.Supervisor.too_large?(id) end)
       Ramal.Supervisor.clear_too_large(id)
       Ramal.Supervisor.clear_running(id)
 
