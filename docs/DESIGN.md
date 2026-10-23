@@ -160,6 +160,11 @@ This is the section that decides correctness. In a read action's preparation, wh
    with `:bulk_unsupported` when it has a link to remove (Ash unrelates with `Ash.bulk_destroy/4`,
    `bulk_delete_unused_unrelate/8` in `lib/ash/actions/managed_relationships.ex`, which bypasses the capture hook). Set
    the list with `:remove` and `:append`, or write the join resource directly.
+8. **Text sort order:** once the overlay touches a resource the whole patched list is sorted in Elixir, and strings
+   compare as bytes (`Banana` before `apple`), while Postgres orders them by its collation. A sort on text, and
+   `Ramal.aggregate/4` with `:min` or `:max` on a string, can therefore differ between a branch and the base for
+   mixed-case or accented text. Other types and null placement match. No comparator reproduces a collation, so Ramal
+   does not guess one ([ADR 0024](adr/0024-text-sort-order.md)).
 
 ### 4.2 How writes are captured
 

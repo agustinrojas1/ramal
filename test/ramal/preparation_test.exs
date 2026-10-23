@@ -136,6 +136,27 @@ defmodule Ramal.PreparationTest do
       assert sizes == %{"N1" => "large", "R7" => "small", "R8" => "large", "R9" => "small"}
     end
 
+    # Documents a limit (ADR 0024): the patched list is sorted in Elixir, where strings compare as bytes, while Postgres
+    # uses the collation of the database, so mixed-case text can sort differently outside the branch.
+    test "a text sort over a resource the branch touched uses byte order", %{branch: branch} do
+      Enum.each(["apple", "Banana", "cherry", "Date"], fn name ->
+        Ash.create!(Paddock, %{name: name, capacity_head: 1}, authorize?: false)
+      end)
+
+      names =
+        inside(branch, fn ->
+          Ash.create!(Paddock, %{name: "zzz", capacity_head: 1}, authorize?: false)
+
+          Paddock
+          |> Ash.Query.sort(name: :asc)
+          |> Ash.read!(authorize?: false)
+          |> Enum.map(& &1.name)
+        end)
+
+      assert Enum.filter(names, &(&1 in ["apple", "Banana", "cherry", "Date", "zzz"])) ==
+               ["Banana", "Date", "apple", "cherry", "zzz"]
+    end
+
     test "a calculation loaded by the read action's own preparation is evaluated on the branch's rows",
          %{
            branch: branch,
