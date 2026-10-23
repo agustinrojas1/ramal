@@ -129,6 +129,13 @@ defmodule Ramal.Branch.Server do
   def get(id), do: call(id, :get)
 
   @doc """
+  The status of the branch and nothing else. `get/1` copies the whole branch (overlay, log and base) to the caller, which
+  is what a caller that only needs to know whether the branch is open must not pay for.
+  """
+  @spec status(String.t()) :: {:ok, Branch.status()} | {:error, Error.t()}
+  def status(id), do: call(id, :status)
+
+  @doc """
   The overlay slice of one resource, for read patching. Only that slice crosses the process boundary, not the whole
   overlay. Rejected unless the branch is open.
   """
@@ -241,6 +248,8 @@ defmodule Ramal.Branch.Server do
 
   @impl true
   def handle_call(:get, _from, state), do: reply(state, {:ok, state.branch})
+
+  def handle_call(:status, _from, state), do: reply(state, {:ok, state.branch.status})
 
   def handle_call({:slice, resource}, _from, state) do
     if usable?(state) do

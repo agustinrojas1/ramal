@@ -275,6 +275,17 @@ defmodule Ramal.BranchProcessesTest do
       assert {:ok, %{status: :discarded}} = Ramal.get(branch.id)
     end
 
+    test "status/1 answers with the status alone, for callers that must not copy the branch" do
+      {:ok, branch} = Ramal.branch(Farm)
+      touch(branch.id, {Farm.Herd, "R1"}, %{id: "R1"})
+      assert Server.status(branch.id) == {:ok, :open}
+
+      {:ok, _} = Server.update(branch.id, &%{&1 | status: :proposed})
+      assert Server.status(branch.id) == {:ok, :proposed}
+
+      assert {:error, %Error{reason: :not_found}} = Server.status(Ash.UUID.generate())
+    end
+
     test "list/2 filters by status and reads from storage" do
       {:ok, open} = Ramal.branch(Farm, name: "open")
       {:ok, gone} = Ramal.branch(Farm, name: "gone")
