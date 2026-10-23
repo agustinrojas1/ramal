@@ -22,6 +22,8 @@ defmodule Ramal.Branch do
   * `parent_seen` - for a nested fork, `ref => view`: what the parent held for each row the fork read or wrote, the
     first time it did. `view/2` says what a view is. Merging into the parent compares them with the parent's now
   * `merged_children` - the ids of the nested forks that merged into this branch, so that one cannot merge twice
+  * `next_placeholder` - how many placeholder keys the branch handed out for rows whose key the database generates
+    (ADR 0042). A fork keeps the count, and its placeholders are its own
 
   Nothing here touches a process or storage, so it is tested with plain data.
 
@@ -65,8 +67,10 @@ defmodule Ramal.Branch do
 
   @typedoc """
   A captured write: `{action_type, resource, action_name, input, actor, opts, at}`. `input` is the params the action
-  was called with, `opts` carries `:key` (the primary key written), `:tenant` and `:nested?` (the write was made by
-  a hook of another captured action, so replaying that action reproduces it).
+  was called with, `opts` carries `:key` (the primary key written), `:tenant`, `:nested?` (the write was made by
+  a hook of another captured action, so replaying that action reproduces it), `:upsert` (`{identity, fields, found?}`
+  for a create that was an upsert, ADR 0037) and `:generated_key?` (the key is a placeholder for one the database
+  generates, ADR 0042).
   """
   @type log_entry ::
           {Ash.Resource.Actions.action_type(), module, atom, map, term, keyword, DateTime.t()}
@@ -104,7 +108,8 @@ defmodule Ramal.Branch do
           proposal: proposal | nil,
           parent: %{id: String.t(), log_length: non_neg_integer} | nil,
           parent_seen: %{optional(ref) => view},
-          merged_children: [String.t()]
+          merged_children: [String.t()],
+          next_placeholder: non_neg_integer
         }
 
   # `inspect/1` shows the branch's identity and nothing it holds. The log keeps the raw input of every captured action
@@ -128,7 +133,8 @@ defmodule Ramal.Branch do
     proposal: nil,
     parent: nil,
     parent_seen: %{},
-    merged_children: []
+    merged_children: [],
+    next_placeholder: 0
   ]
 
   @doc """
@@ -160,6 +166,37 @@ defmodule Ramal.Branch do
       tenant: opts[:tenant]
     }
   end
+
+  @placeholder_base -2_147_483_648
+
+  @doc """
+  A placeholder key for a row whose key the database generates, and the branch that has handed it out.
+
+  An integer key gets `-2_147_483_648 + n` for the branch's `n`th placeholder: it fits `int4` and `int8`, so a filter on
+  it reaches Postgres without overflowing, and a generated key is positive, so it cannot be mistaken for a real one.
+  A UUID key gets a fresh UUID. Any other type has no placeholder (`:error`).
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> {:ok, key, branch} = Ramal.Branch.placeholder(branch, Ash.Type.Integer)
+      iex> {key, branch.next_placeholder}
+      {-2_147_483_647, 1}
+      iex> Ramal.Branch.placeholder(branch, Ash.Type.String)
+      :error
+  """
+  @spec placeholder(t, module) :: {:ok, term, t} | :error
+  def placeholder(%__MODULE__{} = branch, Ash.Type.Integer) do
+    n = branch.next_placeholder + 1
+    {:ok, @placeholder_base + n, %{branch | next_placeholder: n}}
+  end
+
+  def placeholder(%__MODULE__{} = branch, type) when type in [Ash.Type.UUID, Ash.Type.UUIDv7] do
+    n = branch.next_placeholder + 1
+    {:ok, Ash.UUID.generate(), %{branch | next_placeholder: n}}
+  end
+
+  def placeholder(%__MODULE__{}, _type), do: :error
 
   @doc """
   Whether the branch still accepts reads, writes and merges.
@@ -565,8 +602,17 @@ defmodule Ramal.Branch do
       [%{resource: MyApp.Herd, key: 1, reason: :deleted}]
   """
   @spec stale_against(t, t) :: [%{resource: module, key: term, reason: :changed | :deleted}]
-  def stale_against(%__MODULE__{parent_seen: seen}, %__MODULE__{} = parent) do
+  def stale_against(%__MODULE__{parent_seen: seen, log: log}, %__MODULE__{} = parent) do
+    # A row the fork created under a placeholder key (ADR 0042) is the fork's own: the parent may hand out the same
+    # placeholder to another row, and the replay in the copy gives the fork's row a placeholder of the parent's.
+    placeholders =
+      for {:create, resource, _action, _params, _actor, opts, _at} <- log,
+          opts[:generated_key?],
+          into: MapSet.new(),
+          do: {resource, opts[:key]}
+
     for {{resource, key} = ref, expected} <- seen,
+        not MapSet.member?(placeholders, ref),
         view(parent, ref) != expected do
       reason = if Map.get(parent.overlay, ref) == :deleted, do: :deleted, else: :changed
       %{resource: resource, key: key, reason: reason}
@@ -645,6 +691,7 @@ defmodule Ramal.Branch do
         log: scratch.log,
         base: base,
         parent_seen: seen,
+        next_placeholder: scratch.next_placeholder,
         merged_children: [child.id | parent.merged_children]
     }
   end

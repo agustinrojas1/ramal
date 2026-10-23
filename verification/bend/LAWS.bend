@@ -108,3 +108,18 @@ law merge_keeps_others:
   for +t2: M.Table
   for e: {M.only(j, log) == Nil{} : List<&2, M.Op>}
   {M.get(j, M.replay(log, t2)) == M.get(j, t2) : Maybe<&2, Nat>}
+
+# Placeholder keys: a row the branch created under the placeholder p, which
+# the database gave the key r. The branch never wrote r (it is a key the base
+# did not have), and r is as free in the base the merge writes to as p was in
+# the base the branch read. Then the merge, replaying the log with p renamed to
+# r, writes at r the row a read in the branch returned at p.
+law rename_shows_branch:
+  for +p: Nat
+  for +r: Nat
+  for +log: List<&2, M.Write>
+  for +t: M.Table
+  for +t2: M.Table
+  for h: {M.only(r, log) == Nil{} : List<&2, M.Op>}
+  for e: {M.get(r, t2) == M.get(p, t) : Maybe<&2, Nat>}
+  {M.get(r, M.replay(M.rename(p, r, log), t2)) == M.view(M.get(p, t), M.slot(p, M.capture_all(log, t, M.ONil{}))) : Maybe<&2, Nat>}

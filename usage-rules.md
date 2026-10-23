@@ -76,6 +76,10 @@ test decides whether it happens.
   pass `on_stale: :ignore` when you know better. A fork shares its parent's base, so merging one makes its siblings stale.
 - **Bulk actions run record by record** inside a branch, each captured as its own action. A bulk update or destroy of a
   query needs `strategy: [:atomic, :stream]`: the atomic strategies cannot run in a branch.
+- **A key the database generates is a placeholder until the merge** (`generated? true` integer or UUID keys, such as
+  `integer_primary_key`): the record, `Ramal.diff/1` and what you show a person hold the placeholder, and
+  `Result.keys` maps it to the real key afterwards. The merge renames it in the input of later actions; a placeholder a
+  hook stores elsewhere (a JSON blob) is not renamed. Other generated key types are refused (`:database_generated_key`).
 - **Upserts work** when the action has `upsert? true` or `upsert?: true` goes to `Ash.Changeset.for_create/4`: the row is
   looked up in the branch's view and updated or created. An `upsert_condition` is refused (`:upsert_unsupported`), and
   `upsert?: true` passed only to `Ash.create/2` acts as a plain create.

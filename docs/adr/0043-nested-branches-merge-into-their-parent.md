@@ -45,3 +45,9 @@ branch meant merging the outer one's work with it.
   database (ADR 0006, ADR 0013).
 - The stored state is version 3 for a branch that is a nested fork or holds merged forks, and version 2 for every other
   one, so a node that reads only version 2 keeps reading the branches that never nested.
+- The replay in the copy goes through the same replay as a merge to the database, so it has the key plans and the
+  caller-set attributes of ADR 0041, bulk actions as records (ADR 0036) and upserts (ADR 0038). The capture change
+  applies a key plan on the branch path too, because the copy is a branch. A row whose key the database generates
+  (ADR 0042) gets a placeholder of the parent's, the copy's counter becomes the parent's when it adopts the copy, and a
+  row the fork created under a placeholder is left out of the staleness check, since the parent may hand out the same
+  integer placeholder to a row of its own. `Result.keys` of the fork's merge maps the fork's placeholder to the parent's.

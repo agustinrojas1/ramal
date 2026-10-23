@@ -14,7 +14,7 @@ defmodule Ramal.Error do
   | `:not_open` | the branch is not in the status the call needs: open for `run/2`, `fork/2`, `merge/2` and `propose/2`, proposed for `approve/2` and `reject/2` |
   | `:stale` | the base moved under rows the branch read (`details.rows`); for a nested fork, the parent branch did (`details.rows`), or changed again while the fork was being merged (`details.rows` is empty) |
   | `:merge_failed` | a replayed action failed; `details` has `index`, `type`, `resource`, `action` and the Ash `error` |
-  | `:database_generated_key` | a branch cannot create a row whose primary key the database generates |
+  | `:database_generated_key` | a branch cannot create a row whose primary key the database generates and that has no placeholder type (not a single integer or UUID `generated? true` key) |
   | `:bulk_unsupported` | an action inside a branch that the capture hook did not wrap, refused before it could reach the data layer |
   | `:upsert_unsupported` | an upsert with an `upsert_condition` (or an identity `where` that cannot be evaluated for the new row) inside a branch |
   | `:atomic_unsupported` | an atomic update whose expression cannot be evaluated in Elixir inside a branch (`details.attribute`) |
