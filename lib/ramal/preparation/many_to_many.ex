@@ -24,7 +24,8 @@ defmodule Ramal.Preparation.ManyToMany do
   # Per-source `limit` and `offset` are what the lateral subquery applied; they are applied here per source after the
   # destination rows are patched and sorted. The same is done for the lateral read of a has_many (one hop) that has a
   # limit, an offset or a page, when the branch changed its destination, and a page is cut per source by the last
-  # `before_action` hook of `Ramal.Preparation` (ADR 0040).
+  # `before_action` hook of `Ramal.Preparation` (ADR 0040). A `through` path of several hops is walked by
+  # `Ramal.Preparation.Lateral` (ADR 0046) and hands back the same tags.
 
   import Ash.Expr, only: [ref: 1]
 
@@ -32,6 +33,7 @@ defmodule Ramal.Preparation.ManyToMany do
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
   alias Ramal.Current
+  alias Ramal.Preparation.Lateral
 
   require Ash.Expr
   require Ash.Query
@@ -47,15 +49,30 @@ defmodule Ramal.Preparation.ManyToMany do
   def rewrite(query, id) do
     case query.context[:data_layer][:lateral_join_source] do
       {records, [source_hop, through_hop]} = source when is_list(records) ->
-        many_to_many(query, id, source, source_hop, through_hop)
+        if join_pair?(source_hop, through_hop),
+          do: many_to_many(query, id, source, source_hop, through_hop),
+          else: Lateral.rewrite(query, id, source)
 
       {records, [hop]} = source when is_list(records) ->
         direct(query, id, source, hop)
+
+      {records, [_, _, _ | _]} = source when is_list(records) ->
+        Lateral.rewrite(query, id, source)
 
       _ ->
         :skip
     end
   end
+
+  # A many_to_many load is the pair of the relationship and its join relationship; a `through` path of two hops has
+  # two relationships of its own (ADR 0046).
+  defp join_pair?(
+         {_, _, _, %{type: :many_to_many, join_relationship: join_name, source: source}},
+         {_, _, _, %{name: join_name, source: source}}
+       ),
+       do: true
+
+  defp join_pair?(_source_hop, _through_hop), do: false
 
   defp many_to_many(query, id, {records, _path} = source, source_hop, through_hop) do
     with {_source_query, source_attribute, source_on_join, %{type: :many_to_many} = relationship} <-

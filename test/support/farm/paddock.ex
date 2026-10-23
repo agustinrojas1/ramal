@@ -51,6 +51,13 @@ defmodule Ramal.Test.Farm.Paddock do
 
   relationships do
     has_many(:herds, Ramal.Test.Farm.Herd, public?: true)
+
+    # Paths through other relationships: every hop is read through the lateral join of AshPostgres (ADR 0046).
+    has_many(:herd_moves, Ramal.Test.Farm.Move, public?: true, through: [:herds, :moves])
+
+    # A many_to_many as a hop is broken in AshPostgres 2.15: it joins the destination to the previous hop's table and
+    # ignores the join resource, so this path is empty with or without a branch. It is here to pin that.
+    has_many(:herd_vets, Ramal.Test.Farm.Vet, public?: true, through: [:herds, :vets])
   end
 
   aggregates do

@@ -44,4 +44,4 @@ destination:
 - The cost is a read of every row of every source in the page, as for a top-level page (ADR 0030).
 - The code depends on the shape of `lateral_join_source`, `__lateral_join_source__` and the `pagination_more_by_source`
   context key, as ADR 0017 does; `test/ramal/relationship_page_test.exs` pins them.
-- A `through` path of several hops still sees the base rows of its intermediate resources.
+- A `through` path of several hops saw the base rows of its intermediate resources; [ADR 0046](0046-through-paths-walked-over-the-branch.md) fixes it.

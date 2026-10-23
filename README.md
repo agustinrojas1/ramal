@@ -314,7 +314,7 @@ Ramal is deliberately small, and it says what it does not do:
 - **Merge is slower than a SQL statement,** because it replays each change through your action. That is the price of
   merging through your own rules.
 - **Writes since the last save are lost if the node crashes.** A branch is saved at the moments listed above, not on every write.
-- **A few many-to-many cases stay unsupported:** `type: :append_and_remove` with a link to remove is refused, and a `through` path of several hops sees the base rows of its intermediate resources.
+- **A few many-to-many cases stay unsupported:** `type: :append_and_remove` with a link to remove is refused, and a `through` path with a many_to_many hop (`through: [:herds, :vets]`) is left to the database, which returns nothing for it with or without a branch (AshPostgres 2.15 ignores the join resource). A `through` path of has_many and belongs_to hops sees the branch.
 - **Authorization is yours.** Anyone who holds a branch id can act on it. Ramal records who decided and never checks.
 - **Pre-1.0.** The public API may change before 1.0; the changelog says when it does.
 
