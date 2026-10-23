@@ -38,10 +38,14 @@ defmodule Ramal.ReadmeTest do
   end
 
   test "the proposal example in the README runs as written", %{herds: herds, paddocks: paddocks} do
-    # The second Elixir block of the README is the proposal example.
-    [_first, [code] | _others] =
-      Regex.scan(~r/```elixir\n(.*?)```/s, File.read!(@readme), capture: :all_but_first)
+    # The proposal example is the block that ends in an approval, wherever it sits in the README.
+    code =
+      ~r/```elixir\n(.*?)```/s
+      |> Regex.scan(File.read!(@readme), capture: :all_but_first)
+      |> Enum.map(&hd/1)
+      |> Enum.find(&(&1 =~ "Ramal.approve(branch, decided_by: manager"))
 
+    assert code
     code = String.replace(code, "MyApp.Farm", "Ramal.Test.Farm")
 
     binding = [
