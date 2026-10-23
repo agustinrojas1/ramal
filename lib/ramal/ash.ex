@@ -76,6 +76,20 @@ defmodule Ramal.Ash do
       (`Ramal.Preparation`). `export_has_parent_expr`: the function that tells a relationship's parent expression is
       exported (the lateral and many-to-many loads of `Ramal.Preparation`).
 
+  ## Upstream
+
+  Four of these assumptions have an open Ash issue asking for a public contract. When one is resolved, its tripwire and
+  check can become a test of the documented behaviour.
+
+    * [ash#3069](https://github.com/ash-project/ash/issues/3069): `Ash.Changeset.set_result/2` as a supported way to skip
+      the data layer, per-record hooks in bulk actions, and a public upsert flag (`set_result_*`, `:bulk`, `:upsert`).
+    * [ash#3070](https://github.com/ash-project/ash/issues/3070): a public read that ignores the action's pagination
+      (`unpaginated_read`).
+    * [ash#3071](https://github.com/ash-project/ash/issues/3071): a documented `lateral_join_source` and read-purpose
+      markers (`lateral_join_source`, `accessing_from`, `bulk_*_query_for`).
+    * [ash#3072](https://github.com/ash-project/ash/issues/3072): the reselect in `Ash.load/3` skips the read hooks a
+      preparation adds, which is why `Ramal.load/3` exists.
+
   Every touch of an Ash internal goes through this module. The seam functions below the version checks are the only
   place Ramal calls an Ash internal or reads an internal context key: each names the tripwire that guards it. The seam
   test (`test/ramal/ash_seam_test.exs`) fails when any other module under `lib/` does it, so a new internal needs a seam

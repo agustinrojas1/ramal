@@ -53,7 +53,7 @@ defmodule Ramal.AshContractTest do
     end
   end
 
-  # 1. set_result/2 in a before_action
+  # 1. set_result/2 in a before_action (upstream: ash-project/ash#3069)
 
   # Ramal: lib/ramal/capture.ex write/4 (set_result). Ash: deps/ash/lib/ash/actions/create/create.ex (action_result).
   test "assumption: Ash.Changeset.set_result/2 in a before_action skips the data layer on create" do
@@ -88,7 +88,7 @@ defmodule Ramal.AshContractTest do
     assert {:ok, %Note{}} = Ash.get(Note, row.id, authorize?: false)
   end
 
-  # 2. bulk actions run an around_action changeset one record at a time
+  # 2. bulk actions run an around_action changeset one record at a time (upstream: ash-project/ash#3069)
 
   # Ramal: lib/ramal/capture.ex moduledoc (bulk actions). Ash: deps/ash/lib/ash/actions/helpers.ex split_and_run_simple/7.
   test "assumption: a bulk create runs an around_action hook once per record" do
@@ -167,7 +167,7 @@ defmodule Ramal.AshContractTest do
     assert_received {:markers, []}
   end
 
-  # 3. the upsert flags that change/3 reads
+  # 3. the upsert flags that change/3 reads (upstream: ash-project/ash#3069)
 
   # Ramal: lib/ramal/capture.ex upsert?/1 (read in change/3). Ash: deps/ash/lib/ash/changeset/changeset.ex for_create (set_context private).
   test "assumption: in change/3 an action with upsert? true sees context.private.upsert? == true" do
@@ -269,7 +269,7 @@ defmodule Ramal.AshContractTest do
     assert page.count == 7
   end
 
-  # 7. a has_many load with a limit is a lateral join (AshPostgres only)
+  # 7. a has_many load with a limit is a lateral join (AshPostgres only; upstream: ash-project/ash#3071)
 
   # Ramal: lib/ramal/preparation/paged.ex lateral_load?/1 and lib/ramal/preparation/lateral.ex. Ash: deps/ash/lib/ash/actions/read/relationships.ex lateral_join?/4 (~l.1880) and with_lateral_join_query/4 (~l.379).
   test "assumption: a has_many load with a query limit reaches the destination read with lateral_join_source and tagged rows" do
@@ -290,10 +290,10 @@ defmodule Ramal.AshContractTest do
     assert Enum.all?(rows, &Map.has_key?(&1, :__lateral_join_source__))
   end
 
-  # 8. Ash.load/3 reselects the source attribute without running the read preparations
+  # 8. Ash.load/3 reselects the source attribute without running the read hooks (upstream: ash-project/ash#3072)
 
   # Ramal: lib/ramal.ex load/3 (its doc: the reselect follows the database's foreign key). Ash: deps/ash/lib/ash/actions/read/read.ex reselect_and_load/6 (~l.1700).
-  test "assumption: Ash.load/3 reselects a belongs_to source attribute without running the source's read preparations (a failure here means Ramal.load/3's workaround may be unneeded)" do
+  test "assumption: Ash.load/3 reselects a belongs_to source attribute without running the read hooks its preparations add (a failure here means Ramal.load/3's workaround may be unneeded)" do
     pasture = pasture!("reselect")
     cow = cow!(pasture, "reselect", 1)
 
@@ -366,7 +366,7 @@ defmodule Ramal.AshContractTest do
     assert_received :installed_before_action_ran
   end
 
-  # 10. context markers that Ramal reads
+  # 10. context markers that Ramal reads (upstream: ash-project/ash#3071)
 
   # Ramal: lib/ramal/preparation/lateral.ex parent_expr?/1 (context.accessing_from). Ash: deps/ash/lib/ash/actions/read/relationships.ex (accessing_from, ~l.399 and ~l.756).
   test "assumption: a relationship read's query has context.accessing_from naming the source and the relationship" do
@@ -465,7 +465,7 @@ defmodule Ramal.AshContractTest do
     end
   end
 
-  # Ramal: lib/ramal/resource.ex read_all/2 (unpaginated_read/3 skips the action's paginate step). Ash: deps/ash/lib/ash/actions/read/read.ex (unpaginated_read/3, l.18).
+  # Ramal: lib/ramal/resource.ex read_all/2 (unpaginated_read/3 skips the action's paginate step). Ash: deps/ash/lib/ash/actions/read/read.ex (unpaginated_read/3, l.18). Upstream: ash-project/ash#3070.
   test "assumption: Ash.Actions.Read.unpaginated_read/3 returns every row when the read's default_limit is lower" do
     for n <- 1..3, do: Ash.create!(Roll, %{n: n}, authorize?: false)
 
