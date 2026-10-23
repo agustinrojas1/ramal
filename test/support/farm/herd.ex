@@ -27,6 +27,11 @@ defmodule Ramal.Test.Farm.Herd do
       )
     end
 
+    # A keyset-only list, so a page can start after a cursor.
+    read :keyset_list do
+      pagination(keyset?: true, countable: true, required?: false)
+    end
+
     # A read whose policy has a check that only runs on the rows the read returned (`authorize_results`).
     read :checked do
       pagination(offset?: true, countable: true, required?: false)
@@ -117,7 +122,7 @@ defmodule Ramal.Test.Farm.Herd do
       authorize_if(Checks.SmallHerd)
     end
 
-    policy action([:read, :list, :create, :update, :destroy]) do
+    policy action([:read, :list, :keyset_list, :create, :update, :destroy]) do
       authorize_if(always())
     end
   end

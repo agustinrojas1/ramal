@@ -39,9 +39,17 @@ defmodule Ramal.Preparation.Paged do
   list (see `unpaginated?/1`).
   """
   @spec plan(Ash.Query.t()) :: plan | nil
-  def plan(%{page: page, action: %{pagination: %{} = pagination, manual: nil}} = query)
-      when is_list(page) do
-    if is_integer(page[:limit]) and not relationship?(query) and not unpaginated?(query) do
+  def plan(query), do: plan(query, false)
+
+  @doc """
+  The page a lateral relationship load asks for, per source record (ADR 0038), or `nil` when the load has no page.
+  """
+  @spec lateral_plan(Ash.Query.t()) :: plan | nil
+  def lateral_plan(query), do: plan(query, true)
+
+  defp plan(%{page: page, action: %{pagination: %{} = pagination, manual: nil}} = query, lateral?)
+       when is_list(page) do
+    if is_integer(page[:limit]) and kind?(query, lateral?) and not unpaginated?(query) do
       %{
         type: type(page, pagination),
         limit: limit(query, page[:limit], pagination),
@@ -54,7 +62,7 @@ defmodule Ramal.Preparation.Paged do
     end
   end
 
-  def plan(_query), do: nil
+  defp plan(_query, _lateral?), do: nil
 
   # Ash gives an unpaginated read (`Ash.Actions.Read.unpaginated_read/3`) the action's `default_limit` as its page and
   # skips the `paginate` step, and the query keeps no mark of it. The reads whose callers can be told apart are left
@@ -67,11 +75,15 @@ defmodule Ramal.Preparation.Paged do
   end
 
   # A relationship load is read with `accessing_from`; a many-to-many or limited has_many load carries the source
-  # records of a lateral join (`lib/ash/actions/read/relationships.ex`).
-  defp relationship?(query) do
-    Map.has_key?(query.context, :accessing_from) or
-      match?(%{data_layer: %{lateral_join_source: {_, _}}}, query.context)
-  end
+  # records of a lateral join (`lib/ash/actions/read/relationships.ex`). Ash pages the second kind per source record, a
+  # page of the first is cut from the rows it reads (and never reaches the data layer as a page).
+  defp lateral_load?(query),
+    do: match?(%{data_layer: %{lateral_join_source: {_, _}}}, query.context)
+
+  defp kind?(query, true), do: lateral_load?(query)
+
+  defp kind?(query, false),
+    do: not (Map.has_key?(query.context, :accessing_from) or lateral_load?(query))
 
   # `pagination_type/2` of `lib/ash/actions/read/read.ex`: a cursor means keyset, an offset means offset, otherwise the
   # first of the types the action allows.
@@ -129,6 +141,22 @@ defmodule Ramal.Preparation.Paged do
          {:ok, rows} <- after_cursor(query, rows, plan) do
       {:ok, take(rows, plan), count}
     end
+  end
+
+  @doc """
+  `cut/3` for a lateral relationship load: `rows` are tagged with the source record they belong to
+  (`__lateral_join_source__`) and each source is paged on its own, as the database's lateral join does.
+  """
+  @spec cut_by_source(Ash.Query.t(), plan, [struct]) :: {:ok, [struct]} | {:error, term}
+  def cut_by_source(query, plan, rows) do
+    rows
+    |> Enum.group_by(& &1.__lateral_join_source__)
+    |> Enum.reduce_while({:ok, []}, fn {_source, group}, {:ok, acc} ->
+      case cut(query, plan, group) do
+        {:ok, page, _count} -> {:cont, {:ok, acc ++ page}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp take(rows, %{type: :offset, offset: offset, limit: limit}),
