@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- `demo/`, a guided walkthrough you run locally with `elixir demo/walkthrough.exs` against a Postgres from `demo/docker-compose.yml`. It installs `ramal` from Hex and steps through branching, real-action validation and policies, diff, fork, exact aggregates, merge, a stale refusal, an all-or-nothing replay failure, and a proposal approved by a person. Not part of the Hex package.
 - An optional owner on a branch: `Ramal.branch/2` and `Ramal.fork/2` take `owner:` (a fork keeps its parent's), `Ramal.list/2` takes `owner:` to list one owner's branches (`owner: nil` lists the unowned), and `ramal_inspector` takes an `:owner` `{module, function}` that scopes the page to the signed-in actor's branches. All are off by default and a branch stored by 0.2.0 loads as unowned. The owner is stored in the branch state (no migration) and filtered in SQL by `Ramal.Storage.Postgres`. It filters; it does not authorize ([ADR 0018](docs/adr/0018-branch-owner.md), `SECURITY.md`).
 
 ### Fixed
