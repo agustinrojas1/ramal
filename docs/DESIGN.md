@@ -165,6 +165,15 @@ This is the section that decides correctness. In a read action's preparation, wh
    `Ramal.aggregate/4` with `:min` or `:max` on a string, can therefore differ between a branch and the base for
    mixed-case or accented text. Other types and null placement match. No comparator reproduces a collation, so Ramal
    does not guess one ([ADR 0024](adr/0024-text-sort-order.md)).
+9. **Filters and sorts through a relationship:** the data layer judges `paddock.name == "L07"` with a join against the
+   base's paddocks, so a branch that renamed the paddock would leave its herds matched by the old name. When a filter
+   or sort reaches a resource the branch has entries for (any hop of the path, and a many_to_many's join resource),
+   a helper in lib/ramal/preparation/related.ex takes the conjuncts that reach it out of the data-layer query (the top-level `and` chain
+   is split; an `or` or a `not` is one unit) and the preparation evaluates them in Elixir with `Ash.Filter.Runtime` on
+   the base rows the branch did not change, loading the relationships first with `reuse_values?: true` so the patched
+   reads and the branch's foreign keys are used. Overlay records are judged by the whole filter. A sort on such a path
+   loads the relationship and evaluates the calculation in memory. `Ramal.aggregate/4` leaves the delta for these
+   queries. The cost is a broader base read ([ADR 0025](adr/0025-relationship-filters-in-elixir.md)).
 
 ### 4.2 How writes are captured
 
@@ -464,3 +473,4 @@ action (ADR 0016).
 | 24 | `Ramal.context/1` makes the shared context public; `Ramal.Tools` offers six branch tools as data and one `call/3`, without merge, approve or reject, scoped by host options; no dependency on `ash_ai` | Tool servers call Ash with `context:` and cannot use `run/2`; an agent proposes and a person decides; the roadmap rules out a dependency on an agent framework. [ADR 0019](adr/0019-agent-tools.md) |
 | 25 | A read asks the branch process for the overlay entries it can use, not the whole slice; Ramal.Prefilter rules out overlay records with plain comparisons before the runtime filter, and `Ramal.run/2` asks for the status alone | Copying the overlay to the caller and filtering every overlay record with `Ash.Filter.Runtime` made the cost of a read, and of a get-and-update, grow with the overlay (measured in `bench/`). [ADR 0020](adr/0020-read-selects-overlay.md) |
 | 26 | The owner of a stored branch is a column Postgres generates from `state -> 'owner'`, with a partial hash index; `mix ramal.gen.migration` writes the migration that is missing, so 0.3.0 tables upgrade in place | A hot `owner:` filter scanned and parsed every `state` of the domain. A generated column needs no backfill, cannot disagree with `state`, and an old node writing the table during a deploy keeps it correct. A hash index because the owner is any term and a btree entry has a size limit. [ADR 0021](adr/0021-owner-column.md) |
+| 27 | A filter or sort through a relationship whose resource the branch changed is taken out of the data-layer query and evaluated in Elixir; `Ramal.aggregate/4` leaves the delta for it | The data layer joined the base's rows, so a renamed paddock left its herds matched by the old name. The cost is a broader base read. [ADR 0025](adr/0025-relationship-filters-in-elixir.md) |

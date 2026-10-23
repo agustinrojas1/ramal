@@ -25,6 +25,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - An update or destroy through a record read with `Ash.Query.select/2` no longer stores a partial row in the branch or skips its staleness check: the full row is read inside the branch first, and the write is refused with `:partial_record` if that fails (#113).
 - A create that manages a `belongs_to` now stores the new row's foreign key in the branch: the record the action returns, later reads and the diff showed `nil` until merge (#112).
 - A limit is now documented: a text sort inside a branch uses byte order, not the database's collation, once the branch has changed the resource, so mixed-case text can sort differently than outside it; `Ramal.aggregate/4` `:min` and `:max` on strings have the same gap. Ramal does not guess a collation ([ADR 0024](docs/adr/0024-text-sort-order.md), #117).
+- A filter or sort through a relationship whose resource the branch changed (`paddock.name == "L07"` after the branch renamed the paddock) is now evaluated against the branch's rows, in reads and in `Ramal.aggregate/4`; before, the database's join used the base's rows and the herds kept matching the old name. The part of the filter that reaches the changed resource is checked in memory, so such a read fetches more rows ([ADR 0025](docs/adr/0025-relationship-filters-in-elixir.md), #111).
 
 ## [0.4.2] - 2026-10-23
 

@@ -17,6 +17,7 @@ lib/ramal/overlay.ex         the overlay map: apply, patch, diff (pure)
 lib/ramal/resource.ex        Spark extension: adds the read preparation and the write change
 lib/ramal/resource/transformer.ex  the extension's transformer (Spark needs a module for it)
 lib/ramal/preparation.ex     read side: strip limit/offset, patch results
+lib/ramal/preparation/related.ex  filters and sorts through a relationship the branch changed: split out of the data-layer query (ADR 0025)
 lib/ramal/prefilter.ex       cheap test that rules overlay records out of a read filter before the Ash runtime does
 lib/ramal/change.ex          the Change struct that diff returns
 lib/ramal/aggregate.ex       aggregates: pure computation over records, and the database-plus-overlay delta of Ramal.aggregate/4

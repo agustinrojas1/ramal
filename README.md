@@ -261,6 +261,8 @@ Ramal is deliberately small, and it says what it does not do:
 - **Not a database branch.** No schema changes inside a branch, no branch-local indexes, and a branch lives on one node.
 - **Aggregates and calculations declared on a resource and computed in the database do not see the overlay.** Use
   `Ramal.aggregate/4`. Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a test can notice when this happens.
+- **A filter or sort through a relationship the branch changed reads more.** Ramal checks that part of the filter in
+  memory on the rows the database returns for the rest, so keep attribute predicates next to it to narrow the read.
 - **Text sorts inside a branch use byte order,** not the database's collation, once the branch has changed that resource:
   `Banana` sorts before `apple`. Numbers, dates and keys sort exactly.
 - **Bulk actions and upserts are refused** inside a branch, resources whose primary key the database generates cannot be
