@@ -16,6 +16,9 @@ defmodule Ramal.Branch.Server do
 
   @max_attempts 6
 
+  @typedoc "Changes with every change of the branch, and with every start of its process."
+  @type version :: {reference, non_neg_integer}
+
   # How long a caller waits for the process. A read or a write only touches memory, so five seconds is generous. A call
   # that persists the whole branch through the storage (finish_merge, propose, reject, discard) can take as long as the
   # storage does for a large branch, and for finish_merge the merge has already committed by then, so it waits longer.
@@ -49,6 +52,10 @@ defmodule Ramal.Branch.Server do
     GenServer.start_link(__MODULE__, arg, name: Supervisor.via(id, config))
   end
 
+  def start_link({:scratch, branch, config} = arg) do
+    GenServer.start_link(__MODULE__, arg, name: Supervisor.via(branch.id, config))
+  end
+
   def start_link({branch, config}) do
     GenServer.start_link(__MODULE__, {branch, config}, name: Supervisor.via(branch.id, config))
   end
@@ -75,6 +82,32 @@ defmodule Ramal.Branch.Server do
       send(pid, {:handoff, ref, branch})
       pid
     end)
+  end
+
+  @doc """
+  Starts a process for `branch` that is never stored and never unloads: the place where a nested merge replays the
+  fork's writes (`Ramal.Merge`, ADR 0043). Stop it with `stop_scratch/1`.
+  """
+  @spec start_scratch(Branch.t(), Supervisor.config()) :: {:ok, pid} | {:error, Error.t()}
+  def start_scratch(branch, config), do: start_child({:scratch, branch, config}, & &1)
+
+  @doc "Stops the process `start_scratch/2` started, and forgets its marks. Nothing was stored, so nothing is written."
+  @spec stop_scratch(String.t()) :: :ok
+  def stop_scratch(id) do
+    case Registry.lookup(Supervisor.registry(), id) do
+      [{pid, _}] ->
+        try do
+          GenServer.stop(pid, :normal)
+        catch
+          :exit, _already_gone -> :ok
+        end
+
+      [] ->
+        :ok
+    end
+
+    Supervisor.clear_too_large(id)
+    Supervisor.clear_running(id)
   end
 
   defp start_child(arg, started) do
@@ -303,6 +336,26 @@ defmodule Ramal.Branch.Server do
   end
 
   @doc """
+  The branch for a nested merge into it (ADR 0043), with its `version`. Like `begin_merge/2` it waits for the actions
+  running in the branch to end, so that the copy holds no write that may yet be taken back, and is rejected unless the
+  branch is open and not claimed by a merge. The `version` changes with every change of the branch; `adopt/4` takes it.
+  """
+  @spec merge_source(String.t()) :: {:ok, Branch.t(), version} | {:error, Error.t()}
+  def merge_source(id), do: call(id, {:merge_source, nil})
+
+  @doc """
+  Gives the branch the work of a nested fork: `scratch` is a copy of it (`merge_source/1`) in which the fork's writes were
+  replayed. Refused with `{:error, :moved}` when the branch changed since the copy was taken, which is what makes the
+  replay valid: the branch is then the one the replay saw. Persists the branch before it answers, so that a fork marked
+  as merged never outlives the work it gave. Rejected unless the branch is open, not claimed and not already given this
+  fork's work.
+  """
+  @spec adopt(String.t(), Branch.t(), Branch.t(), version) ::
+          :ok | {:error, :moved} | {:error, Error.t()}
+  def adopt(id, scratch, child, version),
+    do: persisting_call(id, {:adopt, scratch, child, version})
+
+  @doc """
   Replaces the branch with the result of `fun`, which runs inside the process, so concurrent updates are serialised.
   `fun` receives the branch and returns the new branch. Rejected unless the branch is open.
   """
@@ -310,16 +363,12 @@ defmodule Ramal.Branch.Server do
   def update(id, fun) when is_function(fun, 1), do: call(id, {:update, fun})
 
   @doc """
-  Records the fingerprints of base rows a read returned (`Ramal.Branch.put_fingerprints/2`). Rejected unless the
-  branch is open.
+  Records the fingerprints of base rows a read returned (`Ramal.Branch.put_fingerprints/2`), and for a nested fork what
+  it holds for them (`Ramal.Branch.see/2`). Rejected unless the branch is open. Like a read it does not count as a change
+  of the branch (`version`).
   """
   @spec fingerprints(String.t(), Enumerable.t()) :: :ok | {:error, Error.t()}
-  def fingerprints(id, fingerprints) do
-    with {:ok, :ok, _} <-
-           write(id, fn branch -> {:ok, Branch.put_fingerprints(branch, fingerprints)} end) do
-      :ok
-    end
-  end
+  def fingerprints(id, fingerprints), do: call(id, {:fingerprints, fingerprints})
 
   @doc """
   Like `update/2` for a function that also has something to tell the caller: `fun` returns `{reply, branch}` and the
@@ -441,6 +490,13 @@ defmodule Ramal.Branch.Server do
     {:ok, process_state(nil, config), {:continue, {:handoff, ref}}}
   end
 
+  def init({:scratch, branch, config}) do
+    flags(config)
+    Supervisor.mark_running(branch.id)
+    state = process_state(branch, %{config | idle_timeout: :infinity})
+    {:ok, %{state | scratch: true}, :infinity}
+  end
+
   def init({:load, id, config}) do
     flags(config)
 
@@ -459,7 +515,7 @@ defmodule Ramal.Branch.Server do
   end
 
   defp started(branch, config) do
-    branch = share(branch, config)
+    branch = branch |> share(config) |> found_adopted(config)
     watch(branch)
     Telemetry.branch(:load, branch)
     Supervisor.mark_running(branch.id)
@@ -501,6 +557,9 @@ defmodule Ramal.Branch.Server do
       branch: branch,
       config: config,
       stop: nil,
+      scratch: false,
+      # changes with every change of the branch (`bump/1`), so that `adopt/4` can tell the branch it was given a copy of
+      version: {make_ref(), 0},
       merging: nil,
       persisted: false,
       index: nil,
@@ -593,17 +652,36 @@ defmodule Ramal.Branch.Server do
   def handle_call({:select, resource, base_keys, plan}, _from, state) do
     possible? = &Prefilter.possible?(plan, &1)
 
-    read_overlay(state, fn overlay, index ->
-      if index,
-        do: index |> Map.get(resource, %{}) |> Overlay.select_slice(base_keys, possible?),
-        else: Overlay.select(overlay, resource, base_keys, possible?)
-    end)
+    selected =
+      read_overlay(state, fn overlay, index ->
+        if index,
+          do: index |> Map.get(resource, %{}) |> Overlay.select_slice(base_keys, possible?),
+          else: Overlay.select(overlay, resource, base_keys, possible?)
+      end)
+
+    case selected do
+      {:reply, {:ok, {slice, _count}} = reply, state, timeout} ->
+        {:reply, reply, see(state, resource, Map.keys(slice)), timeout}
+
+      other ->
+        other
+    end
+  end
+
+  def handle_call({:fingerprints, fingerprints}, _from, state) do
+    if usable?(state) do
+      refs = Enum.map(fingerprints, &elem(&1, 0))
+      branch = state.branch |> Branch.put_fingerprints(fingerprints) |> Branch.see(refs)
+      reply(%{state | branch: branch}, :ok)
+    else
+      reply(state, {:error, unavailable(state)})
+    end
   end
 
   def handle_call({:update, fun}, _from, state) do
     if usable?(state) do
       branch = fun.(state.branch)
-      reply(%{state | branch: branch}, {:ok, branch})
+      reply(bump(%{state | branch: branch}), {:ok, branch})
     else
       reply(state, {:error, unavailable(state)})
     end
@@ -612,7 +690,11 @@ defmodule Ramal.Branch.Server do
   def handle_call({:write, fun}, _from, state) do
     if usable?(state) do
       {reply, branch} = fun.(state.branch)
-      reply(%{state | branch: branch}, {:ok, reply, %{id: branch.id, domain: branch.domain}})
+
+      reply(
+        bump(%{state | branch: branch}),
+        {:ok, reply, %{id: branch.id, domain: branch.domain}}
+      )
     else
       reply(state, {:error, unavailable(state)})
     end
@@ -631,7 +713,7 @@ defmodule Ramal.Branch.Server do
 
       true ->
         {reply, branch} = fun.(state.branch)
-        state = %{state | branch: branch}
+        state = bump(%{state | branch: branch})
 
         state =
           case reply do
@@ -650,10 +732,44 @@ defmodule Ramal.Branch.Server do
 
   # A merge or a proposal of a branch with actions running waits for them, as a lock would; see wait/3.
   def handle_call({kind, _arg} = request, from, %{running: running} = state)
-      when kind in [:begin_merge, :propose] and map_size(running) > 0 do
+      when kind in [:begin_merge, :propose, :merge_source] and map_size(running) > 0 do
     if usable?(state),
       do: wait(state, from, request),
       else: reply(state, {:error, unavailable(state)})
+  end
+
+  def handle_call({:merge_source, nil}, _from, state) do
+    if usable?(state),
+      do: reply(state, {:ok, state.branch, state.version}),
+      else: reply(state, {:error, unavailable(state)})
+  end
+
+  def handle_call({:adopt, scratch, child, version}, _from, state) do
+    cond do
+      not usable?(state) ->
+        reply(state, {:error, unavailable(state)})
+
+      child.id in state.branch.merged_children ->
+        reply(state, {:error, already_adopted(state, child)})
+
+      state.version != version or map_size(state.running) > 0 ->
+        reply(state, {:error, :moved})
+
+      true ->
+        branch = Branch.adopt(state.branch, scratch, child)
+
+        case persist(state, branch) do
+          :ok ->
+            Telemetry.branch(:adopt, branch, %{child_id: child.id})
+            reply(bump(%{state | branch: branch}), :ok)
+
+          {:error, %Error{reason: :fenced} = error} ->
+            {:stop, :normal, {:error, error}, fence(state, error)}
+
+          {:error, _} = error ->
+            reply(state, error)
+        end
+    end
   end
 
   def handle_call({:begin_merge, from}, {pid, _tag}, state) do
@@ -680,7 +796,7 @@ defmodule Ramal.Branch.Server do
       :merged ->
         branch = %{annotate.(state.branch) | status: :merged}
 
-        case persist(branch, state.config) do
+        case persist(state, branch) do
           :ok ->
             {:stop, :normal, :ok, %{state | branch: branch, stop: :merged}}
 
@@ -705,7 +821,7 @@ defmodule Ramal.Branch.Server do
     if usable?(state) do
       branch = fun.(state.branch)
 
-      case persist(branch, state.config) do
+      case persist(state, branch) do
         :ok ->
           Telemetry.branch(:propose, branch)
           reply(%{state | branch: branch}, {:ok, branch})
@@ -724,7 +840,7 @@ defmodule Ramal.Branch.Server do
   def handle_call({:reject, fun}, _from, %{merging: nil, branch: %{status: :proposed}} = state) do
     branch = fun.(state.branch)
 
-    case persist(branch, state.config) do
+    case persist(state, branch) do
       :ok ->
         Telemetry.branch(:reject, branch)
         {:stop, :normal, {:ok, branch}, %{state | branch: branch, stop: :rejected}}
@@ -746,7 +862,7 @@ defmodule Ramal.Branch.Server do
     branch = Branch.discard(state.branch)
     state = Enum.reduce(Map.keys(state.running), state, &drop_running(&2, &1))
 
-    case persist(branch, state.config) do
+    case persist(state, branch) do
       :ok ->
         Telemetry.branch(:discard, branch)
         {:stop, :normal, :ok, %{state | branch: branch, stop: :discarded}}
@@ -765,8 +881,8 @@ defmodule Ramal.Branch.Server do
   # An idle branch unloads only once its state is safe in storage. If the write fails, stopping would lose the overlay
   # and the log (terminate/2 cannot report the failure to anyone), so the process stays up and tries again at the next
   # idle timeout.
-  def handle_info(:timeout, %{branch: branch, config: config} = state) do
-    case persist(branch, config) do
+  def handle_info(:timeout, %{branch: branch} = state) do
+    case persist(state, branch) do
       :ok ->
         {:stop, :normal, %{state | stop: :idle, persisted: true}}
 
@@ -785,10 +901,10 @@ defmodule Ramal.Branch.Server do
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{merging: ref} = state) do
     state = %{state | merging: nil}
 
-    if stored_merged?(state) do
-      {:stop, :normal, merged_state(state)}
-    else
-      {:noreply, state, timeout(state)}
+    cond do
+      stored_merged?(state) -> {:stop, :normal, merged_state(state)}
+      adopted?(state.branch, state.config) -> adopted(state)
+      true -> {:noreply, state, timeout(state)}
     end
   end
 
@@ -845,11 +961,13 @@ defmodule Ramal.Branch.Server do
   defp stopped(_reason, %{stop: stop}) when stop in [:discarded, :merged, :rejected, :fenced],
     do: :ok
 
-  defp stopped(_reason, %{branch: branch, config: config, stop: stop, persisted: persisted}) do
+  defp stopped(_reason, %{scratch: true}), do: :ok
+
+  defp stopped(_reason, %{branch: branch, stop: stop, persisted: persisted} = state) do
     # Persist before announcing the unload, so an observer who sees the event can already rehydrate the branch. On a
     # shutdown there is no process left to keep, so a failed write is reported instead of announced as an unload.
     with false <- persisted,
-         {:error, error} <- persist(branch, config) do
+         {:error, error} <- persist(state, branch) do
       if match?(%Error{reason: :fenced}, error),
         do: announce_fenced(branch, error),
         else:
@@ -893,7 +1011,7 @@ defmodule Ramal.Branch.Server do
   # A write is taken back only from an open branch: a discarded one holds nothing, and nothing else can happen while an
   # action runs, since a merge and a proposal wait for it.
   defp take_back(%{branch: %{status: :open} = branch} = state, undos),
-    do: %{state | branch: Branch.undo(branch, undos)}
+    do: bump(%{state | branch: Branch.undo(branch, undos)})
 
   defp take_back(state, _undos), do: state
 
@@ -962,6 +1080,14 @@ defmodule Ramal.Branch.Server do
     )
   end
 
+  defp already_adopted(state, child) do
+    Error.new(
+      :not_open,
+      "branch #{inspect(child.id)} already merged into branch #{inspect(state.branch.id)}",
+      %{id: child.id, status: :merged, parent: state.branch.id}
+    )
+  end
+
   defp row_busy(state, {resource, key} = ref) do
     Error.new(
       :row_busy,
@@ -1011,6 +1137,13 @@ defmodule Ramal.Branch.Server do
   defp index(%{branch: %{overlay: overlay}} = state),
     do: {nil, %{state | index: nil, seen: overlay}}
 
+  # A nested fork records what it holds for the rows a read can return (`Ramal.Branch.see/2`). It is not a change of the
+  # branch, so the version stays.
+  defp see(%{branch: %{parent: nil}} = state, _resource, _keys), do: state
+
+  defp see(state, resource, keys),
+    do: %{state | branch: Branch.see(state.branch, Enum.map(keys, &{resource, &1}))}
+
   defp unavailable(state, wanted \\ :open)
 
   defp unavailable(%{merging: nil, branch: branch}, wanted), do: not_open(branch, wanted)
@@ -1029,12 +1162,52 @@ defmodule Ramal.Branch.Server do
     })
   end
 
-  defp persist(branch, config), do: config.storage.put(branch, config.storage_config)
+  # A scratch branch is never stored: it lives only for one nested merge.
+  defp persist(%{scratch: true}, _branch), do: :ok
+  defp persist(%{config: config}, branch), do: config.storage.put(branch, config.storage_config)
+
+  defp bump(%{version: {token, n}} = state), do: %{state | version: {token, n + 1}}
 
   defp stop_merged(state), do: {:stop, :normal, :ok, merged_state(state)}
 
   defp merged_state(state) do
     %{state | branch: %{state.branch | status: :merged}, stop: :merged, persisted: true}
+  end
+
+  # A nested fork whose parent holds its work, though its own status is still open: the merger died after the parent
+  # persisted, or the node restarted before the fork was stored as merged. The fork's work is in the parent, so a write
+  # to it now would be lost and a second merge would take the work twice: it is merged (ADR 0043). The parent persists
+  # before it adopts, so its storage is what to ask.
+  defp adopted?(%Branch{parent: %{id: parent_id}, id: id, status: :open}, config) do
+    case config.storage.fetch(parent_id, config.storage_config) do
+      {:ok, %Branch{merged_children: children}} -> id in children
+      _unknown -> false
+    end
+  end
+
+  defp adopted?(_branch, _config), do: false
+
+  defp found_adopted(branch, config) do
+    if adopted?(branch, config), do: %{branch | status: :merged}, else: branch
+  end
+
+  # The merged status is written now; if the storage refuses, the process stays up as merged and writes it at its next
+  # idle timeout, as for a merge whose commit succeeded (ADR 0023).
+  defp adopted(state) do
+    branch = %{state.branch | status: :merged}
+
+    case persist(state, branch) do
+      :ok ->
+        {:stop, :normal, %{state | branch: branch, stop: :merged, persisted: true}}
+
+      {:error, %Error{reason: :fenced} = error} ->
+        {:stop, :normal, fence(state, error)}
+
+      {:error, error} ->
+        Telemetry.branch(:persist_failed, branch, %{reason: :merged, error: error})
+        state = %{state | branch: branch}
+        {:noreply, state, timeout(state)}
+    end
   end
 
   defp stored_merged?(%{branch: branch, config: config}) do

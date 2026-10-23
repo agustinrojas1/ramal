@@ -103,7 +103,8 @@ Merging is the step that must never be wrong, so the rules behind it are checked
 - **A TLA+ model of the branch lifecycle**, checked with TLC over about 5.5 million states: writes, reads, fork, propose,
   approve, discard, merge, idle unload, killed processes and node restarts, interleaved the way the BEAM interleaves them.
   It proves that a merge commits at most once, that a merge never takes the write of an action that failed, and that what
-  reads see is what the merge writes.
+  reads see is what the merge writes. A second model covers a nested fork merging into its parent: no write reaches the
+  parent twice, and none is lost to the merge.
 - **Proofs in Bend 2** (rechecked by a Lean-proved kernel) that a read in a branch is the base plus the overlay, that a
   merge loses no edit made outside the branch, and that an overlay entry never lies about the base.
 
@@ -300,7 +301,7 @@ and what is and is not tested.
 
 Ramal is deliberately small, and it says what it does not do:
 
-- **Not a database branch.** No schema changes inside a branch and no branch-local indexes. `Ramal.run/2` cannot be nested.
+- **Not a database branch.** No schema changes inside a branch, no branch-local indexes, and a branch lives on one node. `Ramal.run/2` cannot be nested: a branch of a branch is a nested fork (`Ramal.fork(branch, nested: true)`), run on its own and merged into its parent, which is merged to the database as one branch ([ADR 0043](https://github.com/agustinrojas1/ramal/blob/main/docs/adr/0043-nested-branches-merge-into-their-parent.md)).
 - **Aggregates loaded inside a branch are recomputed from the branch's rows,** which reads the related rows of each
   returned row where the database would sum them in one query. `custom` aggregates (data-layer SQL),
   a join filter and a custom read action keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a

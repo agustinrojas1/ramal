@@ -49,3 +49,7 @@ was prevented (ADR 0035). Running Ramal behind a load balancer, or on a rolling 
 - A crash of the node holding a branch loses its unsaved writes, as on one node (the durable write log is a separate
   item). The epoch makes the next load safe: the crashed node's process, if it were only partitioned, is fenced.
 - The migration is needed only with `cluster: true`; without it nothing reads the column.
+- A nested fork (ADR 0043) merges into its parent through the parent's process, wherever `:global` has it, and the
+  parent persists the adoption on its own epoch. A parent the storage fenced refuses the adoption, announces `:fenced`
+  and stops, so the fork stays open and nothing reaches the storage from the stale parent. The scratch copy of the
+  parent a nested merge replays in is never stored and claims no epoch.

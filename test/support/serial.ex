@@ -39,6 +39,38 @@ defmodule Ramal.Test.Serial.Note do
       end)
     end
 
+    # A create whose hook creates another Note, the same resource as the action itself, so the key plan of a replay
+    # (ADR 0041, 0042) must not hand the hook's key to the action or the action's to the hook.
+    create :create_with_sibling do
+      accept([:body])
+
+      change(fn changeset, _context ->
+        Ash.Changeset.after_action(changeset, fn _changeset, note ->
+          Ash.create!(__MODULE__, %{body: note.body <> " sibling"}, authorize?: false)
+          {:ok, note}
+        end)
+      end)
+    end
+
+    create :create_with_sibling_early do
+      accept([:body])
+
+      change(fn changeset, _context ->
+        Ash.Changeset.before_action(changeset, fn changeset ->
+          body = Ash.Changeset.get_attribute(changeset, :body)
+          Ash.create!(__MODULE__, %{body: body <> " sibling"}, authorize?: false)
+          changeset
+        end)
+      end)
+    end
+
+    # The same through a managed relationship: the parent is a Note too, created by Ash around the action's write.
+    create :create_with_parent do
+      accept([:body])
+      argument(:parent, :map, allow_nil?: false)
+      change(manage_relationship(:parent, type: :create))
+    end
+
     # An upsert on the code: a Note whose key the database generates, found by something other than its key.
     create :upsert do
       accept([:code, :body, :parent_id])
