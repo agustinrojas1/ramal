@@ -15,8 +15,8 @@ defmodule RamalLive do
 
   1. Depend on it, from [Hex](https://hex.pm/packages/ramal_live):
 
-         {:ramal, "~> 0.7.0"},
-         {:ramal_live, "~> 0.7.0"}
+         {:ramal, "~> 0.8.0"},
+         {:ramal_live, "~> 0.8.0"}
 
   2. Start `RamalLive.Broadcaster` after the PubSub and `Ramal.Supervisor`, in every node that runs branches:
 

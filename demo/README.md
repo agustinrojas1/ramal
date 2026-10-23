@@ -52,7 +52,7 @@ self-contained file (the farm is defined in its setup cells), so the badge opens
 the same Postgres as the script; start it with `docker compose -f demo/docker-compose.yml up -d`. If Livebook runs in
 Docker, `localhost` is its container: set `RAMAL_PG_HOST=host.docker.internal`, or edit the connection cell.
 
-It installs `ramal ~> 0.7.0` from Hex and falls back to the checkout when it is opened from one and that version is not
+It installs `ramal ~> 0.8.0` from Hex and falls back to the checkout when it is opened from one and that version is not
 published. `RAMAL_TOUR_SOURCE=path` uses the checkout on purpose. The cells carry over state, so run them from top to
 bottom; "Reconnect and setup" starts over.
 
@@ -131,7 +131,7 @@ If the script cannot reach Postgres it says so and stops before changing anythin
 
 ## Running it against a checkout
 
-By default the demo installs the published `ramal ~> 0.7.0`, and uses the checkout you run it from when that version is not on Hex. If you are working on Ramal and want to see your changes in the
+By default the demo installs the published `ramal ~> 0.8.0`, and uses the checkout you run it from when that version is not on Hex. If you are working on Ramal and want to see your changes in the
 walkthrough, set `RAMAL_DEMO_SOURCE=path`, which uses the checkout you are running from:
 
 ```sh

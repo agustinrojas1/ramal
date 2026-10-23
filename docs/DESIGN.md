@@ -1,6 +1,6 @@
 # Ramal design
 
-Status: describes Ramal 0.7. First written 2026-10-22. This document is the current state of the design; the history of
+Status: describes Ramal 0.8. First written 2026-10-22. This document is the current state of the design; the history of
 decisions lives in `docs/adr/`. Where this document and the code disagree, open an issue: one of them is wrong.
 
 Marks: **[confirm]** flagged an Ash behaviour the implementer had to verify against the locked version before relying
