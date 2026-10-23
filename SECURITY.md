@@ -37,13 +37,13 @@ What Ramal does and does not protect, so you can decide what to add. Each point 
 
 **What is stored.** A stored branch (`ramal_branches.state`, or the ETS table) holds the overlay (whole records), the raw input of every captured write, and the actors. Sensitive attributes of an *actor record* are stored as `nil` (ADR 0010), but the input of a write that carries a password or token argument must be stored to replay, so a stored branch is as sensitive as the data it touches. Mark credential resources `ramal do branchable? false end`, restrict access to the table, and encrypt it at rest if your data needs it. `inspect/1` of a `Ramal.Branch` prints only its id, name, domain, status and creation time, so crash reports and log lines do not carry the log. Telemetry events and the inspector's PubSub messages carry ids, names of resources and actions, and never record data.
 
-**Stored state is read defensively.** The `state` column is data, not code: a malformed or hostile value makes `Ramal.get/1` return `{:error, %Ramal.Error{reason: :storage}}` and never crashes the caller. Whoever can write that column can still change what a merge replays (the log and its actors), so give the table the same write protection as the tables it replays into.
+**Stored state is read defensively.** The `state` column is data, not code: a malformed or hostile value makes `Ramal.get/1` return `{:error, %Ramal.Error{reason: :storage}}` and never crashes the caller. `Ramal.list/2` skips a row it cannot decode, so one damaged row does not hide the other branches of the domain, and emits `[:ramal, :storage, :unreadable]` with the branch id and a message that holds no stored value; watch that event. Whoever can write that column can still change what a merge replays (the log and its actors), so give the table the same write protection as the tables it replays into.
 
 **ETS.** `Ramal.Storage.ETS` and the supervisor's own table are `:public` named tables, because every branch process writes to them. Any code in the VM can read or write them; use `Ramal.Storage.Postgres` when branches must survive a restart, and treat the VM as the boundary.
 
 **Releases.** The Release workflow publishes only from `main`, only for a commit whose CI run succeeded, and the Hex key is an environment secret (`hex`, restricted to `main`) that only the two publish steps read. GitHub Actions are pinned to commit SHAs.
 
-**Dependencies.** CI runs `mix hex.audit` for the library, `bench/` and `ramal_live/` and fails on a retired package or a published advisory. Dependabot proposes updates.
+**Dependencies.** CI runs `mix hex.audit` for the library, `bench/` and `ramal_live/` and fails on a retired package or a published advisory. That is the only advisory scan: `mix_audit` (the GitHub advisory feed) is not run, so a vulnerability published only there is found when Dependabot or Hex reports it. Dependabot proposes updates.
 
 ### Per-user branches
 
