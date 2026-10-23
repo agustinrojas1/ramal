@@ -201,8 +201,9 @@ This is the section that decides correctness. In a read action's preparation, wh
 - **The branch is checked again when the action runs** (ADR 0026). A changeset built outside `Ramal.run/2` and run
   inside it, or built inside and run after it, or built under one branch and run under another, fails with
   `:branch_mismatch` instead of writing to the wrong place. A captured write from a task that a hook of another captured
-  action started fails with `:task_in_action`. A query prepared outside a branch and read inside it is not patched
-  (Ash refuses an atomic bulk update of a query with a hook, so none can be installed); prepare queries inside.
+  action started fails with `:task_in_action`. A query prepared outside a branch and read inside it is patched: the
+  preparation adds a `before_transaction` hook (Ash refuses an atomic bulk update of a query with a `before_action` or
+  `after_action` hook, but not this one) that installs the read hooks when a branch is current (ADR 0028).
 - **Every resource of the domain is covered or opted out** (ADR 0027): `Ramal.branch/2` refuses a domain with a
   resource that has write actions and neither uses `Ramal.Resource` nor sets `branchable? false` (`:unbranchable_resources`).
   A resource that opts out is written for real.

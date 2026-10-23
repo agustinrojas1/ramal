@@ -33,6 +33,8 @@ defmodule Ramal.Preparation do
       (ADR 0025). Relationships are loaded first with `reuse_values?: true` so the branch's foreign keys are used.
     * Filters are evaluated on overlay records with `Ash.Filter.Runtime.filter_matches/4` and sorting uses
       Ash.Actions.Sort.runtime_sort/3.
+    * A query prepared outside a branch and read inside one is bound when it runs (ADR 0028): it carries a
+      `before_transaction` hook, which Ash's atomic bulk update check ignores, and that hook installs the read hooks.
 
   Every base row the read returns is also fingerprinted (`Ramal.Resource.fingerprint/1`) for the staleness check at
   merge time, unless the query selected only some attributes.
@@ -71,27 +73,47 @@ defmodule Ramal.Preparation do
   @impl true
   def prepare(query, _opts, _context) do
     case Current.bind(query.context) do
-      # No hook can go here: Ash refuses an atomic bulk update or destroy of a query that has one
-      # (`lib/ash/actions/update/bulk.ex`, 3.37), so a query prepared outside a branch and read inside one is not
-      # caught (ADR 0026).
+      # A query prepared outside a branch may still be read inside one. `before_action` and `after_action` hooks
+      # cannot be installed here: Ash refuses an atomic bulk update or destroy of a query that has one
+      # (`lib/ash/actions/update/bulk.ex`, 3.37). A `before_transaction` hook is not on that list, and it runs before the
+      # query's `before_action` hooks are read, so it installs them when it finds a branch current (ADR 0026).
+      :none ->
+        Ash.Query.before_transaction(query, &bind_late/1)
+
+      {:ok, id, origin} ->
+        install(query, id, origin)
+
+      {:conflict, process, carried} ->
+        Ash.Query.add_error(query, Current.conflict(what(query), process, carried))
+    end
+  end
+
+  defp install(query, id, origin) do
+    case Resource.ensure_untenanted(query.resource, query.tenant) do
+      :ok ->
+        query
+        |> Ash.Query.set_context(Current.shared_context(id))
+        |> Ash.Query.before_transaction(&record_calculations/1)
+        |> Ash.Query.before_action(&before_data_layer(&1, id, origin))
+        |> Ash.Query.after_action(&after_data_layer(&1, &2, id))
+
+      {:error, error} ->
+        Ash.Query.add_error(query, error)
+    end
+  end
+
+  # Runs when a query prepared with no branch is executed. The hooks `install/3` adds are not in the list Ash is
+  # walking, so `record_calculations/1` is called directly (the calculations are still on the query at this point).
+  defp bind_late(query) do
+    case Current.bind(query.context) do
       :none ->
         query
 
       {:ok, id, origin} ->
-        case Resource.ensure_untenanted(query.resource, query.tenant) do
-          :ok ->
-            query
-            |> Ash.Query.set_context(Current.shared_context(id))
-            |> Ash.Query.before_transaction(&record_calculations/1)
-            |> Ash.Query.before_action(&before_data_layer(&1, id, origin))
-            |> Ash.Query.after_action(&after_data_layer(&1, &2, id))
-
-          {:error, error} ->
-            Ash.Query.add_error(query, error)
-        end
+        query |> install(id, origin) |> record_calculations()
 
       {:conflict, process, carried} ->
-        Ash.Query.add_error(query, Current.conflict(what(query), process, carried))
+        {:error, Current.conflict(what(query), process, carried)}
     end
   end
 

@@ -62,8 +62,8 @@ test decides whether it happens.
   started inside the function is in the branch too (`Task.async`, `Task.async_stream`, `Task.Supervisor`, and the tasks Ash
   starts). A process started any other way (`spawn`, a message to a GenServer) is not: call `run/2` inside it.
 - **Build and run a changeset in the same place.** A changeset or form built outside `run/2` and submitted inside it, or
-  the other way round, fails with `:branch_mismatch`. Prepare queries inside `run/2` too: one prepared outside is not
-  patched.
+  the other way round, fails with `:branch_mismatch`. A query prepared outside `run/2` and read
+  inside it is patched.
 - **Every resource of the domain must use `Ramal.Resource` or opt out** with `ramal do branchable? false end`, or
   `Ramal.branch/2` returns `:unbranchable_resources`. A resource that opts out is written for real, from a branch too.
 - **Merge refuses a stale branch.** If a row the branch read changed in the database, `merge/2` returns
