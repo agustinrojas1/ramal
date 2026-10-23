@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Docs: `bench/README.md` and the README's benchmark figures come from a rerun of the full benchmark and `bench.memory` on 0.6.1, with the noise between two runs stated; the raw samples are in `bench/results/published/`.
 
+### Fixed
+
+- A read inside a branch runs the action's `authorize_results` checks (the runtime half of a policy) on the patched rows, so a row the branch created or changed is judged like any other and a row the branch destroyed is not. They ran on the database's rows before the patch. ADR 0037.
+
 ## [0.6.1] - 2026-10-23
 
 Documentation only: the README, the design document and the other guides on Hex and HexDocs now describe 0.6. No code changes.

@@ -6,7 +6,7 @@ defmodule Ramal.Test.Farm.Herd do
     data_layer: AshPostgres.DataLayer,
     authorizers: [Ash.Policy.Authorizer]
 
-  alias Ramal.Test.Farm.{Move, Validations}
+  alias Ramal.Test.Farm.{Checks, Move, Validations}
 
   postgres do
     table("herds")
@@ -25,6 +25,11 @@ defmodule Ramal.Test.Farm.Herd do
         required?: false,
         default_limit: 2
       )
+    end
+
+    # A read whose policy has a check that only runs on the rows the read returned (`authorize_results`).
+    read :checked do
+      pagination(offset?: true, countable: true, required?: false)
     end
 
     # An action that loads a calculation in its own preparation, which runs after the one Ramal installs.
@@ -104,6 +109,12 @@ defmodule Ramal.Test.Farm.Herd do
   policies do
     policy action(:move) do
       authorize_if(actor_attribute_equals(:role, :admin))
+    end
+
+    # A read policy filters by default; the runtime access type keeps the check for the rows (`authorize_results`).
+    policy action(:checked) do
+      access_type(:runtime)
+      authorize_if(Checks.SmallHerd)
     end
 
     policy action([:read, :list, :create, :update, :destroy]) do

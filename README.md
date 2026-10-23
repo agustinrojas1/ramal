@@ -304,7 +304,6 @@ Ramal is deliberately small, and it says what it does not do:
   real, from a branch too. Only the branch's domain is checked: a resource of another domain works in the branch if it uses `Ramal.Resource`, and is written for real if it does not. Build a changeset in the same `Ramal.run/2` that runs it. A query prepared outside a branch and read inside it is patched.
 - **Bulk actions and upserts are refused** inside a branch, resources whose primary key the database generates cannot be
   created in one (use UUIDs), and notifications are dropped unless a resource opts in with `notify_in_branch? true`.
-- **`authorize_results` checks do not run on rows the branch added.** A read action's policy filters do; the checks Ash runs on results after the read cannot see overlay rows.
 - **A branch works in one tenant,** given at `Ramal.branch/2`.
 - **Reads fetch candidate rows and patch them in memory.** That is cheap for the rows a session touches and wrong for an
   analytics table: Ramal is meant for OLTP-sized working sets.
