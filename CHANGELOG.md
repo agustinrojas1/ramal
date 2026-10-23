@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- A read inside a branch looks up the primary key once, not once per row at each step, and skips re-ordering rows when the query loads no calculations. A wide read with 1,000 overlay rows takes about 0.5 to 1 ms less of its 15 ms.
+
+### Changed
+
 - **`Ramal.list/2` skips a stored branch it cannot decode** (with `Ramal.Storage.Postgres`) instead of failing for the whole domain, and emits `[:ramal, :storage, :unreadable]` with the branch id, the domain and a message that holds no stored value. `Ramal.get/1` of that id still returns the `:storage` error. One damaged row, or one written by a newer Ramal during a rolling deploy, no longer hides every other branch from `list/2` and the inspector.
 - **Documented that a branch holds only the writes of create, update and destroy actions.** A generic action and the outside effects of a hook (an HTTP call, an email, an Oban job, a `Repo` write) run for real while a branch is open. SECURITY.md, `docs/limits.md` and `usage-rules.md` now say so and how to make a hook skip itself.
 

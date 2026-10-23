@@ -518,7 +518,8 @@ defmodule Ramal.Preparation do
   # filter accepts, and `matching_keys/2` runs the real filter on what is left.
   defp patch(query, results, limit, offset, id) do
     resource = query.resource
-    base_keys = Enum.map(results, &Resource.key(resource, &1))
+    key = Resource.key_fun(resource)
+    base_keys = Enum.map(results, key)
 
     with {:ok, slice, overlay_rows} <-
            Server.select(id, resource, base_keys, Prefilter.compile(prefilter_filter(query))),
@@ -526,8 +527,8 @@ defmodule Ramal.Preparation do
          {:ok, matching} <- matching_keys(query, slice, id),
          {:ok, patched} <-
            results
-           |> Overlay.patch(slice, &MapSet.member?(matching, Resource.key(resource, &1)),
-             key: &Resource.key(resource, &1),
+           |> Overlay.patch(slice, &MapSet.member?(matching, key.(&1)),
+             key: key,
              replace: &carry_lateral_source/2
            )
            |> drop_unplaced(query)
@@ -538,7 +539,7 @@ defmodule Ramal.Preparation do
         sorted
         |> Enum.drop(offset || 0)
         |> take(limit)
-        |> Enum.map(&apply_select(&1, query, slice))
+        |> Enum.map(&apply_select(&1, query, slice, key))
 
       {:ok, patched, overlay_rows}
     end
@@ -555,19 +556,14 @@ defmodule Ramal.Preparation do
          id
        )
        when removed != nil do
-    {changed, untouched} =
-      Enum.split_with(results, &Map.has_key?(slice, Resource.key(query.resource, &1)))
+    key = Resource.key_fun(query.resource)
+    {changed, untouched} = Enum.split_with(results, &Map.has_key?(slice, key.(&1)))
 
     with {:ok, loaded} <- load_for_filter(untouched, removed, query),
          {:ok, loaded} <- load_aggregates(loaded, Related.aggregates(removed), query, id),
          {:ok, matches} <- Ramal.Ash.filter_matches(query.domain, loaded, removed) do
-      keys = MapSet.new(matches, &Resource.key(query.resource, &1))
-
-      {:ok,
-       Enum.filter(
-         results,
-         &(&1 in changed or MapSet.member?(keys, Resource.key(query.resource, &1)))
-       )}
+      keys = MapSet.new(matches, key)
+      {:ok, Enum.filter(results, &(&1 in changed or MapSet.member?(keys, key.(&1))))}
     end
   end
 
@@ -578,9 +574,13 @@ defmodule Ramal.Preparation do
   # value for the old attributes. Ash can evaluate the expression on a record in memory, which is what `Ash.load/3`
   # with `reuse_values?: true` does (the same call `Ash.Query.apply_to/3` makes), so the overlay's records get it here,
   # before they are filtered, sorted or trimmed by `select`, which need every attribute.
+  defp load_calculations(rows, _slice, %{context: %{ramal: %{calculations: calculations}}})
+       when calculations == %{},
+       do: {:ok, rows}
+
   defp load_calculations(rows, slice, query) do
-    {from_overlay, from_base} =
-      Enum.split_with(rows, &Map.has_key?(slice, Resource.key(query.resource, &1)))
+    key = Resource.key_fun(query.resource)
+    {from_overlay, from_base} = Enum.split_with(rows, &Map.has_key?(slice, key.(&1)))
 
     with [_ | _] <- from_overlay,
          {:ok, loaded} <- load_in_memory(from_overlay, query.context.ramal.calculations, query) do
@@ -635,8 +635,9 @@ defmodule Ramal.Preparation do
 
   # Keeps the order Overlay.patch produced, which the sort and offset after it start from.
   defp reorder(rows, loaded, resource) do
-    by_key = Map.new(loaded, &{Resource.key(resource, &1), &1})
-    Enum.map(rows, &Map.fetch!(by_key, Resource.key(resource, &1)))
+    key = Resource.key_fun(resource)
+    by_key = Map.new(loaded, &{key.(&1), &1})
+    Enum.map(rows, &Map.fetch!(by_key, key.(&1)))
   end
 
   # A many_to_many load (and a has_many load with a limit) is one SQL query whose rows each carry the source record they
@@ -677,14 +678,14 @@ defmodule Ramal.Preparation do
          {:ok, records} <- load_for_filter(records, full_filter(query), query),
          {:ok, matches} <-
            Ramal.Ash.filter_matches(query.domain, records, full_filter(query)) do
-      {:ok, MapSet.new(matches, &Resource.key(query.resource, &1))}
+      {:ok, MapSet.new(matches, Resource.key_fun(query.resource))}
     end
   end
 
   # Base rows come back from Postgres with only the selected attributes loaded. Overlay records are whole structs, so
   # they are trimmed the same way after filtering and sorting, which need every attribute.
-  defp apply_select(record, %{select: select} = query, slice) when is_list(select) do
-    if match?({_kind, _record}, Map.get(slice, Resource.key(query.resource, record))) do
+  defp apply_select(record, %{select: select} = query, slice, key) when is_list(select) do
+    if match?({_kind, _record}, Map.get(slice, key.(record))) do
       keep = select ++ Info.primary_key(query.resource)
 
       query.resource
@@ -702,7 +703,7 @@ defmodule Ramal.Preparation do
     end
   end
 
-  defp apply_select(record, _query, _slice), do: record
+  defp apply_select(record, _query, _slice, _key), do: record
 
   defp distinct(rows, %{context: %{ramal: %{distinct: %{fields: fields, sort: pick}}}} = query) do
     with {:ok, sorted} <- sort_by(rows, pick, query) do
@@ -765,8 +766,9 @@ defmodule Ramal.Preparation do
              rename_calcs?: false
            ) do
       # The relationships and calculations loaded to sort are not part of what the caller asked for.
-      by_key = Map.new(rows, &{Resource.key(query.resource, &1), &1})
-      {:ok, Enum.map(sorted, &Map.fetch!(by_key, Resource.key(query.resource, &1)))}
+      key = Resource.key_fun(query.resource)
+      by_key = Map.new(rows, &{key.(&1), &1})
+      {:ok, Enum.map(sorted, &Map.fetch!(by_key, key.(&1)))}
     end
   end
 
