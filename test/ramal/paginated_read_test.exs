@@ -2,18 +2,26 @@ defmodule Ramal.PaginatedReadTest do
   # Ramal.Supervisor is one per node and named, so these tests cannot run concurrently.
   use ExUnit.Case, async: false
 
-  alias Ash.DataLayer.Ets
+  alias Ramal.Test.Ets
   alias Ramal.Test.Paged.Item
 
   setup do
     start_supervised!(Ramal.Supervisor)
     # ETS tables outlive a test, so each test starts from an empty one.
-    on_exit(fn -> Ets.stop(Item) end)
-    Ets.stop(Item)
+    on_exit(fn -> Ets.reset(Item) end)
+    Ets.reset(Item)
 
     items = for n <- 1..5, do: Ash.create!(Item, %{n: n})
     {:ok, branch} = Ramal.branch(Ramal.Test.Paged)
     {:ok, %{items: items, branch: branch}}
+  end
+
+  test "resetting the table leaves no table manager behind, so the next test cannot wrap a dying one" do
+    assert Ets.manager(Item)
+
+    Ets.reset(Item)
+
+    refute Ets.manager(Item)
   end
 
   defp read_all, do: Ash.read!(Item, page: [limit: 100]).results
