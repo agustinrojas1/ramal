@@ -225,6 +225,13 @@ defmodule Ramal.Branch.Server do
   def slice(id, resource), do: call(id, {:slice, resource})
 
   @doc """
+  The overlay entries of `resource` for `keys` only (`Ramal.load/3`), as `key => {kind, record} | :deleted`. Rejected
+  unless the branch is open.
+  """
+  @spec fetch(String.t(), module, [term]) :: {:ok, Overlay.slice()} | {:error, Error.t()}
+  def fetch(id, resource, keys), do: call(id, {:fetch, resource, keys})
+
+  @doc """
   The primary keys of the overlay entries of `resource`, for a caller that needs which rows the branch touched and not
   what it put in them (`Ramal.aggregate/4`). Rejected unless the branch is open.
   """
@@ -427,6 +434,13 @@ defmodule Ramal.Branch.Server do
   def handle_call({:slice, resource}, _from, state) do
     read_overlay(state, fn overlay, index ->
       if index, do: Map.get(index, resource, %{}), else: Overlay.slice(overlay, resource)
+    end)
+  end
+
+  def handle_call({:fetch, resource, keys}, _from, state) do
+    read_overlay(state, fn overlay, index ->
+      slice = if index, do: Map.get(index, resource, %{}), else: Overlay.slice(overlay, resource)
+      Map.take(slice, keys)
     end)
   end
 

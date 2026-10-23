@@ -587,6 +587,48 @@ defmodule Ramal.PreparationTest do
       assert names(herds) == ["R7", "R8"]
     end
 
+    test "Ramal.load follows the branch's foreign key, also for a record read before the move", %{
+      branch: branch,
+      herds: h,
+      paddocks: p
+    } do
+      {stale, moved, listed, destroyed} =
+        inside(branch, fn ->
+          moved = Ash.update!(h.r7, %{paddock_id: p.l18.id}, authorize?: false)
+          Ash.destroy!(h.r9, authorize?: false)
+
+          {Ramal.load!(h.r7, :paddock, authorize?: false),
+           Ramal.load!(moved, :paddock, authorize?: false),
+           Ramal.load!([h.r7, h.r8], :paddock, authorize?: false),
+           Ramal.load!(h.r9, :paddock, authorize?: false)}
+        end)
+
+      # h.r7 was read before the move: its own paddock_id is the old one, the branch's copy is the new one.
+      assert stale.paddock.name == "L18"
+      assert stale.paddock_id == p.l18.id
+      assert moved.paddock.name == "L18"
+      assert Enum.map(listed, & &1.paddock.name) == ["L18", "L07"]
+      assert destroyed.paddock.name == "L18"
+
+      # Outside a branch it is Ash.load.
+      assert Ramal.load!(h.r7, :paddock, authorize?: false).paddock.name == "L07"
+      assert {:ok, %{paddock: %{name: "L07"}}} = Ramal.load(h.r7, :paddock, authorize?: false)
+    end
+
+    test "Ramal.load works with the branch passed as context", %{
+      branch: branch,
+      herds: h,
+      paddocks: p
+    } do
+      Ash.update!(h.r7, %{paddock_id: p.l18.id},
+        authorize?: false,
+        context: Ramal.context(branch)
+      )
+
+      assert Ramal.load!(h.r7, :paddock, authorize?: false, context: Ramal.context(branch)).paddock.name ==
+               "L18"
+    end
+
     test "Ash.load on records read outside the branch is patched, lazily or not", %{
       branch: branch,
       herds: h,

@@ -135,11 +135,14 @@ This is the section that decides correctness. In a read action's preparation, wh
    queries (ADR 0002); a test outside the SQL sandbox, where Ash really does run loads in tasks, fails without it.
    One path escapes: `Ash.load` onto a record first reselects the relationship's source attribute from the data
    layer, and that read runs no hooks (`reselect_and_load/6` in Ash 3.37), so a foreign key the branch changed is not
-   seen and the load follows the database's. `reuse_values?: true` skips the reselect and a load inside a read
-   (`Ash.Query.load/2`) is patched; the test in `preparation_test.exs` pins both.
+   seen and the load follows the database's. Ash gives the preparation no way in (the reselect is a raw data-layer read
+   and `reuse_values?` is read from the options before the preparations run), so `Ramal.load/3` is the supported call
+   (ADR 0030): inside a branch it puts the branch's attribute values on each record that has an overlay entry and loads
+   with `reuse_values?: true`. A load inside a read (`Ash.Query.load/2`) is patched too; the test in
+   `preparation_test.exs` pins the plain call, `Ramal.load/3` and both.
 4. **Aggregates and calculations:** an aggregate a read loads (`count`, `exists`, `sum`, `min`, `max`, `avg`, declared on the
    resource or added to the query) is computed again after the patch from the related records read through the branch, for
-   every row when the branch changed a resource on its path and for the rows the overlay supplied otherwise (ADR 0029).
+   every row when the branch changed a resource on its path and for the rows the overlay supplied otherwise (ADR 0030).
    `first`, `list` and `custom` aggregates, `uniq?`, a join filter, a custom read action, a field that is not an attribute
    and an aggregate query with a limit, offset or distinct keep the database's value and emit
    `[:ramal, :read, :unpatched_aggregate]`, so a host can detect it in tests. A filter or sort on an aggregate is judged by the
@@ -260,6 +263,9 @@ This is the section that decides correctness. In a read action's preparation, wh
 
 @spec aggregate(query | resource, kind, field | nil, keyword) :: {:ok, term} | {:error, Ash.Error.t()}
 # kind: :count | :exists | :sum | :min | :max | :avg, computed in Elixir over the rows a read returns in the branch
+
+@spec load(record | [record], load, keyword) :: {:ok, record | [record]} | {:error, Ash.Error.t()}
+# Ash.load/3 that follows the branch's foreign keys (ADR 0030)
 
 @spec discard(branch | id) :: :ok | {:error, Ramal.Error.t()}
 

@@ -21,6 +21,7 @@ defmodule Ramal do
 
   """
 
+  alias Ash.Resource.Info
   alias Ramal.{Branch, Current, Error, Limits, Resource, Supervisor, Telemetry}
   alias Ramal.Branch.Server
   alias Ramal.Preparation.Related
@@ -298,6 +299,91 @@ defmodule Ramal do
   @spec diff(branch_or_id) :: {:ok, [Ramal.Change.t()]} | {:error, Error.t()}
   def diff(branch_or_id) do
     branch_or_id |> id_of() |> Server.diff(attributes: &Resource.attributes/1)
+  end
+
+  @doc """
+  `Ash.load/3` for records a branch changed.
+
+  `Ash.load/3` first reselects the relationship's source attribute (for example `paddock_id`) from the data layer, and
+  that read runs none of the read hooks (`reselect_and_load/6` in Ash 3.37), so after a herd moved to another paddock in
+  the branch `Ash.load(herd, :paddock)` follows the database's foreign key (ADR 0030). Inside a branch this puts the
+  branch's attribute values on each record that has an overlay entry, then loads with `reuse_values?: true`, which skips
+  the reselect; the relationship itself is read through the read actions, so it is patched too. Outside a branch it is
+  `Ash.load/3`.
+
+  `data` is a record or a list of records, `load` and `opts` are `Ash.load/3`'s. A branch carried only by
+  `context: Ramal.context(branch)` in `opts` counts as current. Records the branch destroyed are loaded as they are.
+
+  ## Example
+
+      Ramal.run!(branch, fn ->
+        moved = Ash.update!(herd, %{paddock_id: other.id})
+        Ramal.load!(moved, :paddock).paddock.id
+        #=> other.id
+      end)
+  """
+  @spec load(Ash.Resource.record() | [Ash.Resource.record()], term, keyword) ::
+          {:ok, Ash.Resource.record() | [Ash.Resource.record()]} | {:error, Ash.Error.t()}
+  def load(data, load, opts \\ []) when is_list(opts) do
+    case Current.resolve(opts[:context] || %{}) do
+      nil ->
+        Ash.load(data, load, opts)
+
+      id ->
+        with {:ok, data} <- with_branch_values(id, data) do
+          Ash.load(data, load, Keyword.put(opts, :reuse_values?, true))
+        end
+    end
+  end
+
+  @doc """
+  Like `load/3` but returns the records or raises.
+
+  ## Example
+
+      Ramal.run!(branch, fn -> Ramal.load!(herd, :paddock) end)
+  """
+  @spec load!(Ash.Resource.record() | [Ash.Resource.record()], term, keyword) ::
+          Ash.Resource.record() | [Ash.Resource.record()]
+  def load!(data, load, opts \\ []) do
+    case load(data, load, opts) do
+      {:ok, loaded} -> loaded
+      {:error, error} -> raise Ash.Error.to_error_class(error)
+    end
+  end
+
+  # The records a caller holds may predate the branch's writes (a struct read before the update), and `Ash.load/3`
+  # would overwrite them with the database's values. Only attributes are copied, so what the caller loaded stays.
+  defp with_branch_values(id, data) when is_list(data) do
+    data
+    |> Enum.group_by(& &1.__struct__)
+    |> Enum.reduce_while({:ok, %{}}, fn {resource, records}, {:ok, entries} ->
+      keys = Enum.map(records, &Resource.key(resource, &1))
+
+      case Server.fetch(id, resource, keys) do
+        {:ok, found} -> {:cont, {:ok, Map.put(entries, resource, found)}}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+    |> case do
+      {:ok, entries} -> {:ok, Enum.map(data, &put_branch_values(&1, entries))}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp with_branch_values(id, %{__struct__: _} = record) do
+    with {:ok, [record]} <- with_branch_values(id, [record]), do: {:ok, record}
+  end
+
+  defp put_branch_values(%resource{} = record, entries) do
+    case entries |> Map.fetch!(resource) |> Map.fetch(Resource.key(resource, record)) do
+      {:ok, {_kind, branch_record}} ->
+        names = resource |> Info.attributes() |> Enum.map(& &1.name)
+        Map.merge(record, Map.take(branch_record, names))
+
+      _deleted_or_untouched ->
+        record
+    end
   end
 
   @doc """
