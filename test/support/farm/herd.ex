@@ -109,6 +109,73 @@ defmodule Ramal.Test.Farm.Herd do
       end)
     end
 
+    # A create whose hook creates another Herd, the same resource as the action itself: the key plan of a replay (ADR
+    # 0041) must give each of the two rows its own key. `:create_with_twin` writes the twin after the herd,
+    # `:create_with_twin_early` before it.
+    create :create_with_twin do
+      accept([:name, :head])
+
+      change(fn changeset, _context ->
+        Ash.Changeset.after_action(changeset, fn _changeset, herd ->
+          Ash.create!(__MODULE__, %{name: herd.name <> " twin", head: 1}, authorize?: false)
+          {:ok, herd}
+        end)
+      end)
+    end
+
+    create :create_with_twin_early do
+      accept([:name, :head])
+
+      change(fn changeset, _context ->
+        Ash.Changeset.before_action(changeset, fn changeset ->
+          name = Ash.Changeset.get_attribute(changeset, :name)
+          Ash.create!(__MODULE__, %{name: name <> " twin", head: 1}, authorize?: false)
+          changeset
+        end)
+      end)
+    end
+
+    # A chain: each Herd's hook creates the next one with the same action, `depth` times. With the hook before the
+    # write, the rows are written deepest first but their changesets are built outermost first.
+    for {name, hook} <- [create_chain: :after_action, create_chain_early: :before_action] do
+      create name do
+        accept([:name, :head])
+        argument(:depth, :integer, default: 0)
+
+        change(fn changeset, context ->
+          depth = Ash.Changeset.get_argument(changeset, :depth)
+          action = changeset.action.name
+
+          create_next = fn changeset ->
+            if depth > 0 do
+              name = Ash.Changeset.get_attribute(changeset, :name)
+
+              Ash.create!(__MODULE__, %{name: name <> "+", head: 1, depth: depth - 1},
+                action: action,
+                authorize?: false
+              )
+            end
+
+            :ok
+          end
+
+          case unquote(hook) do
+            :before_action ->
+              Ash.Changeset.before_action(changeset, fn changeset ->
+                create_next.(changeset)
+                changeset
+              end)
+
+            :after_action ->
+              Ash.Changeset.after_action(changeset, fn changeset, herd ->
+                create_next.(changeset)
+                {:ok, herd}
+              end)
+          end
+        end)
+      end
+    end
+
     # The three ways a host manages the many_to_many through the join resource. `:append_and_remove` unrelates the
     # missing vets with a bulk destroy on the join resource, which a branch refuses (see Ramal.ManyToManyTest).
     update :add_vets do
