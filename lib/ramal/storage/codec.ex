@@ -200,7 +200,7 @@ defmodule Ramal.Storage.Codec do
 
     %{
       "resource" => Atom.to_string(resource),
-      "key" => term(key, [inspect(resource), "overlay"]),
+      "key" => term(key, [{:resource, resource}, "overlay"]),
       "op" => op,
       "record" => record
     }
@@ -209,14 +209,14 @@ defmodule Ramal.Storage.Codec do
   defp base_entry({{resource, key}, row}) do
     %{
       "resource" => Atom.to_string(resource),
-      "key" => term(key, [inspect(resource), "base"]),
+      "key" => term(key, [{:resource, resource}, "base"]),
       "fingerprint" => row.fingerprint,
       "snapshot" => row.snapshot && record(row.snapshot)
     }
   end
 
   defp log_entry({type, resource, action, params, actor, opts, at}) do
-    path = [Atom.to_string(action), inspect(resource), "log"]
+    path = [Atom.to_string(action), {:resource, resource}, "log"]
 
     %{
       "type" => Atom.to_string(type),
@@ -256,7 +256,7 @@ defmodule Ramal.Storage.Codec do
   defp attribute(attribute, value, resource) do
     case Ash.Type.dump_to_embedded(attribute.type, value, attribute.constraints) do
       {:ok, dumped} ->
-        term(dumped, [Atom.to_string(attribute.name), inspect(resource), "record"])
+        term(dumped, [Atom.to_string(attribute.name), {:resource, resource}, "record"])
 
       _error ->
         throw({:codec, "#{inspect(resource)}.#{attribute.name} does not dump as its type", []})
@@ -274,7 +274,7 @@ defmodule Ramal.Storage.Codec do
       end)
       |> Map.new()
 
-    term(extra, ["extra", inspect(resource), "record"])
+    term(extra, ["extra", {:resource, resource}, "record"])
   end
 
   # Only Ash resource records have attributes that can be sensitive; any other actor (a map, a tuple) is the host's own
@@ -292,7 +292,9 @@ defmodule Ramal.Storage.Codec do
 
   defp redact(actor), do: actor
 
-  # `path` is where the value sits, innermost first, so that an error can name it.
+  # `path` is where the value sits, innermost first, so that an error can name it. Its entries are strings or, for what
+  # costs something to print (a resource module, a key that is not an atom), a tuple that `path_label/1` prints only
+  # when an error needs the path, not for every value that is stored.
   defp term(value, _path) when is_nil(value) or is_boolean(value) or is_number(value), do: value
   defp term(value, _path) when is_atom(value), do: %{"$a" => Atom.to_string(value)}
 
@@ -328,7 +330,7 @@ defmodule Ramal.Storage.Codec do
   defp term(value, path), do: unstorable(value, path)
 
   defp label(key) when is_atom(key), do: Atom.to_string(key)
-  defp label(key), do: inspect(key)
+  defp label(key), do: {:inspect, key}
 
   defp plain_keys?(map) do
     Enum.all?(map, fn {key, _} ->
@@ -342,9 +344,14 @@ defmodule Ramal.Storage.Codec do
 
   defp unstorable(value, path) do
     throw(
-      {:codec, "#{inspect(value)} (a #{type_name(value)}) cannot be stored", Enum.reverse(path)}
+      {:codec, "#{inspect(value)} (a #{type_name(value)}) cannot be stored",
+       path |> Enum.reverse() |> Enum.map(&path_label/1)}
     )
   end
+
+  defp path_label({:resource, resource}), do: inspect(resource)
+  defp path_label({:inspect, key}), do: inspect(key)
+  defp path_label(label), do: label
 
   defp type_name(value) when is_pid(value), do: "pid"
   defp type_name(value) when is_reference(value), do: "reference"
