@@ -1,6 +1,7 @@
 # 0023. A merge whose transaction committed is never reported as failed
 
-Status: accepted, 2026-10-23. Amends [ADR 0007](0007-merge.md).
+Status: accepted, 2026-10-23. Amends [ADR 0007](0007-merge.md). Amended by [ADR 0035](0035-merged-status-in-the-merge-transaction.md),
+which stores the merged status inside the merge's transaction and closes the window described below.
 
 ## Context
 

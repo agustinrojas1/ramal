@@ -53,5 +53,35 @@ defmodule Ramal.Storage do
   @callback count(domain :: module, statuses :: [Branch.status()], config) ::
               {:ok, non_neg_integer} | {:error, Error.t()}
 
-  @optional_callbacks count: 3
+  @doc """
+  Stores the branch as `:merged`, unless the storage already holds it as merged: then
+  `{:error, %Ramal.Error{reason: :not_open, details: %{status: :merged}}}` and nothing is written.
+
+  Optional. `Ramal.merge/2` calls it inside the merge's transaction, after the replay and before the commit, so a
+  backend whose writes join that transaction records the merged status atomically with the merge, and a second merge
+  of the same branch is refused there even when the process that ran the first one died before it finished (ADR 0035).
+  `Ramal.Storage.Postgres` joins the transaction when its repo is the resources' repo. A backend that does not define
+  it gets the merged status only from `put/2` once the merge has committed (ADR 0023).
+  """
+  @callback mark_merged(Branch.t(), config) :: :ok | {:error, Error.t()}
+
+  @optional_callbacks count: 3, mark_merged: 2
+
+  @doc """
+  The error `c:mark_merged/2` returns for a branch the storage already holds as merged.
+
+  ## Example
+
+      iex> Ramal.Storage.already_merged("b1").details
+      %{id: "b1", status: :merged}
+  """
+  @spec already_merged(String.t()) :: Error.t()
+  def already_merged(id) do
+    Error.new(
+      :not_open,
+      "branch #{inspect(id)} is already merged: an earlier merge of it committed, though the process that ran it may " <>
+        "have stopped before it finished",
+      %{id: id, status: :merged}
+    )
+  end
 end

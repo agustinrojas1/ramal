@@ -11,6 +11,11 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - **A branch can work in one tenant**: `Ramal.branch(domain, tenant: tenant)`. Reads and writes of multitenant resources inside it must carry that tenant (`:tenant_mismatch` otherwise), the other tenants' rows never enter its overlay, the merge staleness check reads with the tenant, and a fork keeps it. A branch without a tenant still refuses multitenant resources used with one (`:multitenancy_unsupported`), now with a message that says to create it with `tenant:`. The internal check `ensure_untenanted/2` became `ensure_tenant/3`. Tested on Postgres with both strategies, attribute and schema-per-tenant (context), merge into the tenant's schema included. ADR 0034.
+- `c:Ramal.Storage.mark_merged/2`, an optional storage callback, and `Ramal.Storage.already_merged/1`, the error it returns for a branch already stored as merged. Both bundled backends implement it (ADR 0035).
+
+### Fixed
+
+- **A branch whose merge committed can no longer be merged a second time** when the process running the merge dies before it finishes, or the node restarts before the merged branch is stored. The merge's transaction now stores the branch as merged and refuses one already stored so; with Postgres storage on the resources' repo, the merged row commits with the replay. A branch process whose merger died asks the storage before releasing the claim, and Postgres storage never stores a merged row back as open. A storage outage now fails the merge before it commits instead of reporting `persist_failed` after it (#143, ADR 0035).
 
 ## [0.5.0] - 2026-10-23
 

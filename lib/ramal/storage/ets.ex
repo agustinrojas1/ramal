@@ -34,6 +34,22 @@ defmodule Ramal.Storage.ETS do
     ArgumentError -> unavailable()
   end
 
+  # ETS has no transaction to join, so a merge whose commit fails after this call puts the open branch back (ADR 0035).
+  # Only the process holding the merge claim calls this for a branch, so the lookup and the insert do not race.
+  @impl true
+  def mark_merged(branch, _config) do
+    case :ets.lookup(table(), branch.id) do
+      [{_id, %{status: :merged}}] ->
+        {:error, Ramal.Storage.already_merged(branch.id)}
+
+      _open_or_missing ->
+        :ets.insert(table(), {branch.id, %{branch | status: :merged}})
+        :ok
+    end
+  rescue
+    ArgumentError -> unavailable()
+  end
+
   @impl true
   def fetch(id, _config) do
     case :ets.lookup(table(), id) do
