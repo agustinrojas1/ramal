@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- Docs: `bench/README.md` and the README's benchmark figures come from a rerun of the full benchmark and `bench.memory` on 0.6.1, with the noise between two runs stated; the raw samples are in `bench/results/published/`.
+
 ## [0.6.1] - 2026-10-23
 
 Documentation only: the README, the design document and the other guides on Hex and HexDocs now describe 0.6. No code changes.
