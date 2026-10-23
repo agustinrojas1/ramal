@@ -112,8 +112,8 @@ defmodule Ramal.Preparation do
     end
   end
 
-  # `distinct` is applied by the data layer to the base rows, where a row the branch changed or destroyed still stands for
-  # its group and a row the branch created is not in any group. When the overlay touches the resource the preparation
+  # `distinct` is applied by the data layer to the base rows, where a row the branch changed or destroyed still stands
+  # for its group and a row the branch created is not in any group. When the overlay touches the resource the preparation
   # takes it over: the base query returns every row, and the patch keeps the first row of each group in the order of
   # `distinct_sort` (or `sort`), as DISTINCT ON does. Only distinct attributes are handled; a calculation, an aggregate
   # or a many_to_many read keeps the data layer's distinct.
