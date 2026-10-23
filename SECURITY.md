@@ -48,6 +48,15 @@ Pass `owner:` to `Ramal.branch/2` (a fork keeps its parent's owner, or takes `ow
 - **`owner: nil` lists unowned branches**, so do not pass a signed-out user's `nil` through: that shows every branch created without an owner. The inspector refuses when its `:owner` function returns `nil`.
 - **Cost.** With Postgres the filter is applied in SQL on the state column, so other users' branches are not decoded; there is no index, so it scans the domain's rows like `status:` does.
 
+### The branch tools for an LLM agent (`Ramal.Tools`)
+
+What the tools send to the model's provider, and what the model can reach (ADR 0019).
+
+- **Diffs are sent, with sensitive values redacted.** `ramal_branch_diff` returns the before and after value of every changed attribute to the model and so to its provider. Attributes marked `sensitive?: true` are returned as `[redacted]` (`Ramal.Change.redact/1`, the rule the inspector uses); every other value is sent as it is, so mark credentials `sensitive?` and keep them in resources with `branchable? false`.
+- **Set `:owner`.** Without it the tools see every branch of the domain: the agent can fork, diff and propose any user's branch. With it, a branch of another owner is "not found", whatever id the model passes.
+- **An agent cannot withdraw a proposal.** `ramal_discard_branch` refuses a `:proposed` branch, because a person is reviewing it. Merge, approve and reject are not tools.
+- **Your own tools are yours to scope.** `Ramal.run/2` and `Ramal.context/1` accept any id, so a tool that takes a `branch_id` from the model, or an MCP plug that trusts a header, must check the owner first; the examples in `docs/agents.md` do.
+
 ### The inspector (`ramal_live`)
 
 The inspector can merge, approve, reject, discard and fork any branch of its domain. It checks nothing itself.

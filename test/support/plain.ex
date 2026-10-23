@@ -71,6 +71,7 @@ defmodule Ramal.Test.Other do
     resource(Ramal.Test.Other.Note)
     resource(Ramal.Test.Other.Slot)
     resource(Ramal.Test.Other.Account)
+    resource(Ramal.Test.Other.Credential)
   end
 end
 
@@ -135,5 +136,24 @@ defmodule Ramal.Test.Other.Account do
     attribute(:email, :string, public?: true)
     attribute(:password_hash, :string, sensitive?: true)
     attribute(:api_token, :string, sensitive?: true, public?: true)
+  end
+end
+
+defmodule Ramal.Test.Other.Credential do
+  @moduledoc false
+  # A branchable resource with a secret, for the redaction of diffs that leave the application.
+  use Ash.Resource,
+    domain: Ramal.Test.Other,
+    data_layer: Ash.DataLayer.Ets,
+    extensions: [Ramal.Resource]
+
+  actions do
+    defaults([:read, :destroy, create: :*, update: :*])
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:label, :string, public?: true)
+    attribute(:secret, :string, sensitive?: true, public?: true)
   end
 end
