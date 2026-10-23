@@ -120,6 +120,42 @@ defmodule Ramal.Preparation.Related do
     |> Enum.map(&nested_load/1)
   end
 
+  @doc """
+  The to-one relationship paths an expression calculation reads, when every ref in it is a plain attribute at the end of
+  such a path, so that it can be evaluated on a record from the relationships loaded onto it. `:error` for a calculation
+  that reads an aggregate, another calculation or a to-many relationship, or has no expression.
+  """
+  @spec plain_paths(Ash.Resource.t(), Ash.Query.Calculation.t()) :: {:ok, [[atom]]} | :error
+  def plain_paths(resource, %Ash.Query.Calculation{} = calculation) do
+    if Ash.Resource.Calculation.has_expression?(calculation.module) do
+      refs =
+        calculation.module
+        |> Ash.Resource.Calculation.expression(calculation.opts, calculation.context)
+        |> expression_refs(resource)
+
+      if Enum.all?(refs, &plain_ref?(resource, &1)) do
+        {:ok, refs |> Enum.map(& &1.relationship_path) |> Enum.reject(&(&1 == [])) |> Enum.uniq()}
+      else
+        :error
+      end
+    else
+      :error
+    end
+  end
+
+  defp plain_ref?(resource, %{relationship_path: path, attribute: attribute}) do
+    match?(%Ash.Resource.Attribute{}, attribute) and to_one?(resource, path)
+  end
+
+  defp to_one?(_resource, []), do: true
+
+  defp to_one?(resource, [name | rest]) do
+    case Info.relationship(resource, name) do
+      %{cardinality: :one, destination: destination} -> to_one?(destination, rest)
+      _other -> false
+    end
+  end
+
   @doc "A relationship path as the load that reaches its end: `[:a, :b]` is `{:a, :b}`."
   @spec nested_load([atom]) :: atom | {atom, term}
   def nested_load(path) do
