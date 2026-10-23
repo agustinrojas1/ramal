@@ -10,6 +10,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
+- `Ramal.merge/2` and `Ramal.aggregate/4` work on a resource whose read action requires pagination (`pagination required?: true`) or has a default limit. The staleness check of a merge raised `Protocol.UndefinedError` on the page it got back, and `Ramal.aggregate/4` raised `ArgumentError`; both now read every matching row whatever the action's pagination.
 - A many_to_many load inside a branch sees the links the branch created or destroyed, so `manage_relationship` with `type: :remove` finds a link the branch created and `type: :append` no longer links a vet twice. `type: :append_and_remove` with a link to remove is still refused as a bulk action ([ADR 0017](docs/adr/0017-many-to-many-links-in-a-branch.md)).
 
 ### Changed

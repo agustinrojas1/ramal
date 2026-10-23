@@ -210,13 +210,18 @@ defmodule Ramal.Merge do
   end
 
   defp stale_in(resource, expected) do
-    current =
+    rows =
       resource
       |> Ash.Query.new()
       |> filter_keys(resource, Map.keys(expected))
       |> lock()
-      |> Ash.read!(authorize?: false)
-      |> Map.new(&{Resource.key(resource, &1), Resource.fingerprint(&1)})
+      |> Resource.read_all(authorize?: false)
+      |> case do
+        {:ok, rows} -> rows
+        {:error, error} -> raise error
+      end
+
+    current = Map.new(rows, &{Resource.key(resource, &1), Resource.fingerprint(&1)})
 
     for {key, fingerprint} <- expected,
         reason = staleness(Map.fetch(current, key), fingerprint),

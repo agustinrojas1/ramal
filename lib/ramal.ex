@@ -319,7 +319,7 @@ defmodule Ramal do
   end
 
   defp read_every_row(query, kind, field, opts) do
-    with {:ok, records} <- Ash.read(query, opts) do
+    with {:ok, records} <- Resource.read_all(query, opts) do
       {:ok, Ramal.Aggregate.compute(kind, field, records, query.resource)}
     end
   end
