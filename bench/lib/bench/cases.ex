@@ -17,6 +17,7 @@ defmodule Bench.Cases do
     %{
       ramal: %{
         root: &RamalSide.branch/0,
+        scratch: &RamalSide.branch/0,
         fork: &RamalSide.fork/1,
         update: &RamalSide.update/3,
         read: &RamalSide.read/2,
@@ -25,6 +26,7 @@ defmodule Bench.Cases do
       },
       delta: %{
         root: fn -> 0 end,
+        scratch: &Delta.new_state/0,
         fork: &Delta.fork/1,
         update: &Delta.update/3,
         read: &Delta.read/2,
@@ -33,6 +35,7 @@ defmodule Bench.Cases do
       },
       copy: %{
         root: fn -> @base_table end,
+        scratch: fn -> Copy.fork(@base_table) end,
         fork: &Copy.fork/1,
         update: &Copy.update/3,
         read: &Copy.read/2,
@@ -46,9 +49,10 @@ defmodule Bench.Cases do
   end
 
   # A node whose overlay holds `size` updated rows. The score written is a function of the row, so every variant holds
-  # the same logical state.
+  # the same logical state. It starts from `scratch`, not `root`: the root of the copy variant is the base table itself,
+  # and writing into that would change the base for every case that runs after this one.
   defp loaded(variant, ids, size) do
-    node = variant.root.()
+    node = variant.scratch.()
 
     ids
     |> Enum.take(size)
@@ -73,6 +77,50 @@ defmodule Bench.Cases do
       variant.discard.(parent)
       result(:fork, name, %{overlay: size, rows: env.rows}, stats)
     end
+  end
+
+  # The changes of a node whose overlay holds `size` updated rows. Only Ramal computes a diff (the baselines have no
+  # equivalent that needs no query), so there is no comparison variant. Raises when the diff is not one change per row.
+  def diff(profile, env) do
+    ramal = variants().ramal
+
+    for size <- profile.overlay_sizes, size > 0 do
+      node = loaded(ramal, env.ids, size)
+
+      stats =
+        Timing.measure(
+          run: fn _ ->
+            changes = RamalSide.diff(node)
+
+            if length(changes) != size,
+              do: raise("diff found #{length(changes)} changes for #{size} updates")
+          end,
+          runs: profile.runs,
+          warmup: profile.warmup
+        )
+
+      ramal.discard.(node)
+      result(:diff, :ramal, %{overlay: size}, stats)
+    end
+  end
+
+  # The sum of `score` over the whole table in a node with that overlay: what `Ramal.aggregate!/4` costs next to the
+  # same sum in the baselines and with no branch at all.
+  def aggregate(profile, env) do
+    for size <- profile.overlay_sizes, {name, variant} <- variants() do
+      node = loaded(variant, env.ids, size)
+      stats = measure_read(profile, fn -> variant.sum.(node) end)
+      variant.discard.(node)
+      result(:aggregate, name, %{overlay: size}, stats)
+    end ++
+      [
+        result(
+          :aggregate,
+          :ash_no_branch,
+          %{overlay: 0},
+          measure_read(profile, fn -> RamalSide.sum_base() end)
+        )
+      ]
   end
 
   def read(profile, env) do

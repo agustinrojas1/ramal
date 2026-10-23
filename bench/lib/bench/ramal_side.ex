@@ -28,6 +28,11 @@ defmodule Bench.RamalSide do
 
   def sum(branch), do: Ramal.run!(branch, fn -> Ramal.aggregate!(Item, :sum, :score) || 0 end)
 
+  def diff(branch) do
+    {:ok, changes} = Ramal.diff(branch)
+    changes
+  end
+
   def merge(branch), do: {:ok, _} = Ramal.merge(branch, authorize?: false)
 
   def discard(branch), do: :ok = Ramal.discard(branch)
