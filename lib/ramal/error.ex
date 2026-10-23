@@ -17,6 +17,7 @@ defmodule Ramal.Error do
   | `:database_generated_key` | a branch cannot create a row whose primary key the database generates |
   | `:bulk_unsupported` | a bulk create, update or destroy inside a branch |
   | `:upsert_unsupported` | an upsert inside a branch |
+  | `:atomic_unsupported` | an atomic update whose expression cannot be evaluated in Elixir inside a branch (`details.attribute`) |
   | `:multitenancy_unsupported` | a multitenant resource used with a tenant inside a branch |
   | `:branch_too_large` | the branch process exceeded `max_heap_size` and was stopped |
   | `:no_branchable_resources` | the domain has no resource that opted in with `Ramal.Resource` |
@@ -42,6 +43,7 @@ defmodule Ramal.Error do
           | :database_generated_key
           | :bulk_unsupported
           | :upsert_unsupported
+          | :atomic_unsupported
           | :multitenancy_unsupported
           | :branch_too_large
           | :no_branchable_resources

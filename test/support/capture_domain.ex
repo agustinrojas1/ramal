@@ -9,6 +9,7 @@ defmodule Ramal.Test.Capture do
     resource(Ramal.Test.Capture.Announced)
     resource(Ramal.Test.Capture.Silent)
     resource(Ramal.Test.Capture.Flaky)
+    resource(Ramal.Test.Capture.Counter)
   end
 end
 
@@ -128,6 +129,45 @@ defmodule Ramal.Test.Capture.Flaky do
   attributes do
     uuid_primary_key(:id)
     attribute(:text, :string, public?: true)
+  end
+end
+
+defmodule Ramal.Test.Capture.Counter do
+  @moduledoc false
+  # Updates that carry an atomic expression, which Ash hands to the data layer instead of putting it in the attributes.
+  use Ash.Resource,
+    domain: Ramal.Test.Capture,
+    data_layer: Ash.DataLayer.Ets,
+    extensions: [Ramal.Resource]
+
+  actions do
+    defaults([:read, :destroy, create: :*, update: :*])
+
+    update :bump do
+      require_atomic?(false)
+      accept([:label])
+      change(atomic_update(:n, expr(n + 1)))
+    end
+
+    update :bump_and_double do
+      require_atomic?(false)
+      accept([])
+      change(atomic_update(:n, expr(n + 1)))
+      change(atomic_update(:m, expr(m * 2)))
+    end
+
+    update :bump_in_the_database do
+      require_atomic?(false)
+      accept([])
+      change(atomic_update(:n, expr(fragment("? + 1", n))))
+    end
+  end
+
+  attributes do
+    uuid_primary_key(:id)
+    attribute(:label, :string, public?: true)
+    attribute(:n, :integer, public?: true, default: 0)
+    attribute(:m, :integer, public?: true, default: 1)
   end
 end
 

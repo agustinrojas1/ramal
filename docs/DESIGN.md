@@ -173,6 +173,9 @@ This is the section that decides correctness. In a read action's preparation, wh
   return_notifications?: true)` and sends only the notifications of resources with `notify_in_branch? true`.
 - **Atomic updates:** `atomic/3` returns `{:not_atomic, reason}` while a branch is current, and the transformer sets
   `require_atomic? false` on the resource's update and destroy actions so that Ash falls back to the path above.
+- **Atomic updates** (`atomic_update`) are evaluated in Elixir against the row with the action's attribute changes
+  applied, with `Ash.Expr.eval/2` as `Ash.DataLayer.Ets` does. An expression that needs the database fails the action
+  with `:atomic_unsupported`.
 - **Bulk actions and upserts** are refused: `:bulk_unsupported` for every `Ash.bulk_*`, `:upsert_unsupported` for an
   action with `upsert? true`. The call-time option `upsert?: true` cannot be seen by a hook and acts as a create.
 - Errors added by the hook are `Ramal.Error` structs (a Splode error), found in an Ash error with
@@ -222,7 +225,7 @@ This is the section that decides correctness. In a read action's preparation, wh
 ```
 
 `Ramal.Error` has `reason` (an atom from a documented list), `message`, and `details` (a map). Reasons in 0.1:
-`:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:upsert_unsupported`, `:branch_too_large`,
+`:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:upsert_unsupported`, `:atomic_unsupported`, `:branch_too_large`,
 `:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`, `:merge_failed`,
 `:multitenancy_unsupported`.
 

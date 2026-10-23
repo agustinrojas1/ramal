@@ -5,7 +5,7 @@ defmodule Ramal.CaptureTest do
   require Ash.Query
 
   alias Ash.Resource.Info
-  alias Ramal.Test.Capture.{Announced, Flaky, Silent, Ticket}
+  alias Ramal.Test.Capture.{Announced, Counter, Flaky, Silent, Ticket}
 
   @admin %{role: :admin}
   @member %{role: :member}
@@ -448,6 +448,57 @@ defmodule Ramal.CaptureTest do
                         action: :update,
                         nested?: false
                       }}
+    end
+  end
+
+  describe "atomic updates" do
+    setup do
+      {:ok, counter: Ash.create!(Counter, %{label: "c", n: 5, m: 3})}
+    end
+
+    test "an atomic_update expression is applied to the row the branch holds", %{
+      branch: branch,
+      counter: counter
+    } do
+      inside(branch, fn ->
+        bumped = Ash.update!(counter, %{}, action: :bump)
+        assert bumped.n == 6
+        assert Ash.get!(Counter, counter.id).n == 6
+
+        # Each expression sees the row as it was before the update, as in SQL.
+        both = Ash.update!(bumped, %{}, action: :bump_and_double)
+        assert {both.n, both.m} == {7, 6}
+      end)
+
+      assert Ash.get!(Counter, counter.id).n == 5
+    end
+
+    test "the diff and the merge agree with what the branch showed", %{
+      branch: branch,
+      counter: counter
+    } do
+      inside(branch, fn -> Ash.update!(counter, %{}, action: :bump_and_double) end)
+
+      assert {:ok, [change]} = Ramal.diff(branch)
+      assert %{n: {5, 6}, m: {3, 6}} = change.changes
+
+      assert {:ok, _} = Ramal.merge(branch, authorize?: false)
+      reloaded = Ash.get!(Counter, counter.id)
+      assert {reloaded.n, reloaded.m} == {6, 6}
+    end
+
+    test "an expression that needs the database fails the action and writes nothing", %{
+      branch: branch,
+      counter: counter
+    } do
+      error =
+        inside(branch, fn ->
+          assert {:error, error} = Ash.update(counter, %{}, action: :bump_in_the_database)
+          error
+        end)
+
+      assert reason_of(error) == :atomic_unsupported
+      assert state(branch).overlay == %{}
     end
   end
 end

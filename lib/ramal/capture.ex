@@ -179,11 +179,41 @@ defmodule Ramal.Capture do
         changeset.data
       end
 
-    {:ok, :updated, record, base_row(changeset.data)}
+    with {:ok, record} <- apply_atomics(changeset, record) do
+      {:ok, :updated, record, base_row(changeset.data)}
+    end
   end
 
   defp written(%{action_type: :destroy} = changeset) do
     {:ok, :deleted, changeset.data, base_row(changeset.data)}
+  end
+
+  # `atomic_update` (the change, or `Ash.Changeset.atomic_update/3`) leaves an expression in `changeset.atomics` that
+  # the data layer evaluates against the row, and `apply_attributes/2` does not look at it. Evaluating it here, against
+  # the row with the attribute changes applied, is what `Ash.DataLayer.Ets` does (`make_atomics/4` in
+  # `lib/ash/data_layer/ets/ets.ex`, Ash 3.37). An expression that needs the database (`:unknown`) fails the action
+  # instead of being dropped, because a dropped one makes the branch disagree with the merge.
+  defp apply_atomics(%{atomics: []}, record), do: {:ok, record}
+
+  defp apply_atomics(%{atomics: atomics} = changeset, record) do
+    Enum.reduce_while(atomics, {:ok, record}, fn {name, expr}, {:ok, acc} ->
+      case evaluate(changeset, expr, record) do
+        {:ok, value} -> {:cont, {:ok, Map.put(acc, name, value)}}
+        :error -> {:halt, {:error, atomic_error(changeset, name)}}
+      end
+    end)
+  end
+
+  defp evaluate(changeset, expr, record) do
+    case Ash.Expr.eval(expr,
+           resource: changeset.resource,
+           record: record,
+           domain: changeset.domain,
+           unknown_on_unknown_refs?: true
+         ) do
+      {:ok, value} -> {:ok, value}
+      _unknown_or_error -> :error
+    end
   end
 
   defp base_row(record) do
@@ -233,6 +263,15 @@ defmodule Ramal.Capture do
       "#{inspect(changeset.resource)}.#{changeset.action.name} ran as a bulk action inside a branch; bulk actions " <>
         "write through the data layer without calling the capture hook, so call the action once per record instead",
       %{resource: changeset.resource, action: changeset.action.name}
+    )
+  end
+
+  defp atomic_error(changeset, attribute) do
+    Error.new(
+      :atomic_unsupported,
+      "#{inspect(changeset.resource)}.#{changeset.action.name} sets #{attribute} with an atomic expression that cannot " <>
+        "be evaluated without the database, so a branch cannot apply it; set the attribute with a plain change instead",
+      %{resource: changeset.resource, action: changeset.action.name, attribute: attribute}
     )
   end
 
