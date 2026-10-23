@@ -121,6 +121,10 @@ This is the section that decides correctness. In a read action's preparation, wh
    process dictionary is set, and the levels below it inside the task that runs the first level, where it is not.
    The preparation therefore copies the branch id into the query's `shared` context, which Ash passes to related
    queries (ADR 0002); a test outside the SQL sandbox, where Ash really does run loads in tasks, fails without it.
+   One path escapes: `Ash.load` onto a record first reselects the relationship's source attribute from the data
+   layer, and that read runs no hooks (`reselect_and_load/6` in Ash 3.37), so a foreign key the branch changed is not
+   seen and the load follows the database's. `reuse_values?: true` skips the reselect and a load inside a read
+   (`Ash.Query.load/2`) is patched; the test in `preparation_test.exs` pins both.
 4. **Aggregates and calculations:** data-layer aggregates (`count`, `sum`, `exists`) and calculations with
    expressions are computed on the base and do not see the overlay. 0.1 documents this and emits a
    `[:ramal, :read, :unpatched_aggregate]` telemetry event when a query inside a branch selects one, so a host can
