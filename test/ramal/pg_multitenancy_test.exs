@@ -23,6 +23,25 @@ defmodule Ramal.PgMultitenancyTest do
       {:ok, branch: branch, acme: acme}
     end
 
+    test "a record of another tenant passed to an update or destroy is refused, as Ash refuses it",
+         %{
+           branch: branch
+         } do
+      globex = Ash.create!(Note, %{org_id: "globex", title: "g2"}, tenant: "globex")
+
+      assert {:error, _error} = Ash.update(globex, %{title: "x"}, tenant: "acme")
+
+      Ramal.run!(branch, fn ->
+        assert {:error, error} = Ash.update(globex, %{title: "x"}, tenant: "acme")
+        assert reason_of(error) == :tenant_mismatch
+        assert {:error, error} = Ash.destroy(globex, tenant: "acme")
+        assert reason_of(error) == :tenant_mismatch
+      end)
+
+      assert {:ok, %{overlay: overlay, log: []}} = Ramal.get(branch.id)
+      assert overlay == %{}
+    end
+
     test "reads, writes and discards without reaching the table", %{branch: branch, acme: acme} do
       Ramal.run!(branch, fn ->
         Ash.create!(Note, %{org_id: "acme", title: "a2"}, tenant: "acme")

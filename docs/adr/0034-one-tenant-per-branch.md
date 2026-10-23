@@ -29,3 +29,4 @@ one they hit first.
 - A host serving several tenants opens one branch per tenant. A branch cannot compare or combine tenants.
 - Storage keeps working: the tenant is one more key of the stored state, and a branch stored before it has none.
 - A `global?` resource written with a tenant and read without one sees all tenants' rows, as outside a branch.
+- Follow-up, 2026-10-23: an update or destroy whose record carries the tenant attribute of another tenant (attribute strategy) is refused with `:tenant_mismatch`. Ash finds no such row outside a branch, because the data layer filters by tenant; a branch has no data layer filter, so it compares the record's attribute with the call's tenant.
