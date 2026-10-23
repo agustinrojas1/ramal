@@ -10,6 +10,14 @@ All notable changes to this project are documented here. The format follows [Kee
 - **Fail closed on an incompatible Ash.** When the host's Ash or AshPostgres is outside the tested range, `Ramal.Supervisor` also runs those checks at boot and emits `[:ramal, :ash, :contract]`. If a core assumption is broken, every read and write inside a branch is refused with the new `Ramal.Error` reason `:ash_incompatible` instead of risking a write to the database or a wrong read. If an extended one is broken, only its feature is refused: bulk actions, upserts, or relationship loads paged per record. Inside the tested range nothing runs at boot, and outside a branch nothing changes.
 - **Upstream links.** `Ramal.Ash`'s docs link the four Ash issues that ask for a public contract in place of an internal Ramal relies on (ash#3069 to ash#3072).
 
+### Fixed
+
+- A `through` load that Ramal leaves to the database (a many_to_many hop on Ash 3.37, a relationship filter, a `distinct`, a `parent` expression) no longer raises inside a branch that created a row on its destination. The created row is left out, as the database's join never reached it.
+
+### Changed
+
+- Ready for the next Ash release: when Ash expands a many_to_many hop of a `through` path into its join resource (Ash `main`, after 3.37), the branch walks it and sees links, herds and vets it created, moved or destroyed. A hop Ash reads with a limit or an offset is left to the database.
+
 ## [0.8.0] - 2026-10-23
 
 A release about trust rather than features: what Ramal assumes about Ash is now declared, tested on every Ash version CI can reach, and checked at boot, and what is stable before 1.0 is written down. Nothing a branch does changed, so upgrading from 0.7 needs no step beyond the version (and `ramal_live ~> 0.8.0`, which shares it).
