@@ -426,7 +426,7 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 
 ## 11. Open questions
 
-1. Several domains per branch, or one branch per domain? 0.1: one domain. Revisit when a real host needs more.
+1. ~~Several domains per branch?~~ A branch names one domain, which is the one `Ramal.branch/2` checks for resources that neither use `Ramal.Resource` nor opt out. The overlay is keyed by resource, so a resource of another domain that uses `Ramal.Resource` is read, written, diffed and merged like the rest (`test/ramal/other_domain_test.exs`); one that does not is written for real, and Ramal does not check its domain.
 2. Should `run/2` be reentrant (a branch inside a branch)? 0.1: no, `{:error, %Ramal.Error{reason: :nested_branch}}`; `merge/2` refuses the same way.
 3. ~~Where do many-to-many join resources sit in the overlay?~~ Answered: they are resources, so they get overlay
    entries like any other, keyed by the join resource's primary key (section 4.1 point 7, ADR 0014). A many_to_many
