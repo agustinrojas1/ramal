@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-23
+
+Ramal now checks what it assumes about Ash on the Ash you run, not only in its own CI. Run `mix ramal.doctor` after upgrading Ash. If an assumption ever breaks, Ramal refuses the branch work that depends on it instead of writing to your database. This release also fixes a crash on some `through` loads inside a branch. Upgrading from 0.8 needs no step beyond the version (and `ramal_live ~> 0.9.0`, which shares it).
+
 ### Added
 
 - **`mix ramal.doctor`.** Runs every Ash behaviour Ramal relies on against the Ash the host runs, one line per assumption with its tier and result, and exits with status 1 when a core one is broken. Run it after upgrading Ash. The checks run on small ETS resources inside Ramal, so they need no repo or configuration (ADR 0049).
@@ -307,7 +311,8 @@ Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspec
 - A multitenant resource used with a tenant inside a branch is refused with `:multitenancy_unsupported` (the `ensure_untenanted/2` check), instead of mixing tenants in one overlay or failing at merge.
 - Stored branches no longer hold the `sensitive?` attributes of an actor that is an Ash record (they are stored as `nil`); other actors are stored as before.
 
-[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/agustinrojas1/ramal/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/agustinrojas1/ramal/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/agustinrojas1/ramal/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/agustinrojas1/ramal/compare/v0.6.0...v0.6.1
