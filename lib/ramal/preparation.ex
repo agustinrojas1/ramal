@@ -12,6 +12,8 @@ defmodule Ramal.Preparation do
     * `Ash.Query.after_action/2` hooks receive the base rows after the data layer and before relationship loads,
       runtime calculations and the not-found check of `Ash.get/3`. Patching there means loads, calculations and
       `Ash.get/3` all see the patched rows.
+    * A many_to_many load is one SQL query that joins the join table in the database. When the branch changed the join
+      resource, a helper in lib/ramal/preparation/many_to_many.ex swaps that join for the patched join rows (ADR 0017).
     * A relationship load runs a read on the related resource through its own preparation, in a task that does not
       inherit the process dictionary. The branch id therefore also travels in the query's `shared` context, which
       Ash copies into related queries (`lib/ash/actions/read/relationships.ex`).

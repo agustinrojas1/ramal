@@ -1,6 +1,6 @@
 defmodule Ramal.Preparation.ManyToMany do
   @moduledoc false
-  # PROTOTYPE for ADR 0017 (proposed). Makes a many_to_many load inside a branch see the links the branch created or
+  # ADR 0017. Makes a many_to_many load inside a branch see the links the branch created or
   # destroyed.
   #
   # AshPostgres loads a many_to_many with one SQL query that joins the join table in the database. The destination's

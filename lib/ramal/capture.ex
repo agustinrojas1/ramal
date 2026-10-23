@@ -39,8 +39,6 @@ defmodule Ramal.Capture do
   """
   use Ash.Resource.Change
 
-  require Ash.Expr
-
   alias Ash.Resource.Info
   alias Ramal.{Branch, Current, Error, Resource, Telemetry}
   alias Ramal.Branch.Server
@@ -70,9 +68,6 @@ defmodule Ramal.Capture do
 
   defp capture(changeset, id) do
     cond do
-      relationship_bulk_destroy?(changeset) ->
-        install_relationship_bulk_destroy(changeset, id)
-
       Enum.any?(@bulk_markers, &Map.has_key?(changeset.context, &1)) ->
         Ash.Changeset.add_error(changeset, bulk_error(changeset))
 
@@ -82,30 +77,6 @@ defmodule Ramal.Capture do
       true ->
         install(changeset, id)
     end
-  end
-
-  # PROTOTYPE for ADR 0017 (proposed). `manage_relationship` unrelates the missing records of a many_to_many with
-  # `Ash.bulk_destroy/4` on the join resource (`bulk_delete_unused_unrelate/8` in
-  # deps/ash/lib/ash/actions/managed_relationships.ex), and `atomic/3` already rules out its atomic strategies, so it
-  # streams: one changeset per record, whose `before_action` hooks run (`run_batch/8` in
-  # deps/ash/lib/ash/actions/destroy/bulk.ex) but whose result is never looked at; the data layer is called directly.
-  # So the hook captures the destroy, and a filter that matches no row keeps the data layer from deleting anything:
-  # AshPostgres applies `changeset.filter` to the DELETE, finds no row, and Ash drops the resulting stale-record error
-  # from the bulk result. Only a destroy made while a captured action runs, from a relationship, on AshPostgres.
-  defp relationship_bulk_destroy?(changeset) do
-    changeset.action_type == :destroy and Map.has_key?(changeset.context, :bulk_destroy) and
-      is_map(changeset.context[:accessing_from]) and Process.get(@frame) != nil and
-      Ash.DataLayer.data_layer(changeset.resource) == AshPostgres.DataLayer
-  end
-
-  defp install_relationship_bulk_destroy(changeset, id) do
-    changeset
-    |> Ash.Changeset.set_context(Current.shared_context(id))
-    |> Ash.Changeset.before_action(fn changeset ->
-      changeset
-      |> write(id, true)
-      |> Ash.Changeset.filter(Ash.Expr.expr(false))
-    end)
   end
 
   defp install(changeset, id) do
