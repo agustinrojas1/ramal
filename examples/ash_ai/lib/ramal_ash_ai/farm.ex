@@ -1,0 +1,19 @@
+defmodule RamalAshAiExample.Farm do
+  @moduledoc """
+  A one-resource domain whose actions are exposed as AshAi tools.
+
+  The data layer is ETS so that the suite needs no database; Ramal does not care which data layer a resource has.
+  """
+  use Ash.Domain, otp_app: :ramal_ash_ai_example, extensions: [AshAi]
+
+  tools do
+    tool(:list_herds, RamalAshAiExample.Herd, :read)
+    tool(:move_herd, RamalAshAiExample.Herd, :move_herd)
+    # An `update` tool, kept to pin that a branch refuses it (see the test and Herd).
+    tool(:update_herd, RamalAshAiExample.Herd, :move)
+  end
+
+  resources do
+    resource(RamalAshAiExample.Herd)
+  end
+end

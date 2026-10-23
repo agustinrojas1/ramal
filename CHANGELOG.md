@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- `examples/ash_ai`, a separate Mix project that CI runs against `ash_ai` 1.4.0: AshAi tools run in a branch through `AshAi.Tools.execute/4` and `AshAi.Mcp.Router`, end in a proposal, and the plug that takes the branch id from an MCP client checks the branch's owner. It also pins a finding: an AshAi `update` or `destroy` tool is a bulk action, which a branch refuses; `docs/agents.md` shows the generic action to use instead (#104).
 - `Ramal.load/3` and `Ramal.load!/3`: `Ash.load/3` that follows the branch's foreign keys. Ash reselects the relationship's source attribute from the database without running any hook, so `Ash.load(herd, :paddock)` after the herd moved paddock in the branch followed the old one and Ash gives Ramal no way to intercept it. Inside a branch the new functions put the branch's attribute values on each record that has an overlay entry and load with `reuse_values?: true`; outside one they are `Ash.load/3`. ADR 0030.
 
 ### Changed
