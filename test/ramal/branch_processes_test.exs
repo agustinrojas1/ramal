@@ -269,6 +269,33 @@ defmodule Ramal.BranchProcessesTest do
       assert_received {:telemetry, [:ramal, :branch, :load], %{branch_id: ^id}}
     end
 
+    test "a branch comes back from storage with its rows sharing the terms they shared before" do
+      {:ok, branch} = Ramal.branch(Farm)
+      owner = String.duplicate("o", 40)
+      snapshot = %{id: 7, owner: owner, n: 1}
+      row = %{fingerprint: 1, snapshot: snapshot}
+      entry = {:update, Herd, :update, %{n: 2}, nil, [key: 7], DateTime.utc_now()}
+
+      {:ok, _} =
+        Server.update(branch.id, fn branch ->
+          {branch, _} =
+            Ramal.Branch.put_write(branch, :updated, {Herd, 7}, %{snapshot | n: 2}, row, entry)
+
+          branch
+        end)
+
+      eventually(fn -> not loaded?(branch.id) end)
+
+      # The ETS copy kept no sharing, so what the check sees was shared by the process that loaded the branch.
+      {:ok, shared?, _} =
+        Server.write(branch.id, fn branch ->
+          {:updated, record} = branch.overlay[{Herd, 7}]
+          {:erts_debug.same(record.owner, branch.base[{Herd, 7}].snapshot.owner), branch}
+        end)
+
+      assert shared?
+    end
+
     test "run/2 on an unloaded branch rehydrates it and sees its overlay" do
       {:ok, branch} = Ramal.branch(Farm)
       touch(branch.id, {Herd, 7}, %{id: 7})

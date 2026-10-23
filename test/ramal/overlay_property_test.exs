@@ -235,4 +235,25 @@ defmodule Ramal.OverlayPropertyTest do
       assert slice == expected
     end
   end
+
+  property "sharing a record with references changes nothing about its value" do
+    term =
+      one_of([integer(), string(:printable, max_length: 40), list_of(integer(), max_length: 5)])
+
+    fields = map_of(atom(:alphanumeric), term, max_length: 8)
+
+    check all(
+            record <- fields,
+            reference <- fields,
+            key <- term,
+            max_runs: 300
+          ) do
+      overlaid = Map.merge(reference, Map.take(record, Enum.take(Map.keys(record), 3)))
+
+      assert Overlay.share(record, [], key) == record
+      assert Overlay.share(record, [reference, overlaid], key) == record
+      with_time = Map.put(record, :at, ~U[2026-01-01 00:00:00.123456Z])
+      assert Overlay.share(with_time, [reference]) == with_time
+    end
+  end
 end

@@ -107,6 +107,18 @@ Ramal is 31 times faster than before. The two baselines are also lower in the se
 
 About 1.1 microseconds per row. A `wide` read in an empty branch takes 9.88 ms against 5.93 ms for the same read with no branch, 67% more; this run is the figure behind DESIGN open question 5.
 
+## Memory
+
+`mix bench.memory` fills a branch with updated rows (read first, then updated, so the branch keeps the row as the database gave it and as the update left it) plus 200 created ones, and prints what the branch costs in the three places it lives in: the heap of its process (`heap words`, and `after reload` for the process that loaded the branch back from storage), the ETS table of `Ramal.Storage.ETS` (`ETS words`), and the JSON that `Ramal.Storage.Postgres` stores. The row is `Bench.Row`: seven attributes with timestamps, two relationships and an aggregate. Heap words are `:erts_debug.size/1` of what the process holds, which counts a term shared by many rows once, as the heap does.
+
+Run on 2026-10-23 in a cloud sandbox, Erlang/OTP 25, Elixir 1.18.4, Ash 3.37.0. The words are exact for the term, so they do not vary between runs.
+
+| rows updated | heap words, 0.3.0 | heap words, after sharing terms | after a reload, 0.3.0 | after a reload, after sharing terms |
+|---|---|---|---|---|
+| 100 | 80,328 | 61,452 | 115,080 | 68,143 |
+| 1,000 | 427,860 | 269,619 | 614,712 | 291,610 |
+| 5,000 | 1,972,202 | 1,194,788 | 2,835,054 | 1,284,779 |
+
 ## What this is not
 
 It is not a reproduction of the [DAPLab benchmark](https://daplab.cs.columbia.edu/general/2026/05/26/branchable-databases-arent-ready-for-agentic-workloads.html) (BranchBench). The workload is modelled on the workload the article focuses on, a Monte Carlo tree search that keeps forking promising partial states, mutates, queries and prunes; ours is a fixed-shape tree search, not MCTS, and it does not use their harness, schemas or step counts. The article reports that Neon finished 33 of 1,000 steps before hitting its active branch limit and that Dolt finished 170 steps before a two-hour timeout; those are their figures from their harness, cited here and deliberately kept out of the tables above, which were not measured the same way. It compares one Postgres schema at one size on one machine; Neon, Dolt and other branching databases are not measured.

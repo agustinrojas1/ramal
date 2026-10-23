@@ -431,6 +431,87 @@ defmodule Ramal.Overlay do
   defp internal?(_name), do: false
 
   @doc """
+  `record` rebuilt so that it shares memory with `references`, equal to `record` in every way.
+
+  A branch process keeps the terms its writers send it, and a message is copied without the sharing the writer's heap
+  had. The record of an update therefore arrives next to a second copy of the row it started from, every struct arrives
+  with a copy of its own key tuple, and every row of a resource arrives with copies of the same values. Three things
+  put that back, field by field:
+
+    * a field equal to the same field of a map in `references` (searched in order) becomes that map's term;
+    * a field equal to `key` becomes `key`, which the overlay holds already as the row's ref;
+    * a struct is rebuilt on its module's default struct, whose key tuple is a literal, and so is a struct inside a field
+      (a `DateTime`), so that no row carries a key tuple of its own.
+
+  The default struct of the record's module comes last in `references`, so a field the writer did not touch points at
+  the literal the module holds. A garbage collection of the process preserves all of it.
+
+  ## Example
+
+      iex> reference = %{id: 1, name: "R7", tags: ["a", "b"]}
+      iex> shared = Ramal.Overlay.share(%{id: 1, name: "R7b", tags: ["a" | ["b"]]}, [reference], 1)
+      iex> shared == %{id: 1, name: "R7b", tags: ["a", "b"]}
+      true
+  """
+  @spec share(map, [map], term) :: map
+  def share(record, references, key \\ nil) when is_map(record) and is_list(references) do
+    case template(record) do
+      nil ->
+        :maps.fold(&put_shared(&3, &1, &2, references, key), record, record)
+
+      template ->
+        references = references ++ [template]
+        rebuilt = :maps.fold(&put_shared(&3, &1, &2, references, key), template, record)
+        if map_size(rebuilt) == map_size(record), do: rebuilt, else: record
+    end
+  end
+
+  defp put_shared(acc, field, value, references, key),
+    do: Map.put(acc, field, shared_term(field, value, references, key))
+
+  defp shared_term(_field, value, _references, _key) when is_atom(value) or is_integer(value),
+    do: value
+
+  defp shared_term(field, value, references, key) do
+    cond do
+      value === key -> key
+      held = held(field, value, references) -> elem(held, 0)
+      true -> rekey(value)
+    end
+  end
+
+  defp held(_field, _value, []), do: nil
+
+  defp held(field, value, [reference | rest]) do
+    case reference do
+      %{^field => same} when same === value -> {same}
+      _other -> held(field, value, rest)
+    end
+  end
+
+  # A struct built by a function of another module carries the key tuple it was built with, and a message copies it.
+  # Rebuilding it on the default struct points it at the module's literal.
+  defp rekey(value) do
+    case template(value) do
+      nil ->
+        value
+
+      template ->
+        rebuilt =
+          :maps.fold(fn field, held, acc -> Map.put(acc, field, held) end, template, value)
+
+        if map_size(rebuilt) == map_size(value), do: rebuilt, else: value
+    end
+  end
+
+  defp template(%{__struct__: module}) when is_atom(module) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :__struct__, 0),
+      do: module.__struct__()
+  end
+
+  defp template(_value), do: nil
+
+  @doc """
   Applies `other`'s entries on top of `overlay`, as if each had been put in turn.
 
   Forking uses it: a fork starts as `merge_into(new(), parent)`. Because overlays are immutable maps, the fork and

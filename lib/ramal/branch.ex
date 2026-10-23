@@ -232,6 +232,8 @@ defmodule Ramal.Branch do
   """
   @spec put_write(t, kind, ref, map, base_row | nil, log_entry) :: {t, undo}
   def put_write(%__MODULE__{} = branch, kind, ref, record, base_row, entry) do
+    {record, base_row, entry} = share_terms(branch, ref, record, base_row, entry)
+
     undo = %{
       ref: ref,
       overlay: Map.get(branch.overlay, ref, :none),
@@ -257,6 +259,137 @@ defmodule Ramal.Branch do
       end
 
     {%{branch | overlay: overlay, base: base, log: [entry | branch.log]}, undo}
+  end
+
+  # The record, the snapshot and the log entry reach the branch process as copies of terms the writer built, without the
+  # sharing it had (`Ramal.Overlay.share/3`). Sharing them again is what keeps a row's cost at the values that are its
+  # own: the fields of an update that did not change point at the snapshot, the ones the previous write of the resource
+  # also holds point at that write, and the key is the one term of the ref.
+  defp share_terms(branch, {resource, key}, record, base_row, entry) do
+    {sibling, sibling_snapshot} = sibling(branch, resource)
+
+    {record, base_row} =
+      case {Map.get(branch.overlay, {resource, key}), base_row} do
+        {{_kind, held}, _base_row} ->
+          {Overlay.share(record, [held, sibling], key), base_row}
+
+        {_none_or_deleted, %{snapshot: snapshot} = base_row} when is_map(snapshot) ->
+          snapshot = Overlay.share(snapshot, [sibling_snapshot], key)
+          {Overlay.share(record, [snapshot, sibling], key), %{base_row | snapshot: snapshot}}
+
+        _created ->
+          {Overlay.share(record, [sibling], key), base_row}
+      end
+
+    {record, base_row, share_entry(entry, List.first(branch.log), key)}
+  end
+
+  # The record and snapshot of the write before this one, when it was a write of the same resource: a loop over rows
+  # writes siblings, which hold the same foreign keys, the same states and the same metadata.
+  defp sibling(branch, resource) do
+    case branch.log do
+      [{_type, ^resource, _action, _input, _actor, opts, _at} | _] ->
+        sibling_ref = {resource, opts[:key]}
+        {held_record(branch.overlay, sibling_ref), held_snapshot(branch.base, sibling_ref)}
+
+      _other_resource_or_empty ->
+        {%{}, %{}}
+    end
+  end
+
+  defp held_record(overlay, ref) do
+    case overlay do
+      %{^ref => {_kind, record}} -> record
+      _none_or_deleted -> %{}
+    end
+  end
+
+  defp held_snapshot(base, ref) do
+    case base do
+      %{^ref => %{snapshot: snapshot}} when is_map(snapshot) -> snapshot
+      _none -> %{}
+    end
+  end
+
+  # The actor of a run is the same term in every write the run makes, and a user record is the largest thing a log entry
+  # holds, so a write whose actor equals the previous one's points at it. The key in the options and the time are shared
+  # like the fields of a record.
+  defp share_entry({type, resource, action, input, actor, opts, at}, previous, key) do
+    actor =
+      case previous do
+        {_type, _resource, _action, _input, ^actor, _opts, _at} -> elem(previous, 4)
+        _other -> actor
+      end
+
+    opts = for {name, value} <- opts, do: {name, if(value === key, do: key, else: value)}
+    {type, resource, action, input, actor, opts, Overlay.share(at, [])}
+  end
+
+  @doc """
+  The branch with its terms shared the way `put_write/6` shares them as the writes come in.
+
+  A branch that comes out of storage is a copy that kept none of that sharing: an ETS table and a message copy every
+  term in full, and a decoded branch builds each row from its own parts. The branch process runs this once when it
+  starts, so a branch that was unloaded and loaded again costs the heap it cost before. The result is equal to `branch`.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> Ramal.Branch.share(branch) == branch
+      true
+  """
+  @spec share(t) :: t
+  def share(%__MODULE__{} = branch) do
+    log = Enum.reverse(branch.log)
+
+    {overlay, base, _siblings} =
+      log
+      |> Enum.map(fn {_type, resource, _action, _input, _actor, opts, _at} ->
+        {resource, opts[:key]}
+      end)
+      |> Enum.uniq()
+      |> Enum.reduce({branch.overlay, branch.base, %{}}, &share_row/2)
+
+    %{branch | overlay: overlay, base: base, log: share_log(log, nil, [])}
+  end
+
+  defp share_row({resource, key} = ref, {overlay, base, siblings}) do
+    {sibling, sibling_snapshot} = Map.get(siblings, resource, {%{}, %{}})
+
+    snapshot =
+      case base do
+        %{^ref => %{snapshot: snapshot}} when is_map(snapshot) ->
+          Overlay.share(snapshot, [sibling_snapshot], key)
+
+        _none ->
+          nil
+      end
+
+    record =
+      case overlay do
+        %{^ref => {_kind, record}} -> Overlay.share(record, [snapshot || %{}, sibling], key)
+        _none_or_deleted -> nil
+      end
+
+    siblings = Map.put(siblings, resource, {record || sibling, snapshot || sibling_snapshot})
+    {put_shared(overlay, ref, record), put_shared_snapshot(base, ref, snapshot), siblings}
+  end
+
+  defp put_shared(overlay, _ref, nil), do: overlay
+  defp put_shared(overlay, ref, record), do: Map.update!(overlay, ref, &put_elem(&1, 1, record))
+
+  defp put_shared_snapshot(base, _ref, nil), do: base
+
+  defp put_shared_snapshot(base, ref, snapshot),
+    do: Map.update!(base, ref, &%{&1 | snapshot: snapshot})
+
+  # Oldest first, so that an entry points at the term of the one before it and the list comes out newest first.
+  defp share_log([], _previous, shared), do: shared
+
+  defp share_log([{type, resource, action, input, actor, opts, at} | rest], previous, shared) do
+    {_name, key} = List.keyfind(opts, :key, 0, {:key, nil})
+    entry = share_entry({type, resource, action, input, actor, opts, at}, previous, key)
+    share_log(rest, entry, [entry | shared])
   end
 
   @doc """

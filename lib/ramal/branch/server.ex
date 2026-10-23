@@ -306,6 +306,7 @@ defmodule Ramal.Branch.Server do
 
   def init({branch, config}) do
     flags(config)
+    branch = share(branch, config)
     watch(branch)
     Telemetry.branch(:load, branch)
 
@@ -315,7 +316,23 @@ defmodule Ramal.Branch.Server do
   defp flags(config) do
     # Trapping exits makes the supervisor's shutdown call terminate/2, which persists the branch.
     Process.flag(:trap_exit, true)
-    Process.flag(:max_heap_size, %{size: config.max_heap_size, kill: true, error_logger: false})
+    heap_limit(config.max_heap_size)
+  end
+
+  defp heap_limit(size),
+    do: Process.flag(:max_heap_size, %{size: size, kill: true, error_logger: false})
+
+  # Storage hands the branch over as a copy that kept no sharing (`Ramal.Branch.share/1`). Sharing it again leaves about
+  # as much garbage as the branch is large, so the limit is lifted for it and a collection drops that garbage before
+  # the limit applies again. A fork is not shared here: it would delay the first call to the fork by the whole pass.
+  defp share(%Branch{log: []} = branch, _config), do: branch
+
+  defp share(branch, config) do
+    heap_limit(0)
+    shared = Branch.share(branch)
+    :erlang.garbage_collect()
+    heap_limit(config.max_heap_size)
+    shared
   end
 
   defp process_state(branch, config),
