@@ -12,6 +12,8 @@ defmodule Ramal.Preparation do
     * `Ash.Query.after_action/2` hooks receive the base rows after the data layer and before relationship loads,
       runtime calculations and the not-found check of `Ash.get/3`. Patching there means loads, calculations and
       `Ash.get/3` all see the patched rows.
+    * A many_to_many load is one SQL query that joins the join table in the database. When the branch changed the join
+      resource, a helper in lib/ramal/preparation/many_to_many.ex swaps that join for the patched join rows (ADR 0017).
     * A relationship load runs a read on the related resource through its own preparation, in a task that does not
       inherit the process dictionary. The branch id therefore also travels in the query's `shared` context, which
       Ash copies into related queries (`lib/ash/actions/read/relationships.ex`).
@@ -42,6 +44,7 @@ defmodule Ramal.Preparation do
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
   alias Ramal.{Current, Overlay, Resource, Telemetry}
+  alias Ramal.Preparation.ManyToMany
 
   @impl true
   def prepare(query, _opts, _context) do
@@ -68,14 +71,22 @@ defmodule Ramal.Preparation do
   defp before_data_layer(query, id) do
     warn_unpatched_aggregates(query, id)
 
+    case ManyToMany.rewrite(query, id) do
+      {:ok, query, links} -> strip_paging(query, id, links)
+      :skip -> strip_paging(query, id, nil)
+      {:error, error} -> Ash.Query.add_error(query, error)
+    end
+  end
+
+  defp strip_paging(query, id, links) do
     case Server.slice(id, query.resource) do
-      {:ok, slice} when map_size(slice) == 0 ->
+      {:ok, slice} when map_size(slice) == 0 and links == nil ->
         Ash.Query.set_context(query, %{ramal: %{slice: slice, limit: nil, offset: nil}})
 
       {:ok, slice} ->
         query
         |> Ash.Query.set_context(%{
-          ramal: %{slice: slice, limit: query.limit, offset: query.offset}
+          ramal: %{slice: slice, limit: query.limit, offset: query.offset, links: links}
         })
         |> Ash.Query.unset([:limit, :offset])
 
@@ -86,27 +97,41 @@ defmodule Ramal.Preparation do
 
   defp after_data_layer(query, results, id) do
     %{slice: slice, limit: limit, offset: offset} = query.context.ramal
+    links = query.context.ramal[:links]
     record_fingerprints(query.resource, results, id)
 
-    if map_size(slice) == 0 do
-      {:ok, results}
-    else
-      started = System.monotonic_time()
+    # Rows are tagged with their source records after the patch, and paged per source, not as one list.
+    {patch_limit, patch_offset} = if links, do: {nil, nil}, else: {limit, offset}
 
-      with {:ok, patched} <- patch(query, results, slice, limit, offset) do
-        Telemetry.read(
-          :patch,
-          %{
-            base_rows: length(results),
-            overlay_rows: map_size(slice),
-            result_rows: length(patched),
-            duration: System.monotonic_time() - started
-          },
-          %{branch_id: id, resource: query.resource}
-        )
-
+    with {:ok, patched} <- patch_rows(query, results, slice, patch_limit, patch_offset, id) do
+      if links do
+        {:ok, ManyToMany.expand(patched, links, offset, limit)}
+      else
         {:ok, patched}
       end
+    end
+  end
+
+  defp patch_rows(_query, results, slice, _limit, _offset, _id) when map_size(slice) == 0 do
+    {:ok, results}
+  end
+
+  defp patch_rows(query, results, slice, limit, offset, id) do
+    started = System.monotonic_time()
+
+    with {:ok, patched} <- patch(query, results, slice, limit, offset) do
+      Telemetry.read(
+        :patch,
+        %{
+          base_rows: length(results),
+          overlay_rows: map_size(slice),
+          result_rows: length(patched),
+          duration: System.monotonic_time() - started
+        },
+        %{branch_id: id, resource: query.resource}
+      )
+
+      {:ok, patched}
     end
   end
 
