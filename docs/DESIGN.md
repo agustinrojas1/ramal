@@ -14,18 +14,18 @@ AshPostgres 2.15, Spark 2.7.
 ordinary Ash code can read and write without knowing it is inside one, plus the operations to fork, diff, merge and
 discard them. A branch must cost roughly what a process and a map cost, so thousands can be alive at once.
 
-**Non-goals for 0.1.**
+**Non-goals.**
 
 - Schema changes inside a branch.
 - Branch-local indexes, or any promise about query plans.
-- Correct data-layer aggregates and calculations over a branch (they are computed on the base and documented as such).
+- Data-layer aggregates and calculations that Ramal cannot recompute over a branch (`first`, `list`, `custom`, `uniq?`, and aggregate queries with a limit keep the database's value, with a telemetry event; section 4.1 point 4 says what is recomputed).
+- Bulk actions, upserts and database-generated keys inside a branch, and nested branches.
 - Multi-node branches. A branch lives on one node; persistence makes it movable, not distributed.
 - A UI. The inspector is a separate package (`ramal_live/`, section 12).
 
 ## 2. Concepts
 
-**Branch.** `%Ramal.Branch{}`: `id` (UUID string), `name`, `domain` (the Ash domain whose resources it covers; several
-domains is a 0.2 question), `status` (`:open | :proposed | :merged | :rejected | :discarded`), `base` (fingerprints and snapshots, section 7), `overlay`,
+**Branch.** `%Ramal.Branch{}`: `id` (UUID string), `name`, `domain` (the Ash domain whose resources it covers; a resource of another domain that uses `Ramal.Resource` is branched too, section 11), `status` (`:open | :proposed | :merged | :rejected | :discarded`), `base` (fingerprints and snapshots, section 7), `overlay`,
 `log`, `inserted_at`, `metadata` (a map the host uses freely), `owner` (any term the host set at `branch/2` or `fork/2`, `nil` by default; `Ramal.list/2` can filter by it, ADR 0018), `proposal` (`nil` until proposed, section 7.1).
 
 **Overlay.** A map from `{resource_module, primary_key}` to one of `{:created, record}`, `{:updated, record}` or
@@ -289,10 +289,11 @@ This is the section that decides correctness. In a read action's preparation, wh
 # status filter; from storage, not from the registry
 ```
 
-`Ramal.Error` has `reason` (an atom from a documented list), `message`, and `details` (a map). Reasons in 0.1:
+`Ramal.Error` has `reason` (an atom from a documented list), `message`, and `details` (a map). The reasons:
 `:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:upsert_unsupported`, `:atomic_unsupported`, `:branch_too_large`,
-`:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`, `:merge_failed`,
-`:multitenancy_unsupported`, `:partial_record`.
+`:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`, `:timeout`, `:merge_failed`,
+`:multitenancy_unsupported`, `:tenant_mismatch`, `:partial_record`, `:branch_mismatch`, `:task_in_action`,
+`:unbranchable_resources`, `:row_busy`, `:limit_reached`. `lib/ramal/error.ex` holds the authoritative table.
 
 ### 5.1 Agent tools (ADR 0019)
 
@@ -434,7 +435,7 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 2. Should `run/2` be reentrant (a branch inside a branch)? 0.1: no, `{:error, %Ramal.Error{reason: :nested_branch}}`; `merge/2` refuses the same way.
 3. ~~Where do many-to-many join resources sit in the overlay?~~ Answered: they are resources, so they get overlay
    entries like any other, keyed by the join resource's primary key (section 4.1 point 7, ADR 0014). A many_to_many
-   load and `manage_relationship` do not see links the branch changed; that is the open part, for a later version.
+   load and `manage_relationship` see links the branch changed (ADR 0017); a paged relationship load and a `through` path of several hops see the base links, and `append_and_remove` with a link to remove is refused.
 4. ~~Does the read preparation need to handle `Ash.Query.select`?~~ Answered: Ash always selects the primary key, and
    the preparation trims overlay records to the select (section 4.1).
 5. Should fingerprints cover rows read through relationship loads? 0.1: yes, because they are reads like any other

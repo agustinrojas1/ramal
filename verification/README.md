@@ -111,4 +111,4 @@ the relationship and aggregate paths. Those are tested with StreamData propertie
   model. The Verification workflow runs on changes to them.
 
 What no model covers yet: other processes' reads see a running action's writes (read-uncommitted within a branch);
-multitenancy (refused in a branch, ADR 0009); Postgres storage specifics such as the owner column; and the inspector.
+multitenancy (a branch in one tenant, ADR 0034); Postgres storage specifics such as the owner column; and the inspector.
