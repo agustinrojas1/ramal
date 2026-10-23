@@ -154,6 +154,60 @@ defmodule Ramal.MergeReplayTest do
     end
   end
 
+  describe "a create whose hook creates a row of the same resource" do
+    for {action, hook} <- [
+          create_with_twin: "after_action",
+          create_with_twin_early: "before_action"
+        ] do
+      test "each row keeps its own key when the #{hook} hook creates the twin", %{branch: branch} do
+        {herd, twin} =
+          inside(branch, fn ->
+            herd =
+              Ash.create!(Herd, %{name: "pair", head: 3},
+                action: unquote(action),
+                authorize?: false
+              )
+
+            twin = Herd |> Ash.read!(authorize?: false) |> Enum.find(&(&1.name == "pair twin"))
+            Ash.update!(twin, %{head: 9}, authorize?: false)
+            {herd, twin}
+          end)
+
+        refute herd.id == twin.id
+
+        assert {:ok, %Result{replayed: 2}} = Ramal.merge(branch, authorize?: false)
+
+        assert %{name: "pair", head: 3} = Ash.get!(Herd, herd.id, authorize?: false)
+        assert %{name: "pair twin", head: 9} = Ash.get!(Herd, twin.id, authorize?: false)
+      end
+    end
+  end
+
+  describe "a chain of creates of the same resource, each made by the hook of the one before" do
+    for {action, hook} <- [create_chain: "after_action", create_chain_early: "before_action"] do
+      test "each row keeps its own key when the #{hook} hooks make the chain", %{branch: branch} do
+        rows =
+          inside(branch, fn ->
+            Ash.create!(Herd, %{name: "c", head: 1, depth: 2},
+              action: unquote(action),
+              authorize?: false
+            )
+
+            for name <- ["c+", "c++"] do
+              herd = Herd |> Ash.read!(authorize?: false) |> Enum.find(&(&1.name == name))
+              Ash.update!(herd, %{head: 7}, authorize?: false)
+            end
+          end)
+
+        assert {:ok, %Result{replayed: 3}} = Ramal.merge(branch, authorize?: false)
+
+        for %{id: id, name: name} <- rows do
+          assert %{name: ^name, head: 7} = Ash.get!(Herd, id, authorize?: false)
+        end
+      end
+    end
+  end
+
   describe "attributes set outside the action's input" do
     test "an attribute changed between for_update and update is set by the merge", %{
       branch: branch,
