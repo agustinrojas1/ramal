@@ -61,6 +61,48 @@ defmodule Ramal.CaptureTest do
   end
 
   describe "create" do
+    test "a create that manages a belongs_to stores the new row's foreign key", %{branch: branch} do
+      {herd, read_back, paddock_names} =
+        inside(branch, fn ->
+          herd =
+            Herd
+            |> Ash.Changeset.for_create(:create, %{name: "NEW", head: 3}, authorize?: false)
+            |> Ash.Changeset.manage_relationship(:paddock, %{name: "NP", capacity_head: 9},
+              type: :create
+            )
+            |> Ash.create!(authorize?: false)
+
+          read_back = Herd |> Ash.read!(authorize?: false) |> Enum.find(&(&1.name == "NEW"))
+          {herd, read_back, Paddock |> Ash.read!(authorize?: false) |> Enum.map(& &1.name)}
+        end)
+
+      assert herd.paddock_id
+      assert read_back.paddock_id == herd.paddock_id
+      assert "NP" in paddock_names
+
+      assert {:ok, changes} = Ramal.diff(branch)
+      herd_change = Enum.find(changes, &(&1.resource == Herd))
+      assert herd_change.changes.paddock_id == {nil, herd.paddock_id}
+    end
+
+    test "a create action that manages a belongs_to merges with the new row's foreign key", %{
+      branch: branch
+    } do
+      herd =
+        inside(branch, fn ->
+          Ash.create!(Herd, %{name: "NEW", head: 3, paddock: %{name: "NP", capacity_head: 9}},
+            action: :create_with_paddock,
+            authorize?: false
+          )
+        end)
+
+      assert herd.paddock_id
+
+      assert {:ok, _} = Ramal.merge(branch, authorize?: false)
+      db = Herd |> Ash.read!(authorize?: false) |> Enum.find(&(&1.name == "NEW"))
+      assert Ash.get!(Paddock, db.paddock_id, authorize?: false).name == "NP"
+    end
+
     test "a create inside a branch returns the record and leaves the database alone", %{
       branch: branch
     } do

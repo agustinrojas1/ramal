@@ -155,7 +155,10 @@ defmodule Ramal.Capture do
         {:ok, {:ok, undo}, summary} ->
           remember(undo)
           emit(summary, changeset, nested?)
-          Ash.Changeset.set_result(changeset, {:ok, result_record(kind, record, resource)})
+
+          changeset
+          |> Ash.Changeset.set_result({:ok, result_record(kind, record, resource)})
+          |> settle_foreign_keys(id, {resource, key})
 
         {:ok, {:error, :destroyed}, _summary} ->
           Ash.Changeset.add_error(changeset, stale_error(changeset, key))
@@ -188,6 +191,46 @@ defmodule Ramal.Capture do
     after
       0 -> :ok
     end
+  end
+
+  # A create sets the foreign key of a managed `belongs_to` after the before-action hooks (`setup_managed_belongs_to_
+  # relationships` in `lib/ash/actions/create/create.ex`, Ash 3.37), which is after the record was built here. The
+  # after-action hooks get the changeset as it stands then, so the key is read from it and copied onto the record the
+  # action returns and onto the overlay's. An update registers that step as a before-action hook before this one
+  # (`lib/ash/actions/update/update.ex`), so it needs nothing.
+  defp settle_foreign_keys(%{action_type: :create} = changeset, id, ref) do
+    Ash.Changeset.after_action(changeset, fn changeset, result ->
+      case changed_foreign_keys(changeset, result) do
+        keys when keys == %{} -> {:ok, result}
+        keys -> put_foreign_keys(id, ref, result, keys)
+      end
+    end)
+  end
+
+  defp settle_foreign_keys(changeset, _id, _ref), do: changeset
+
+  defp changed_foreign_keys(changeset, result) do
+    {:ok, built} = Ash.Changeset.apply_attributes(changeset)
+
+    for %{type: :belongs_to, source_attribute: attribute} <-
+          Info.relationships(changeset.resource),
+        Map.get(built, attribute) != Map.get(result, attribute),
+        into: %{},
+        do: {attribute, Map.get(built, attribute)}
+  end
+
+  defp put_foreign_keys(id, ref, result, keys) do
+    patch = fn branch ->
+      case Map.get(branch.overlay, ref) do
+        {kind, held} ->
+          {:ok, %{branch | overlay: Map.put(branch.overlay, ref, {kind, Map.merge(held, keys)})}}
+
+        _gone ->
+          {:ok, branch}
+      end
+    end
+
+    with {:ok, _ok, _summary} <- Server.write(id, patch), do: {:ok, Map.merge(result, keys)}
   end
 
   # The row as the branch holds it, for an update. The record an update is called with is often older than the branch's
