@@ -12,7 +12,7 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :branch, :load]` | a branch process started from storage, or right after creation |
   | `[:ramal, :branch, :unload]` | a branch process stopped after persisting (`reason`: `:idle` or `:shutdown`) |
   | `[:ramal, :branch, :persist_failed]` | storage refused the write of a branch (`reason`: `:idle`, `:shutdown` or `:merged`, `error`): an idle branch stays loaded and tries again; so does a merge whose commit succeeded but whose `:merged` status could not be stored (`Ramal.Merge.Result` `persist_failed`); on a shutdown its last persisted state is what remains |
-  | `[:ramal, :branch, :adopt]` | a branch took the work of a nested fork that merged into it (extra metadata: `child_id`; ADR 0039) |
+  | `[:ramal, :branch, :adopt]` | a branch took the work of a nested fork that merged into it (extra metadata: `child_id`; ADR 0043) |
   | `[:ramal, :branch, :discard]` | a branch was discarded |
   | `[:ramal, :branch, :propose]` | a branch was proposed for a decision |
   | `[:ramal, :branch, :approve]` | a proposed branch was approved and merged (after the `[:ramal, :merge]` span) |
@@ -21,7 +21,7 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :limit, :reached]` | `branch/2` or `fork/2` was refused by a limit of `Ramal.Supervisor` (metadata: `domain`, `operation`, `limit`) |
   | `[:ramal, :merge, :start \| :stop \| :exception]` | a span around `Ramal.merge/2`; `stop` adds `result` (`:ok` or `:error`) and `replayed`, or `reason` |
   | `[:ramal, :read, :patch]` | a read inside a branch was patched with the overlay (measurements: `base_rows`, `overlay_rows`, `result_rows`, `duration`) |
-  | `[:ramal, :read, :unpatched_aggregate]` | a read inside a branch selected an aggregate Ramal cannot compute over the overlay (`first`, `list`, `custom`, ...), so it has the database's value |
+  | `[:ramal, :read, :unpatched_aggregate]` | a read inside a branch selected an aggregate Ramal cannot compute over the overlay (`custom`, a join filter, a custom read action, ...), so it has the database's value |
   | `[:ramal, :write, :capture]` | a create, update or destroy inside a branch was put in the overlay instead of the data layer (metadata: `action_type`, `resource`, `action`, `nested?`) |
 
   ## Example

@@ -7,7 +7,9 @@ defmodule Ramal.Capture do
   the action's own `before_action` and `after_action` hooks. Outside a branch it does nothing.
 
   What the action returns is what the action would have returned: a created or updated record, or the destroyed one.
-  The write is also appended to the branch log so that `Ramal.merge/2` can replay the action later.
+  The write is also appended to the branch log so that `Ramal.merge/2` can replay the action later. The entry records
+  what the replay cannot get from the action's input: the `root` it shares with the writes of its hooks and the
+  attributes the caller set on the changeset after building it (`forced`), both in ADR 0041.
 
   How it works, confirmed against Ash 3.37 (`lib/ash/changeset/changeset.ex` and `lib/ash/actions/*`):
 
@@ -20,7 +22,12 @@ defmodule Ramal.Capture do
     * An update runs `fully_atomic_changeset` first and, when it succeeds, updates the row in the database without
       calling any hook. `atomic/3` therefore reports `{:not_atomic, reason}` while a branch is current, and
       the resource transformer sets `require_atomic? false` so Ash falls back to the path above.
-    * Bulk actions call the data layer directly and never look at the result, so they are refused.
+    * A bulk action runs a changeset that has an `around_action` hook one record at a time, through the same create,
+      update or destroy as a single action (`split_and_run_simple/7` in `lib/ash/actions/helpers.ex`, called from
+      `lib/ash/actions/{create,update,destroy}/bulk.ex`). The hook above is that `around_action`, so inside a branch
+      every record of `Ash.bulk_create/4`, `Ash.bulk_update/4` and `Ash.bulk_destroy/4` is captured and logged as its
+      own action, and the data layer's bulk call gets no records. A bulk update or destroy of a query picks its
+      strategy before that: the atomic ones are refused through `atomic/3`, so the caller must allow `:stream`.
     * An upsert is decided in the branch's view (ADR 0038). `Ash.Actions.Create.do_run/4` sets
       `context.private.upsert?` to `true` for every create (`lib/ash/actions/create/create.ex`, Ash 3.37), so by the time
       a `before_action` hook runs the flag says nothing; `change/3` runs while the changeset is built, where the flag
@@ -54,7 +61,8 @@ defmodule Ramal.Capture do
   alias Ramal.Branch.Server
 
   @frame :ramal_capture_frame
-  @bulk_markers [:bulk_create, :bulk_update, :bulk_destroy]
+  @key_plan :ramal_key_plan
+  @wrapped :ramal_wrapped
 
   @impl true
   def change(changeset, _opts, _context) do
@@ -73,6 +81,8 @@ defmodule Ramal.Capture do
   # The branch is decided here, when the changeset is built, so a changeset built outside a branch and run inside one
   # would write to the database. The hook costs one process dictionary read when no branch is current (ADR 0026).
   defp guard(changeset) do
+    changeset = planned_key(changeset)
+
     Ash.Changeset.before_action(changeset, fn changeset ->
       case Current.verify(nil, nil, what(changeset)) do
         :ok -> changeset
@@ -80,6 +90,45 @@ defmodule Ramal.Capture do
       end
     end)
   end
+
+  @doc false
+  # Runs `fun` with the keys the branch gave the rows that the entry being replayed made its hooks create, in the order
+  # it made them (`Ramal.Merge`). The next create of the plan's resource takes the next key, so a later entry that names
+  # the row by key finds it. A create of another resource ends the plan: the hook does not do what it did in the
+  # branch, and the rows get the keys they are given.
+  @spec with_key_plan([{module, term}], (-> result)) :: result when result: var
+  def with_key_plan([], fun), do: fun.()
+
+  def with_key_plan(plan, fun) do
+    Process.put(@key_plan, plan)
+
+    try do
+      fun.()
+    after
+      Process.delete(@key_plan)
+    end
+  end
+
+  defp planned_key(%{action_type: :create} = changeset) do
+    case Process.get(@key_plan) do
+      [{resource, :keep} | rest] when resource == changeset.resource ->
+        Process.put(@key_plan, rest)
+        changeset
+
+      [{resource, key} | rest] when resource == changeset.resource ->
+        Process.put(@key_plan, rest)
+        Resource.force_key(changeset, key)
+
+      [_other | _rest] ->
+        Process.delete(@key_plan)
+        changeset
+
+      _no_plan ->
+        changeset
+    end
+  end
+
+  defp planned_key(changeset), do: changeset
 
   defp what(changeset),
     do:
@@ -93,20 +142,16 @@ defmodule Ramal.Capture do
 
       _id ->
         {:not_atomic,
-         "a Ramal branch is current, so the write is captured instead of run in the database"}
+         "a Ramal branch is current, so the write is captured instead of run in the database; " <>
+           "a bulk update or destroy inside a branch runs record by record, so allow `strategy: [:atomic, :stream]`"}
     end
   end
 
   defp capture(changeset, id, origin) do
-    cond do
-      Enum.any?(@bulk_markers, &Map.has_key?(changeset.context, &1)) ->
-        Ash.Changeset.add_error(changeset, bulk_error(changeset))
-
-      upsert?(changeset) and changeset.context[:private][:upsert_condition] != nil ->
-        Ash.Changeset.add_error(changeset, upsert_condition_error(changeset))
-
-      true ->
-        install(changeset, id, origin)
+    if upsert?(changeset) and changeset.context[:private][:upsert_condition] != nil do
+      Ash.Changeset.add_error(changeset, upsert_condition_error(changeset))
+    else
+      install(changeset, id, origin)
     end
   end
 
@@ -120,11 +165,57 @@ defmodule Ramal.Capture do
 
         changeset
         |> Ash.Changeset.set_context(Current.shared_context(id))
+        |> record_caller_changes()
         |> Ash.Changeset.around_action(&around(&1, &2, id, origin, upsert?))
+        |> Ash.Changeset.before_action(&ensure_wrapped/1)
 
       {:error, error} ->
         Ash.Changeset.add_error(changeset, error)
     end
+  end
+
+  # This change is the last of the action's (global changes run after the action's own: `run_action_changes/6` in
+  # `lib/ash/changeset/changeset.ex`, Ash 3.37), so the attributes now are what the action did with its input. Whatever
+  # differs when the first `before_action` hook runs was set by the caller between `for_create` or `for_update` and
+  # running the action (`Ash.Changeset.change_attribute/3`); replaying the entry with its input would not set it, so the
+  # entry records it (`forced`). Prepended, the hook runs before the action's own hooks, so what those set is not
+  # recorded and a replay computes it again, and neither are the defaults Ash applies when the action starts (the
+  # timestamps): they are in `defaults` and were not in the attributes before. Nothing is recorded for a destroy,
+  # which writes no attribute.
+  defp record_caller_changes(%{action_type: type} = changeset) when type in [:create, :update] do
+    given = changeset.attributes
+    primary_key = Info.primary_key(changeset.resource)
+
+    Ash.Changeset.before_action(
+      changeset,
+      fn changeset ->
+        late_defaults = Enum.reject(changeset.defaults, &Map.has_key?(given, &1))
+
+        forced =
+          for {name, value} <- changeset.attributes,
+              name not in primary_key,
+              name not in late_defaults,
+              Map.fetch(given, name) != {:ok, value},
+              into: %{},
+              do: {name, value}
+
+        if forced == %{},
+          do: changeset,
+          else: Ash.Changeset.set_context(changeset, %{ramal_forced: forced})
+      end,
+      prepend?: true
+    )
+  end
+
+  defp record_caller_changes(changeset), do: changeset
+
+  # Fails closed: the write is captured only inside the `around_action` hook. Ash runs every changeset that has one
+  # singly, bulk actions included; if a path ever ran the before-action hooks without it, the data layer would be next,
+  # so the action is refused instead of written to the base.
+  defp ensure_wrapped(changeset) do
+    if changeset.context[@wrapped],
+      do: changeset,
+      else: Ash.Changeset.add_error(changeset, bulk_error(changeset))
   end
 
   # The frame counts how deeply captured actions nest in this process and keeps the undo records of their writes.
@@ -154,11 +245,15 @@ defmodule Ramal.Capture do
   end
 
   defp run_captured(changeset, callback, id, upsert?) do
-    frame = Process.get(@frame, %{depth: 0, undos: []})
+    frame = Process.get(@frame, %{depth: 0, undos: [], root: new_root()})
     nested? = frame.depth > 0
     mark = length(frame.undos)
     Process.put(@frame, %{frame | depth: frame.depth + 1})
-    changeset = Ash.Changeset.before_action(changeset, &write(&1, id, nested?, upsert?))
+
+    changeset =
+      changeset
+      |> Ash.Changeset.set_context(%{@wrapped => true})
+      |> Ash.Changeset.before_action(&write(&1, id, nested?, upsert?))
 
     try do
       result = callback.(changeset)
@@ -171,6 +266,11 @@ defmodule Ramal.Capture do
       leave(id)
     end
   end
+
+  # Names the outermost action: every write it makes, its own and those of its hooks, carries it, so that a merge can
+  # tell which hook-made rows belong to which action even when hooks run before the action's write and writes of
+  # actions in other processes are interleaved. Random, because a counter would start again when the node does.
+  defp new_root, do: :crypto.strong_rand_bytes(6) |> :binary.decode_unsigned()
 
   defp succeeded?(result), do: is_tuple(result) and elem(result, 0) == :ok
 
@@ -586,10 +686,24 @@ defmodule Ramal.Capture do
 
   # Log order is capture order, and the opts carry what replay needs to find the row again.
   defp log_entry(changeset, key, nested?, extra) do
+    opts =
+      [key: key, tenant: changeset.tenant, nested?: nested?, root: Process.get(@frame).root] ++
+        extra
+
     {changeset.action_type, changeset.resource, changeset.action.name, changeset.params,
-     changeset.context[:private][:actor],
-     [key: key, tenant: changeset.tenant, nested?: nested?] ++ extra, DateTime.utc_now()}
+     changeset.context[:private][:actor], with_forced(opts, changeset, nested?),
+     DateTime.utc_now()}
   end
+
+  # A nested entry is not replayed (the hook that made it runs again), so what its caller set is not needed.
+  defp with_forced(opts, changeset, false = _nested?) do
+    case changeset.context[:ramal_forced] do
+      nil -> opts
+      forced -> opts ++ [forced: forced]
+    end
+  end
+
+  defp with_forced(opts, _changeset, true = _nested?), do: opts
 
   defp remember(undo) do
     frame = Process.get(@frame)
@@ -637,8 +751,8 @@ defmodule Ramal.Capture do
   defp bulk_error(changeset) do
     Error.new(
       :bulk_unsupported,
-      "#{inspect(changeset.resource)}.#{changeset.action.name} ran as a bulk action inside a branch; bulk actions " <>
-        "write through the data layer without calling the capture hook, so call the action once per record instead",
+      "#{inspect(changeset.resource)}.#{changeset.action.name} ran inside a branch without the capture hook around it, " <>
+        "so it would have written to the database; call the action once per record instead",
       %{resource: changeset.resource, action: changeset.action.name}
     )
   end

@@ -1,6 +1,6 @@
 ------------------------------- MODULE Nested -------------------------------
 (***************************************************************************)
-(* A nested fork merging into its parent branch (ADR 0039): the fork is     *)
+(* A nested fork merging into its parent branch (ADR 0043): the fork is     *)
 (* claimed, the parent is copied together with its version, the fork's own  *)
 (* writes are replayed in the copy, and the parent takes the copy in one    *)
 (* call if its version is still the one copied, and remembers the fork's    *)

@@ -124,6 +124,18 @@ defmodule Ramal.Storage.CodecTest do
     assert round_trip(branch) == {:ok, branch}
   end
 
+  test "the root and the attributes a caller set outside the input survive a round trip" do
+    forced = %{head: 99, name: "R7b", moved_on: ~D[2026-01-02]}
+    opts = [key: "k", tenant: nil, nested?: false, root: 221_097_288_452_740, forced: forced]
+
+    branch = %{
+      Branch.new(Farm)
+      | log: [{:update, Herd, :update, %{}, nil, opts, DateTime.utc_now()}]
+    }
+
+    assert round_trip(branch) == {:ok, branch}
+  end
+
   test "an actor record is stored without its sensitive attributes" do
     actor =
       struct(Ramal.Test.Other.Account,

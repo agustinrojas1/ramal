@@ -227,7 +227,13 @@ Ramal.run!(branch, fn ->
 end)
 ```
 
-It supports `:count`, `:exists`, `:sum`, `:min`, `:max` and `:avg`.
+It supports `:count`, `:exists`, `:sum`, `:min`, `:max`, `:avg`, `:first` and `:list`. The last two follow the query's sort and accept `uniq?:` and `include_nil?:`.
+
+### Per-tenant branches
+
+A branch of a multitenant application works in one tenant: `Ramal.branch(MyApp.Farm, tenant: "acme")`. Reads and writes
+inside it must carry that tenant (`:tenant_mismatch` otherwise), other tenants' rows never enter its overlay, and the
+merge checks and replays in the tenant. Both the attribute and the schema-per-tenant strategies work.
 
 ### Per-tenant branches
 
@@ -286,25 +292,27 @@ and what is and is not tested.
 
 Ramal is deliberately small, and it says what it does not do:
 
-- **Not a database branch.** No schema changes inside a branch, no branch-local indexes, and a branch lives on one node. `Ramal.run/2` cannot be nested: a branch of a branch is a nested fork (`Ramal.fork(branch, nested: true)`), run on its own and merged into its parent, which is merged to the database as one branch ([ADR 0039](https://github.com/agustinrojas1/ramal/blob/main/docs/adr/0039-nested-branches-merge-into-their-parent.md)).
+- **Not a database branch.** No schema changes inside a branch, no branch-local indexes, and a branch lives on one node. `Ramal.run/2` cannot be nested: a branch of a branch is a nested fork (`Ramal.fork(branch, nested: true)`), run on its own and merged into its parent, which is merged to the database as one branch ([ADR 0043](https://github.com/agustinrojas1/ramal/blob/main/docs/adr/0043-nested-branches-merge-into-their-parent.md)).
 - **Aggregates loaded inside a branch are recomputed from the branch's rows,** which reads the related rows of each
-  returned row where the database would sum them in one query. `first`, `list` and `custom` aggregates, `uniq?`, and
-  an aggregate query with a limit keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
+  returned row where the database would sum them in one query. `custom` aggregates (data-layer SQL),
+  a join filter and a custom read action keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
   test can notice. A filter or sort on an aggregate sees the branch too, and when the branch changed a resource on its path
   that reads the aggregate for every row the rest of the filter matches. For one total over a large table,
   `Ramal.aggregate/4` is cheaper.
 - **Use `Ramal.load/3` to load onto a record the branch changed.** `Ash.load/3` reselects the foreign key from the
   database without running any hook, so after a herd moved paddock in the branch it still follows the old one. A load
   inside a read (`Ash.Query.load/2`) is patched.
-- **A filter or sort through a relationship the branch changed reads more.** Ramal checks that part of the filter in
-  memory on the rows the database returns for the rest, so keep attribute predicates next to it to narrow the read.
+- **A filter or sort through a relationship the branch changed can read more.** Ramal checks that part of the filter in
+  memory on the rows the database returns for the rest, so keep attribute predicates next to it to narrow the read. A
+  filter through one `belongs_to` or `has_one` is narrowed in the database too, except under `not`; `exists`, longer
+  paths and `has_many` paths read every row the rest of the filter allows.
 - **Text sorts inside a branch use byte order,** not the database's collation, once the branch has changed that resource:
   `Banana` sorts before `apple`. Numbers, dates and keys sort exactly.
 - **Every resource of the domain is covered or opts out.** `Ramal.branch/2` refuses a domain with a resource that has
   write actions and neither uses `Ramal.Resource` nor sets `branchable? false`; a resource that opts out is written for
   real, from a branch too. Only the branch's domain is checked: a resource of another domain works in the branch if it uses `Ramal.Resource`, and is written for real if it does not. Build a changeset in the same `Ramal.run/2` that runs it. A query prepared outside a branch and read inside it is patched.
-- **Bulk actions are refused** inside a branch, resources whose primary key the database generates cannot be
-  created in one (use UUIDs), and notifications are dropped unless a resource opts in with `notify_in_branch? true`.
+- **Resources whose primary key the database generates cannot be created** in a branch (use UUIDs), and
+  notifications are dropped unless a resource opts in with `notify_in_branch? true`.
 - **Upserts work, with two exceptions.** An upsert looks its row up in the branch's view, so it updates a base row, a row
   the branch created, or creates one. An `upsert_condition` is refused (`:upsert_unsupported`), and `upsert?: true` given
   only to `Ash.create/2` at call time cannot be seen and acts as a create: set it on the action or pass it to
@@ -315,7 +323,8 @@ Ramal is deliberately small, and it says what it does not do:
 - **Merge is slower than a SQL statement,** because it replays each change through your action. That is the price of
   merging through your own rules.
 - **Writes since the last save are lost if the node crashes.** A branch is saved at the moments listed above, not on every write.
-- **A few many-to-many cases stay unsupported:** `type: :append_and_remove` with a link to remove is refused, and a paged relationship load or a `through` path of several hops sees the base links.
+- **Bulk actions run record by record** inside a branch, each one captured like a single action, so they cost what a loop costs. A bulk update or destroy of a query must allow `strategy: [:atomic, :stream]`.
+- **A `through` path with a many_to_many hop** (`through: [:herds, :vets]`) is left to the database, which returns nothing for it with or without a branch (AshPostgres 2.15 ignores the join resource). A `through` path of has_many and belongs_to hops sees the branch.
 - **Authorization is yours.** Anyone who holds a branch id can act on it. Ramal records who decided and never checks.
 - **Pre-1.0.** The public API may change before 1.0; the changelog says when it does.
 

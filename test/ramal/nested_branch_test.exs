@@ -1,5 +1,5 @@
 defmodule Ramal.NestedBranchTest do
-  # A fork made with `nested: true` merges into its parent branch, not into the database (ADR 0039). Each test names a
+  # A fork made with `nested: true` merges into its parent branch, not into the database (ADR 0043). Each test names a
   # behaviour; none could pass before nested forks existed.
   # Ramal.Supervisor is one per node and named, so these tests cannot run concurrently.
   use Ramal.DataCase, async: false

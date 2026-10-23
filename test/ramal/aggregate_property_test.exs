@@ -86,7 +86,7 @@ defmodule Ramal.AggregatePropertyTest do
 
         for kind <- Aggregate.kinds() do
           field = if kind in [:count, :exists], do: nil, else: :head
-          expected = Aggregate.compute(kind, field, rows, Herd)
+          expected = Aggregate.compute(kind, field, rows, Herd, shape(kind))
           actual = Ramal.aggregate!(query, kind, field, authorize?: false)
 
           assert close?(actual, expected),
@@ -124,7 +124,7 @@ defmodule Ramal.AggregatePropertyTest do
 
         for kind <- Aggregate.kinds() do
           field = if kind in [:count, :exists], do: nil, else: :hectares
-          expected = Aggregate.compute(kind, field, rows, Paddock)
+          expected = Aggregate.compute(kind, field, rows, Paddock, shape(kind))
           actual = Ramal.aggregate!(Paddock, kind, field, authorize?: false)
 
           assert close?(actual, expected),
@@ -135,6 +135,10 @@ defmodule Ramal.AggregatePropertyTest do
       :ok = Ramal.discard(branch)
     end
   end
+
+  # `Ramal.aggregate/4` answers `:first` as `Ash.first/3` does, with the first row's value even when it is nil.
+  defp shape(:first), do: [include_nil?: true]
+  defp shape(_kind), do: []
 
   # Floats are added in a different order on the two paths.
   defp close?(a, b) when is_float(a) and is_float(b), do: abs(a - b) <= 1.0e-6 * max(1.0, abs(b))

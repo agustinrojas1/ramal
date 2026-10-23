@@ -82,7 +82,7 @@ defmodule Ramal.Branch.Server do
 
   @doc """
   Starts a process for `branch` that is never stored and never unloads: the place where a nested merge replays the
-  fork's writes (`Ramal.Merge`, ADR 0039). Stop it with `stop_scratch/1`.
+  fork's writes (`Ramal.Merge`, ADR 0043). Stop it with `stop_scratch/1`.
   """
   @spec start_scratch(Branch.t(), Supervisor.config()) :: {:ok, pid} | {:error, Error.t()}
   def start_scratch(branch, config), do: start_child({:scratch, branch, config}, & &1)
@@ -313,7 +313,7 @@ defmodule Ramal.Branch.Server do
   end
 
   @doc """
-  The branch for a nested merge into it (ADR 0039), with its `version`. Like `begin_merge/2` it waits for the actions
+  The branch for a nested merge into it (ADR 0043), with its `version`. Like `begin_merge/2` it waits for the actions
   running in the branch to end, so that the copy holds no write that may yet be taken back, and is rejected unless the
   branch is open and not claimed by a merge. The `version` changes with every change of the branch; `adopt/4` takes it.
   """
@@ -1071,7 +1071,7 @@ defmodule Ramal.Branch.Server do
 
   # A nested fork whose parent holds its work, though its own status is still open: the merger died after the parent
   # persisted, or the node restarted before the fork was stored as merged. The fork's work is in the parent, so a write
-  # to it now would be lost and a second merge would take the work twice: it is merged (ADR 0039). The parent persists
+  # to it now would be lost and a second merge would take the work twice: it is merged (ADR 0043). The parent persists
   # before it adopts, so its storage is what to ask.
   defp adopted?(%Branch{parent: %{id: parent_id}, id: id, status: :open}, config) do
     case config.storage.fetch(parent_id, config.storage_config) do

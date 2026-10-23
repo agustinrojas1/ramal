@@ -5,7 +5,7 @@ defmodule Ramal.Storage.Codec do
 
   `encode_state/1` covers what the table has no column for: overlay, base (fingerprints and snapshots), log, metadata,
   the owner, the proposal and, for nested forks, the parent link, what the fork saw of the parent and the forks that
-  merged into the branch (ADR 0039). `decode_state/2` takes that map and the columns and gives the branch back, equal to the one encoded.
+  merged into the branch (ADR 0043). `decode_state/2` takes that map and the columns and gives the branch back, equal to the one encoded.
 
   How values are written, confirmed against Ash 3.37 (`lib/ash/type/type.ex`):
 
@@ -51,7 +51,7 @@ defmodule Ramal.Storage.Codec do
   alias Ash.Resource.Info
   alias Ramal.{Branch, Error}
 
-  # 3 adds `parent`, `parent_seen` and `merged_children` (ADR 0039); a branch with none of them is still written as 2,
+  # 3 adds `parent`, `parent_seen` and `merged_children` (ADR 0043); a branch with none of them is still written as 2,
   # so a state an older Ramal can read stays readable by it.
   @version 3
   @readable_versions [1, 2, 3]
@@ -62,7 +62,14 @@ defmodule Ramal.Storage.Codec do
     "rejected" => :rejected,
     "discarded" => :discarded
   }
-  @opt_names %{"key" => :key, "tenant" => :tenant, "nested?" => :nested?, "upsert" => :upsert}
+  @opt_names %{
+    "key" => :key,
+    "tenant" => :tenant,
+    "nested?" => :nested?,
+    "upsert" => :upsert,
+    "root" => :root,
+    "forced" => :forced
+  }
 
   @doc """
   The JSON-safe state of `branch`: overlay, base, log, metadata, owner, tenant and `inserted_at`.

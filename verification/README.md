@@ -67,7 +67,7 @@ sizes in `MC.cfg`, and larger sizes are left out to keep the check to a few minu
 
 ## TLA+: a nested fork merging into its parent
 
-[`tla/Nested.tla`](tla/Nested.tla) models the second kind of merge (ADR 0039): a fork made with `nested: true` is claimed,
+[`tla/Nested.tla`](tla/Nested.tla) models the second kind of merge (ADR 0043): a fork made with `nested: true` is claimed,
 the parent is copied with its version (`Server.merge_source/1`), the fork's own writes are replayed in the copy, and the
 parent takes the copy in one call if its version is unchanged and remembers the fork (`Server.adopt/4`). A write is the
 action that made it and who wrote it; the replay may fail, the storage may refuse the parent's persist, and the process

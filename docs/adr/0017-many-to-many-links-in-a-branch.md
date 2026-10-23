@@ -1,7 +1,7 @@
 # 0017. Many-to-many links in a branch
 
 Status: accepted, 2026-10-23. Issue: #43. Follows ADR 0014, which left two limits open. The decision is the load fix;
-the bulk unrelate stays refused.
+the bulk unrelate stays refused. That refusal is superseded by [ADR 0036](0036-bulk-actions-record-by-record.md).
 
 ## Context
 

@@ -17,7 +17,7 @@ defmodule Ramal.Branch do
     interprets it: `Ramal.list/2` can filter by it (ADR 0018) and nothing else reads it
   * `tenant` - the one tenant the branch works in, `nil` unless given at `branch/2` (ADR 0034). A fork keeps it
   * `proposal` - `nil` until `Ramal.propose/2`; then `t:proposal/0`
-  * `parent` - `nil`, or for a nested fork (`Ramal.fork(parent, nested: true)`, ADR 0039) `%{id: parent_id, log_length:
+  * `parent` - `nil`, or for a nested fork (`Ramal.fork(parent, nested: true)`, ADR 0043) `%{id: parent_id, log_length:
     n}`: the branch it merges into and how many of its own log entries the fork inherited
   * `parent_seen` - for a nested fork, `ref => view`: what the parent held for each row the fork read or wrote, the
     first time it did. `view/2` says what a view is. Merging into the parent compares them with the parent's now
@@ -467,7 +467,7 @@ defmodule Ramal.Branch do
   other's later changes. `metadata` gets `forked_from: parent.id`.
 
   A plain fork is a sibling: it merges into the database. With `nested: true` it records `parent` and merges into
-  `parent` instead (ADR 0039); either way it forgets the parent's own `parent`, `parent_seen` and `merged_children`.
+  `parent` instead (ADR 0043); either way it forgets the parent's own `parent`, `parent_seen` and `merged_children`.
 
   ## Options
 
@@ -593,7 +593,7 @@ defmodule Ramal.Branch do
   end
 
   @doc """
-  A copy of `branch` with a new id, for the replay of a nested merge (ADR 0039): the writes go there, and the parent
+  A copy of `branch` with a new id, for the replay of a nested merge (ADR 0043): the writes go there, and the parent
   takes them with `adopt/3` only if the replay succeeded and the parent did not change meanwhile.
 
   ## Example

@@ -51,6 +51,16 @@ defmodule Ramal.Test.Farm.Paddock do
 
   relationships do
     has_many(:herds, Ramal.Test.Farm.Herd, public?: true)
+
+    # One herd per paddock in the narrowing tests (ADR 0047); the seeds' L07 has two, so they do not read it.
+    has_one(:first_herd, Ramal.Test.Farm.Herd, public?: true)
+
+    # Paths through other relationships: every hop is read through the lateral join of AshPostgres (ADR 0046).
+    has_many(:herd_moves, Ramal.Test.Farm.Move, public?: true, through: [:herds, :moves])
+
+    # A many_to_many as a hop is broken in AshPostgres 2.15: it joins the destination to the previous hop's table and
+    # ignores the join resource, so this path is empty with or without a branch. It is here to pin that.
+    has_many(:herd_vets, Ramal.Test.Farm.Vet, public?: true, through: [:herds, :vets])
   end
 
   aggregates do
@@ -62,7 +72,18 @@ defmodule Ramal.Test.Farm.Paddock do
     max(:biggest_head, :herds, :head, public?: true)
     avg(:average_head, :herds, :head, public?: true)
 
+    # The first and the list of related values follow the aggregate's sort; `uniq?` counts and lists distinct values.
+    first(:first_herd_name, :herds, :name, public?: true, sort: [name: :asc])
+    first(:biggest_herd_name, :herds, :name, public?: true, sort: [head: :desc])
+    list(:herd_names, :herds, :name, public?: true, sort: [name: :asc])
+    list(:herd_sizes, :herds, :size, public?: true, sort: [name: :asc])
+    list(:distinct_head_list, :herds, :head, public?: true, uniq?: true, sort: [head: :asc])
+    count(:distinct_heads, :herds, field: :head, public?: true, uniq?: true)
+
     # A kind the preparation cannot compute over a branch: it keeps the database's value and emits the event.
-    first(:first_herd_name, :herds, :name, public?: true)
+    custom(:herd_name_csv, :herds, :string,
+      public?: true,
+      implementation: {Ramal.Test.Farm.StringAgg, field: :name, delimiter: ","}
+    )
   end
 end

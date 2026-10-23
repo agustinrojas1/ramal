@@ -1,4 +1,4 @@
-# 0039. Nested branches merge into their parent
+# 0043. Nested branches merge into their parent
 
 Status: accepted, 2026-10-23. Amends [ADR 0007](0007-merge.md) and [ADR 0035](0035-merged-status-in-the-merge-transaction.md).
 
