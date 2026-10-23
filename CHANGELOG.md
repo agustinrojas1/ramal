@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Security
+
+- The Release workflow publishes only from `main` and only for a commit whose CI run succeeded (it now starts from a successful CI run, or from a manual run on `main`), reads the Hex key from the `hex` environment in the two publish steps only, and pins its actions to commit SHAs. `CONTRIBUTING.md` says how to set the environment up; `SECURITY.md` names GitHub private vulnerability reporting as a channel (#119).
+
 ## [0.4.2] - 2026-10-23
 
 Docs only: now that the repository is public, the README images and the Livebook badge link GitHub (`raw.githubusercontent.com`) again, so they render on Hex.pm, HexDocs and GitHub, and the badge opens the notebook. No code change; `~> 0.4.0` pins keep working.
