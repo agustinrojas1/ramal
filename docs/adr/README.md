@@ -39,4 +39,5 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0033](0033-running-actions-hold-their-writes.md) | A running action's writes are its own until it ends | accepted |
 | [0034](0034-one-tenant-per-branch.md) | One tenant per branch | accepted |
 | [0035](0035-merged-status-in-the-merge-transaction.md) | The merge's transaction stores the merged status | accepted |
+| [0036](0036-bulk-actions-record-by-record.md) | Bulk actions run record by record inside a branch | accepted |
 | [0037](0037-result-checks-run-on-the-patched-rows.md) | Result checks run on the patched rows | accepted |

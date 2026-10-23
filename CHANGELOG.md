@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **Bulk actions work inside a branch.** `Ash.bulk_create/4`, `Ash.bulk_update/4` and `Ash.bulk_destroy/4` run each record through the captured single action, so every record lands in the overlay and the log and the merge replays them one by one. A bulk update or destroy of a query must allow `strategy: [:atomic, :stream]`, since neither atomic strategy can run in a branch. This also makes `manage_relationship` with `type: :append_and_remove` work when it removes a link (#43), and AshAi's `update` and `destroy` tools. `:bulk_unsupported` now only names a guard that refuses an action the capture hook did not wrap. ADR 0036.
+
 ### Changed
 
 - Docs: `bench/README.md` and the README's benchmark figures come from a rerun of the full benchmark and `bench.memory` on 0.6.1, with the noise between two runs stated; the raw samples are in `bench/results/published/`.

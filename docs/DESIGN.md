@@ -19,7 +19,7 @@ discard them. A branch must cost roughly what a process and a map cost, so thous
 - Schema changes inside a branch.
 - Branch-local indexes, or any promise about query plans.
 - Data-layer aggregates and calculations that Ramal cannot recompute over a branch (`first`, `list`, `custom`, `uniq?`, and aggregate queries with a limit keep the database's value, with a telemetry event; section 4.1 point 4 says what is recomputed).
-- Bulk actions, upserts and database-generated keys inside a branch, and nested branches.
+- Upserts and database-generated keys inside a branch, and nested branches.
 - Multi-node branches. A branch lives on one node; persistence makes it movable, not distributed.
 - A UI. The inspector is a separate package (`ramal_live/`, section 12).
 
@@ -180,10 +180,9 @@ This is the section that decides correctness. In a read action's preparation, wh
    read preparation drops that join, reads the patched join rows instead and tags each destination row with its source
    ([ADR 0017](adr/0017-many-to-many-links-in-a-branch.md)). A paged relationship load and a `through` path of several
    hops keep seeing the base links. Because `manage_relationship` decides from that load, `:remove` finds a link the
-   branch created and `:append` does not link a vet twice. One limit remains: `type: :append_and_remove` is refused
-   with `:bulk_unsupported` when it has a link to remove (Ash unrelates with `Ash.bulk_destroy/4`,
-   `bulk_delete_unused_unrelate/8` in `lib/ash/actions/managed_relationships.ex`, which bypasses the capture hook). Set
-   the list with `:remove` and `:append`, or write the join resource directly.
+   branch created and `:append` does not link a vet twice. `type: :append_and_remove` unrelates with `Ash.bulk_destroy/4`
+   (`bulk_delete_unused_unrelate/8` in `lib/ash/actions/managed_relationships.ex`), which a branch runs record by record
+   like any bulk action ([ADR 0036](adr/0036-bulk-actions-record-by-record.md)).
 8. **Text sort order:** once the overlay touches a resource the whole patched list is sorted in Elixir, and strings
    compare as bytes (`Banana` before `apple`), while Postgres orders them by its collation. A sort on text, and
    `Ramal.aggregate/4` with `:min` or `:max` on a string, can therefore differ between a branch and the base for
@@ -239,8 +238,14 @@ This is the section that decides correctness. In a read action's preparation, wh
 - **Atomic updates** (`atomic_update`) are evaluated in Elixir against the row with the action's attribute changes
   applied, with `Ash.Expr.eval/2` as `Ash.DataLayer.Ets` does. An expression that needs the database fails the action
   with `:atomic_unsupported`.
-- **Bulk actions and upserts** are refused: `:bulk_unsupported` for every `Ash.bulk_*`, `:upsert_unsupported` for an
-  action with `upsert? true`. The call-time option `upsert?: true` cannot be seen by a hook and acts as a create.
+- **Bulk actions run record by record** (ADR 0036). Ash runs a changeset that has an `around_action` hook singly,
+  through the single action (`split_and_run_simple/7` in `lib/ash/actions/helpers.ex`), so each record of
+  `Ash.bulk_create/4`, `bulk_update/4` and `bulk_destroy/4` is captured and logged as its own action and the data layer's
+  bulk call gets none. A bulk update or destroy of a query must allow `:stream`, because neither atomic strategy can run
+  in a branch. A `before_action` guard refuses, with `:bulk_unsupported`, an action the `around_action` hook did not
+  wrap, so a path that skipped it fails instead of writing the base.
+- **Upserts** are refused: `:upsert_unsupported` for an action with `upsert? true`. The call-time option `upsert?: true`
+  cannot be seen by a hook and acts as a create.
 - Errors added by the hook are `Ramal.Error` structs (a Splode error), found in an Ash error with
   `Ramal.Error.find/1`.
 - Transactions: an action that opens a data-layer transaction inside a branch still opens one (cheap, empty). Nothing
@@ -498,7 +503,7 @@ action (ADR 0016).
 | 8 | The current branch id lives in the process dictionary and in Ash's shared context | Ash has no ambient context, and it runs some loads in tasks that lose the process dictionary. [ADR 0002](adr/0002-current-branch-carrier.md) |
 | 9 | Idle timeout and heap limit belong to the supervisor; discard keeps the record; storage takes config last | A per-branch value is lost on unload, and a kept record gives `:not_open` a meaning. [ADR 0003](adr/0003-branch-process-lifecycle.md) |
 | 10 | Reads are patched in `before_action`/`after_action` hooks; nothing is stripped when the overlay has no entry for the resource; the preparation sorts and pages the list itself | The hooks are where Ash allows changing the data-layer query and seeing its rows; `runtime_sort` takes a list, not a comparator. [ADR 0004](adr/0004-read-patching-hooks.md) |
-| 11 | Writes are captured by a last `before_action` that sets the result; atomic updates fall back through `atomic/3` and `require_atomic? false`; every bulk action and upsert action is refused; notifications are dropped unless the resource opts in; a failed action undoes its writes; `Ramal.Error` is a Splode error | `around_action` cannot skip the data layer by itself, the atomic path never reaches a hook, and Ash flattens other exceptions to strings. [ADR 0005](adr/0005-write-capture.md) |
+| 11 | Writes are captured by a last `before_action` that sets the result; atomic updates fall back through `atomic/3` and `require_atomic? false`; every upsert action is refused (bulk actions: decision 34); notifications are dropped unless the resource opts in; a failed action undoes its writes; `Ramal.Error` is a Splode error | `around_action` cannot skip the data layer by itself, the atomic path never reaches a hook, and Ash flattens other exceptions to strings. [ADR 0005](adr/0005-write-capture.md) |
 | 12 | `base` holds `%{fingerprint, snapshot}` per touched row; every read fingerprints the base rows it returns, except when it selects some attributes; a fork copies everything and records `forked_from` | Staleness needs the state at first read, diff needs the state at first write, and a partial row has no comparable hash. [ADR 0006](adr/0006-fingerprints-and-fork.md) |
 | 13 | Merge claims the branch first, checks staleness inside the replay transaction with row locks where possible, and forces created rows to keep their branch primary keys; entries logged by hooks are not replayed | Writes between check and replay would be lost, a check outside the transaction races, and later log entries name rows by key. [ADR 0007](adr/0007-merge.md) |
 | 14 | Branches are stored through `Ramal.Storage.Codec`: attributes through the Ash embedded dump and cast, everything else as tagged terms, atoms never created, actors stored as the term; `list/3` can fail | A round trip must be `==`, the Ash `cast_stored` is the data layer's form, not JSON's, and a database can fail. [ADR 0008](adr/0008-postgres-storage.md) |
@@ -521,3 +526,4 @@ action (ADR 0016).
 | 31 | A paginated read of a resource the overlay touches reads the whole patched list, cuts the page in Elixir and gives Ash the rows with `set_result` and the count with `full_count` | The database cannot page rows it does not have, and Ash fixes `more?` and `count` from the database before any hook after the data layer can speak. The cost is a read of every matching row per page. [ADR 0030](adr/0030-pages-cut-from-the-patched-list.md) |
 | 32 | A captured write is held under its action's process until the action ends: merges and proposals wait, forks leave it out, other writers of the row get `:row_busy`, a dead writer is undone; a process that died without `terminate/2` is not reloaded from storage | The TLA+ model (`verification/tla`) found merges, forks and proposals taking writes of actions that then failed, overlay and log diverging, and a killed process reloaded behind its own writes. [ADR 0033](adr/0033-running-actions-hold-their-writes.md) |
 | 33 | The merge's transaction stores the branch as merged and refuses a branch stored so; a branch process whose merger died asks the storage before releasing the claim; Postgres never stores a merged row back as open | A merge whose process died after the commit, or whose node restarted before the persist, left the branch open and mergeable a second time (TLA+ model, #143). [ADR 0035](adr/0035-merged-status-in-the-merge-transaction.md) |
+| 34 | Inside a branch a bulk action runs each record through the captured single action; a bulk update or destroy of a query must allow `:stream`; a guard refuses an action the capture hook did not wrap | Ash runs changesets with an `around_action` hook singly, and the refusal also blocked `append_and_remove` and AshAi's update and destroy tools. [ADR 0036](adr/0036-bulk-actions-record-by-record.md) |
