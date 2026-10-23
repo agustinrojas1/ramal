@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-10-23
+## [0.3.0] - 2026-10-23
 
 ### Added
 
@@ -92,7 +92,7 @@ Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspec
 - A multitenant resource used with a tenant inside a branch is refused with `:multitenancy_unsupported` (`Ramal.Resource.ensure_untenanted/2`), instead of mixing tenants in one overlay or failing at merge.
 - Stored branches no longer hold the `sensitive?` attributes of an actor that is an Ash record (they are stored as `nil`); other actors are stored as before.
 
-[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/agustinrojas1/ramal/compare/v0.2.0...v0.2.1
+[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/agustinrojas1/ramal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/agustinrojas1/ramal/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/agustinrojas1/ramal/releases/tag/v0.1.0

@@ -40,8 +40,8 @@ Requires Phoenix 1.7+, Phoenix LiveView 1.1+ and a running `Phoenix.PubSub`.
 
 ```elixir
 # mix.exs
-{:ramal, "~> 0.2.0"},
-{:ramal_live, "~> 0.2.0"}
+{:ramal, "~> 0.3.0"},
+{:ramal_live, "~> 0.3.0"}
 
 # application.ex, after the PubSub and Ramal.Supervisor, in every node that runs branches
 {RamalLive.Broadcaster, pubsub: MyApp.PubSub}
