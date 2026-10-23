@@ -228,8 +228,11 @@ This is the section that decides correctness. In a read action's preparation, wh
 - Destroys mark the key `:deleted`. Updates of a `:created` row stay `:created` with the new record. The first write to
   an existing row keeps the row as the action found it in `base`, which `diff/1` compares against.
 - Every write is appended to the log as `{action_type, resource, action_name, params, actor, opts, at}`; `opts` has
-  `key`, `tenant` and `nested?`. A write made by a hook of another captured action (or by a managed relationship) is
-  `nested?: true`, and merge skips it because replaying the outer action runs the hook again. An update that changes
+  `key`, `tenant`, `nested?` and `root`, and `forced` when the caller set attributes after building the changeset
+  (`change_attribute/3`; the replay sets them again). A write made by a hook of another captured action (or by a
+  managed relationship) is `nested?: true`, and merge skips it because replaying the outer action runs the hook again;
+  `root` names the outermost action, and the replay gives the creates of its hooks the keys they had, so later entries
+  find those rows (ADR 0041). An update that changes
   no attribute is logged too, with the row left as it was and out of `diff/1`, because its hooks and managed
   relationships can write other rows and only the outer action can replay them (ADR 0014).
 - A failing action takes back its own writes and those of the actions its hooks ran.

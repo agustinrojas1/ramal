@@ -219,6 +219,21 @@ defmodule Ramal.Resource do
   @spec key(module, map) :: term
   def key(resource, record), do: key_of(record, Ash.Resource.Info.primary_key(resource))
 
+  @doc false
+  # Sets the primary key of a create changeset to `key` (a scalar, or a tuple for a composite key), over whatever
+  # default it got.
+  @spec force_key(Ash.Changeset.t(), term) :: Ash.Changeset.t()
+  def force_key(changeset, key) do
+    values = if is_tuple(key), do: Tuple.to_list(key), else: [key]
+
+    changeset.resource
+    |> Ash.Resource.Info.primary_key()
+    |> Enum.zip(values)
+    |> Enum.reduce(changeset, fn {field, value}, changeset ->
+      Ash.Changeset.force_change_attribute(changeset, field, value)
+    end)
+  end
+
   defp key_of(record, [field]), do: Map.fetch!(record, field)
   defp key_of(record, fields), do: fields |> Enum.map(&Map.fetch!(record, &1)) |> List.to_tuple()
 

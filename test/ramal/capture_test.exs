@@ -134,6 +134,8 @@ defmodule Ramal.CaptureTest do
 
       assert [{:create, Herd, :create, params, nil, opts, %DateTime{}}] = branch.log
       assert params == %{name: "R10", head: 5}
+      assert {root, opts} = Keyword.pop(opts, :root)
+      assert is_integer(root)
       assert opts == [key: herd.id, tenant: nil, nested?: false]
     end
 
@@ -439,6 +441,7 @@ defmodule Ramal.CaptureTest do
 
       assert move_opts[:nested?] == true
       assert herd_opts[:nested?] == false
+      assert move_opts[:root] == herd_opts[:root]
       assert Move |> Ash.read!(authorize?: false) == []
     end
 

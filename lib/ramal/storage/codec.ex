@@ -59,7 +59,14 @@ defmodule Ramal.Storage.Codec do
     "rejected" => :rejected,
     "discarded" => :discarded
   }
-  @opt_names %{"key" => :key, "tenant" => :tenant, "nested?" => :nested?, "upsert" => :upsert}
+  @opt_names %{
+    "key" => :key,
+    "tenant" => :tenant,
+    "nested?" => :nested?,
+    "upsert" => :upsert,
+    "root" => :root,
+    "forced" => :forced
+  }
 
   @doc """
   The JSON-safe state of `branch`: overlay, base, log, metadata, owner, tenant and `inserted_at`.
