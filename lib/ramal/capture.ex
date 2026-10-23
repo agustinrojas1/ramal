@@ -36,6 +36,11 @@ defmodule Ramal.Capture do
   taken back. A write made by a hook of another captured action is logged with `nested?: true`, because replaying the
   outer action runs the hook again.
 
+  In a durable branch (ADR 0048) the outermost action's end is a call: the branch process appends the writes of the
+  action to the storage's write log and the action returns once they are stored. An append that fails fails the action
+  with `:storage`, and its writes are taken back like those of any failed action. An action that failed or raised
+  appends nothing.
+
   ## Example
 
       {:ok, branch} = Ramal.branch(MyApp.Farm)
@@ -154,7 +159,7 @@ defmodule Ramal.Capture do
   end
 
   defp run_captured(changeset, callback, id, upsert?) do
-    frame = Process.get(@frame, %{depth: 0, undos: []})
+    frame = Process.get(@frame, %{depth: 0, undos: [], durable: false})
     nested? = frame.depth > 0
     mark = length(frame.undos)
     Process.put(@frame, %{frame | depth: frame.depth + 1})
@@ -162,7 +167,12 @@ defmodule Ramal.Capture do
 
     try do
       result = callback.(changeset)
-      if succeeded?(result), do: result, else: rollback(id, mark, result)
+
+      cond do
+        not succeeded?(result) -> rollback(id, mark, result)
+        nested? -> result
+        true -> commit(result, id, mark)
+      end
     catch
       kind, reason ->
         rollback(id, mark, :raised)
@@ -173,6 +183,26 @@ defmodule Ramal.Capture do
   end
 
   defp succeeded?(result), do: is_tuple(result) and elem(result, 0) == :ok
+
+  # The outermost action of a durable branch has ended well: its writes are stored before it returns (ADR 0048). Writes
+  # made by the hooks of an inner action are in the frame too, so they are stored with it, as one delta.
+  defp commit(result, id, mark) do
+    case Process.get(@frame) do
+      %{durable: true, undos: [_ | _]} = frame ->
+        case Server.commit(id) do
+          :ok ->
+            # The process has dropped the writes it held, so there is nothing left for `leave/1` to release.
+            Process.put(@frame, %{frame | undos: []})
+            result
+
+          {:error, _error} = failed ->
+            rollback(id, mark, failed)
+        end
+
+      _not_durable_or_nothing_written ->
+        result
+    end
+  end
 
   defp rollback(id, mark, result) do
     frame = Process.get(@frame)
@@ -219,7 +249,7 @@ defmodule Ramal.Capture do
 
       case result do
         {:ok, {:ok, undo}, summary} ->
-          remember(undo)
+          remember(undo, summary.durable)
           emit(summary, changeset, nested?)
 
           changeset
@@ -591,9 +621,9 @@ defmodule Ramal.Capture do
      [key: key, tenant: changeset.tenant, nested?: nested?] ++ extra, DateTime.utc_now()}
   end
 
-  defp remember(undo) do
+  defp remember(undo, durable?) do
     frame = Process.get(@frame)
-    Process.put(@frame, %{frame | undos: [undo | frame.undos]})
+    Process.put(@frame, %{frame | undos: [undo | frame.undos], durable: durable?})
   end
 
   defp emit(summary, changeset, nested?) do

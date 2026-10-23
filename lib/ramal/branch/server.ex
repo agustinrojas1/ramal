@@ -29,6 +29,12 @@ defmodule Ramal.Branch.Server do
   # How long a process started for a handed-over branch waits for it (see start_forked/2).
   @handoff_timeout 5_000
 
+  # A durable branch stores a snapshot, which deletes the deltas it covers, after this many appends (ADR 0048). The
+  # chain is what a load after a crash has to apply, and the snapshot is what a compaction writes, so the number trades
+  # the first against the second: at 100 a load applies at most 100 deltas and a branch of a thousand rows writes its
+  # snapshot once per hundred actions.
+  @compact_every 100
+
   # How long a merge or a proposal waits for the actions running in the branch to end. Less than @call_timeout, so the
   # process answers before its caller gives up and a claim is never granted to a caller that stopped waiting.
   @wait_timeout 4_000
@@ -179,11 +185,39 @@ defmodule Ramal.Branch.Server do
         {:error, too_large_error(id)}
 
       true ->
-        with {:ok, branch} <- config.storage.fetch(id, config.storage_config) do
-          start(branch, config)
+        with {:ok, branch} <- config.storage.fetch(id, config.storage_config),
+             {:ok, branch, recovered} <- recover(branch, config),
+             {:ok, pid} <- start(branch, config) do
+          compact_recovered(pid, recovered)
         end
     end
   end
+
+  # A branch that came back from a crash is stored again as a snapshot, which deletes the deltas it applied, so the next
+  # crash does not start from a longer chain. The process does it once it owns the branch: this caller may have lost the
+  # race to start it.
+  defp compact_recovered(pid, recovered) do
+    if recovered > 0, do: GenServer.cast(pid, :compact)
+    {:ok, pid}
+  end
+
+  # A durable branch is its snapshot with the deltas of the write log after it applied, in the order their actions
+  # ended in (ADR 0048).
+  defp recover(%Branch{durable: true} = branch, config) do
+    if Ramal.Storage.durable?(config.storage) do
+      with {:ok, deltas} <- config.storage.writes_after(branch, config.storage_config) do
+        {:ok, apply_deltas(branch, deltas), length(deltas)}
+      end
+    else
+      {:error, Ramal.Storage.durability_unsupported(config.storage)}
+    end
+  end
+
+  defp recover(branch, _config), do: {:ok, branch, 0}
+
+  defp apply_deltas(branch, deltas),
+    do:
+      Enum.reduce(deltas, branch, fn {seq, delta}, acc -> Branch.apply_delta(acc, seq, delta) end)
 
   @doc false
   def too_large_error(id) do
@@ -346,6 +380,19 @@ defmodule Ramal.Branch.Server do
   end
 
   @doc """
+  Tells the process of a durable branch (ADR 0048) that the calling process's outermost action ended and its writes
+  stand. Unlike `release/1` it is a call: the process appends the writes of the action, and of no other, to the storage's
+  write log and answers `:ok` once they are stored, and the action returns only then. It answers
+  `{:error, %Ramal.Error{reason: :storage}}` when they are not, and the action fails: the writes stay held, so
+  the caller takes them back with `undo/2` like any failed action.
+
+  A branch that is not open any more (discarded while the action ran) has nothing to store, and `:ok` is the answer. A
+  process that holds no writes of the caller, because it was restarted since, answers the error, for the writes are gone.
+  """
+  @spec commit(String.t()) :: :ok | {:error, Error.t()}
+  def commit(id), do: persisting_call(id, :commit)
+
+  @doc """
   Claims the branch for a merge and returns it. While claimed the branch refuses reads of its overlay, writes, discards
   and a second claim, so two merges cannot replay the same log. The claim ends with `finish_merge/2`, or when the
   caller dies.
@@ -403,6 +450,7 @@ defmodule Ramal.Branch.Server do
 
   defp discard_cold(id, config) do
     with {:ok, branch} <- config.storage.fetch(id, config.storage_config),
+         {:ok, branch, _recovered} <- recover(branch, config),
          discarded = Branch.discard(branch),
          :ok <- config.storage.put(discarded, config.storage_config) do
       Supervisor.clear_too_large(id)
@@ -460,6 +508,8 @@ defmodule Ramal.Branch.Server do
       stop: nil,
       merging: nil,
       persisted: false,
+      # appends to the write log since the last snapshot (durable branches)
+      appended: 0,
       index: nil,
       seen: nil,
       # pid => %{monitor: ref, undos: [undo]}: the writes of actions that have not ended (capture/3)
@@ -478,6 +528,11 @@ defmodule Ramal.Branch.Server do
     after
       @handoff_timeout -> {:stop, :normal, %{state | stop: :unclaimed}}
     end
+  end
+
+  def handle_continue(:compact, state) do
+    state = compact(state)
+    {:noreply, state, timeout(state)}
   end
 
   @impl true
@@ -573,14 +628,36 @@ defmodule Ramal.Branch.Server do
             _refused -> state
           end
 
-        reply(state, {:ok, reply, %{id: branch.id, domain: branch.domain}})
+        reply(
+          state,
+          {:ok, reply, %{id: branch.id, domain: branch.domain, durable: branch.durable}}
+        )
     end
+  end
+
+  # The undo of a durable branch takes back only what the caller still holds. A caller that gave up waiting for its
+  # commit and undoes its writes anyway would otherwise take back writes that are stored by then.
+  def handle_call({:undo, undos}, {pid, _tag}, %{branch: %{durable: true}} = state) do
+    held = state.running |> Map.get(pid, %{undos: []}) |> Map.fetch!(:undos) |> MapSet.new()
+    undos = Enum.filter(undos, &MapSet.member?(held, &1))
+    state = state |> take_back(undos) |> drop_undos(pid, undos)
+    reply(state, :ok)
   end
 
   def handle_call({:undo, undos}, {pid, _tag}, state) do
     state = state |> take_back(undos) |> drop_undos(pid, undos)
     reply(state, :ok)
   end
+
+  def handle_call(:commit, {pid, _tag}, %{branch: %{durable: true}} = state) do
+    cond do
+      not usable?(state) -> reply(state, :ok)
+      not is_map_key(state.running, pid) -> reply(state, {:error, writes_lost(state)})
+      true -> commit_writes(state, pid)
+    end
+  end
+
+  def handle_call(:commit, _from, state), do: reply(state, :ok)
 
   # A merge or a proposal of a branch with actions running waits for them, as a lock would; see wait/3.
   def handle_call({kind, _arg} = request, from, %{running: running} = state)
@@ -745,6 +822,11 @@ defmodule Ramal.Branch.Server do
     {:noreply, state, timeout(state)}
   end
 
+  def handle_cast(:compact, state) do
+    state = compact(state)
+    {:noreply, state, timeout(state)}
+  end
+
   @impl true
   def terminate(reason, state) do
     stopped(reason, state)
@@ -756,11 +838,15 @@ defmodule Ramal.Branch.Server do
   defp stopped(_reason, %{branch: nil}), do: :ok
   defp stopped(_reason, %{stop: stop}) when stop in [:discarded, :merged, :rejected], do: :ok
 
-  defp stopped(_reason, %{branch: branch, config: config, stop: stop, persisted: persisted}) do
+  defp stopped(
+         _reason,
+         %{branch: branch, config: config, stop: stop, persisted: persisted} = state
+       ) do
     # Persist before announcing the unload, so an observer who sees the event can already rehydrate the branch. On a
     # shutdown there is no process left to keep, so a failed write is reported instead of announced as an unload.
+    # A durable branch stores nothing of an action that has not ended (ADR 0048): one that never ends is not stored.
     with false <- persisted,
-         {:error, error} <- persist(branch, config) do
+         {:error, error} <- persist(stored_branch(state), config) do
       Telemetry.branch(:persist_failed, branch, %{reason: stop || :shutdown, error: error})
     else
       _persisted -> Telemetry.branch(:unload, branch, %{reason: stop || :shutdown})
@@ -768,6 +854,9 @@ defmodule Ramal.Branch.Server do
   end
 
   defp reply(state, reply), do: {:reply, reply, state, timeout(state)}
+
+  defp stored_branch(%{branch: %{durable: true}} = state), do: without_running(state)
+  defp stored_branch(state), do: state.branch
 
   # A branch being merged must not unload: the merge would lose its claim. Nor one with actions running: their writes
   # would be stored as if they had ended, and a death of their process would go unnoticed.
@@ -817,6 +906,77 @@ defmodule Ramal.Branch.Server do
         Process.demonitor(held.monitor, [:flush])
         %{state | running: running}
     end
+  end
+
+  # Appends what the action of `pid` added to the branch (ADR 0048). The delta holds the rows that action wrote and no
+  # others, and no row is held by two running actions (`busy?/3`), so it holds nothing of an action that has not ended.
+  # A failed append makes the action fail; its writes stay held for the undo that follows. The `seq` is given up either
+  # way: a storage that failed to answer may have stored the delta, and a snapshot of this branch covering that `seq`,
+  # stored right away, deletes it, as the next one does if this one fails. Reusing it could not be told from a
+  # duplicate.
+  defp commit_writes(state, pid) do
+    %{branch: branch, config: config} = state
+    delta = Branch.delta(branch, state.running[pid].undos)
+    seq = branch.wal + 1
+    started = System.monotonic_time()
+    result = config.storage.append(branch, seq, delta, config.storage_config)
+    duration = System.monotonic_time() - started
+    state = %{state | branch: %{branch | wal: seq}}
+
+    case result do
+      :ok ->
+        Telemetry.branch(
+          :append,
+          branch,
+          %{seq: seq, rows: map_size(delta.overlay) + length(delta.gone)},
+          %{
+            duration: duration
+          }
+        )
+
+        state = %{state | appended: state.appended + 1} |> drop_running(pid) |> serve_waiting()
+
+        if state.appended >= @compact_every,
+          do: {:reply, :ok, state, {:continue, :compact}},
+          else: reply(state, :ok)
+
+      {:error, error} ->
+        Telemetry.branch(:persist_failed, branch, %{reason: :append, error: error})
+        {:reply, {:error, error}, state, {:continue, :compact}}
+    end
+  end
+
+  # Stores the branch as a snapshot that covers the write log. The writes of running actions are left out, because those
+  # actions may yet fail (ADR 0033); their deltas come after the snapshot's `wal`, when the actions end.
+  defp compact(%{branch: %{durable: true, status: :open}, merging: nil, config: config} = state) do
+    snapshot = without_running(state)
+    started = System.monotonic_time()
+
+    case persist(snapshot, config) do
+      :ok ->
+        Telemetry.branch(:compact, snapshot, %{wal: snapshot.wal}, %{
+          duration: System.monotonic_time() - started
+        })
+
+        %{state | appended: 0}
+
+      {:error, error} ->
+        Telemetry.branch(:persist_failed, snapshot, %{reason: :compact, error: error})
+
+        # Not again at the next action, which would meet the same storage: after half the interval.
+        %{state | appended: div(@compact_every, 2)}
+    end
+  end
+
+  defp compact(state), do: state
+
+  defp writes_lost(state) do
+    Error.new(
+      :storage,
+      "branch #{inspect(state.branch.id)} no longer holds the writes of this action (its process was restarted since " <>
+        "they were made), so they cannot be stored",
+      %{id: state.branch.id}
+    )
   end
 
   defp busy?(state, ref, pid) do

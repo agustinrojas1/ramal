@@ -22,7 +22,7 @@ defmodule Ramal do
   """
 
   alias Ash.Resource.Info
-  alias Ramal.{Branch, Current, Error, Limits, Resource, Supervisor, Telemetry}
+  alias Ramal.{Branch, Current, Error, Limits, Resource, Storage, Supervisor, Telemetry}
   alias Ramal.Branch.Server
   alias Ramal.Preparation.Related
 
@@ -40,12 +40,17 @@ defmodule Ramal do
     * `:tenant` - the one tenant the branch works in (ADR 0034). Reads and writes of a multitenant resource inside the
       branch must carry it (`:tenant_mismatch` otherwise); the merge reads the staleness rows with it. A branch without a
       tenant refuses multitenant resources used with a tenant (`:multitenancy_unsupported`). Default `nil`
+    * `:durable` - `true` to append the writes of every action that ends to the storage's write log before the action
+      returns, so that a crash of the node loses none of them (ADR 0048). Default: the supervisor's `:durable`, which is
+      `false`. Costs one storage write per action; the writes of an action that has not ended are never stored. Needs a
+      storage that defines `c:Ramal.Storage.append/4` and `c:Ramal.Storage.writes_after/2`
 
   Returns `{:error, %Ramal.Error{reason: :not_started}}` when `Ramal.Supervisor` is not running, and
   `:no_branchable_resources` when no resource of the domain uses `Ramal.Resource` (or all of them opted out), since
   such a branch could never change what a read returns, `:unbranchable_resources` when a resource of the domain has write
-  actions and neither uses `Ramal.Resource` nor opts out with `branchable? false` (ADR 0027), and `:limit_reached` when the supervisor's
-  `:max_active_branches` or `:branch_rate` is reached (both off by default, see `Ramal.Supervisor`).
+  actions and neither uses `Ramal.Resource` nor opts out with `branchable? false` (ADR 0027), `:limit_reached` when the supervisor's
+  `:max_active_branches` or `:branch_rate` is reached (both off by default, see `Ramal.Supervisor`), and
+  `:durability_unsupported` when `durable: true` meets a storage that cannot keep the write log.
 
   ## Example
 
@@ -58,6 +63,8 @@ defmodule Ramal do
     with {:ok, config} <- Supervisor.config(),
          :ok <- ensure_branchable(domain),
          :ok <- Limits.check(domain, :branch, config),
+         opts = Keyword.put_new(opts, :durable, config.durable),
+         :ok <- ensure_durable(opts[:durable], config),
          branch = Branch.new(domain, opts),
          :ok <- config.storage.put(branch, config.storage_config),
          {:ok, _pid} <- Server.start(branch, config) do
@@ -265,6 +272,8 @@ defmodule Ramal do
     * `:name` - default: the parent's name
     * `:metadata` - default: the parent's metadata
     * `:owner` - default: the parent's owner
+    * `:durable` - default: the parent's. The fork is stored as a snapshot of what it copied and starts a write log of
+      its own (ADR 0048)
 
   ## Example
 
@@ -279,6 +288,7 @@ defmodule Ramal do
          {:ok, parent} <- Server.fork_source(id_of(branch_or_id)),
          :ok <- Limits.check(parent.domain, :fork, config),
          fork = Branch.fork(parent, opts),
+         :ok <- ensure_durable(fork.durable, config),
          :ok <- config.storage.put(fork, config.storage_config),
          {:ok, _pid} <- Server.start_forked(fork, config) do
       Telemetry.branch(:fork, fork, %{parent_id: parent.id})
@@ -655,6 +665,12 @@ defmodule Ramal do
 
     result
   end
+
+  defp ensure_durable(true, %{storage: storage}) do
+    if Storage.durable?(storage), do: :ok, else: {:error, Storage.durability_unsupported(storage)}
+  end
+
+  defp ensure_durable(_not_durable, _config), do: :ok
 
   defp ensure_branchable(domain) do
     case Resource.branchable_resources(domain) do

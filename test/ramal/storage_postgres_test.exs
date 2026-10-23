@@ -233,6 +233,117 @@ defmodule Ramal.Storage.PostgresTest do
     end
   end
 
+  describe "a durable branch through the supervisor" do
+    alias Ecto.Adapters.SQL
+
+    # The action of a branch on a Postgres resource holds a connection in its transaction while the branch process
+    # stores the action's delta over another, which a sandbox that shares one connection among the processes cannot
+    # give. So this runs on real connections, and everything it writes is deleted at the end.
+    setup do
+      Sandbox.mode(TestRepo, :auto)
+      on_exit(fn -> Sandbox.mode(TestRepo, :manual) end)
+      start_supervised!({Ramal.Supervisor, storage: Postgres, repo: TestRepo, durable: true})
+      {:ok, branch} = Ramal.branch(Farm)
+      on_exit(fn -> Postgres.delete(branch.id, @config) end)
+      {:ok, branch: branch}
+    end
+
+    # What a crash of the node leaves: the process gone, no terminate/2, and the marks a restart clears.
+    defp crash(id) do
+      pid = Ramal.Supervisor.whereis(id)
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+      eventually(fn -> Ramal.Supervisor.too_large?(id) end)
+      Ramal.Supervisor.clear_too_large(id)
+      Ramal.Supervisor.clear_running(id)
+      eventually(fn -> not loaded?(id) end)
+    end
+
+    defp logged_seqs(id) do
+      {:ok, uuid} = Ecto.UUID.dump(id)
+
+      %{rows: rows} =
+        SQL.query!(
+          TestRepo,
+          "SELECT seq FROM ramal_branch_writes WHERE branch_id = $1 ORDER BY seq",
+          [uuid]
+        )
+
+      List.flatten(rows)
+    end
+
+    test "is durable when the supervisor says so", %{branch: branch} do
+      assert branch.durable
+    end
+
+    test "comes back from a kill with every write of every action that ended", %{branch: branch} do
+      Ramal.run!(branch, fn ->
+        herd = Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false)
+        Ash.create!(Paddock, %{name: "L99", capacity_head: 10}, authorize?: false)
+        Ash.update!(herd, %{head: 6}, authorize?: false)
+      end)
+
+      Ramal.run!(branch, fn ->
+        herd = Ash.create!(Herd, %{name: "R11", head: 1}, authorize?: false)
+        Ash.destroy!(herd, authorize?: false)
+      end)
+
+      assert logged_seqs(branch.id) == [1, 2, 3, 4, 5]
+      {:ok, before_crash} = Ramal.get(branch.id)
+      {:ok, diff} = Ramal.diff(branch)
+      assert length(diff) == 2
+
+      crash(branch.id)
+
+      assert {:ok, ^before_crash} = Ramal.get(branch.id)
+      assert Ramal.diff(branch) == {:ok, diff}
+      # The recovered process stored a snapshot that covers what it applied.
+      eventually(fn -> logged_seqs(branch.id) == [] end)
+      assert {:ok, %{wal: 5}} = Postgres.fetch(branch.id, @config)
+    end
+
+    test "a fork of it survives a kill with what it copied and what it wrote", %{branch: parent} do
+      Ramal.run!(parent, fn -> Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false) end)
+      {:ok, fork} = Ramal.fork(parent)
+      on_exit(fn -> Postgres.delete(fork.id, @config) end)
+      Ramal.run!(fork, fn -> Ash.create!(Herd, %{name: "R11", head: 6}, authorize?: false) end)
+
+      assert logged_seqs(parent.id) == [1]
+      assert logged_seqs(fork.id) == [1]
+      {:ok, before_crash} = Ramal.get(fork.id)
+      assert before_crash.wal == 1
+
+      crash(fork.id)
+
+      assert {:ok, ^before_crash} = Ramal.get(fork.id)
+      assert {:ok, [_, _]} = Ramal.diff(fork)
+      assert {:ok, [_]} = Ramal.diff(parent)
+    end
+
+    test "has the deltas deleted by the snapshot it unloads with", %{branch: branch} do
+      Ramal.run!(branch, fn -> Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false) end)
+      assert logged_seqs(branch.id) == [1]
+
+      # Stopping the process stores the branch whole, which covers the delta.
+      :ok = GenServer.stop(Ramal.Supervisor.whereis(branch.id))
+
+      assert logged_seqs(branch.id) == []
+      assert {:ok, %{wal: 1}} = Postgres.fetch(branch.id, @config)
+      assert {:ok, loaded} = Ramal.get(branch.id)
+      assert length(loaded.log) == 1
+    end
+
+    test "deleting the branch from storage deletes its log", %{branch: branch} do
+      Ramal.run!(branch, fn -> Ash.create!(Herd, %{name: "R10", head: 5}, authorize?: false) end)
+      assert logged_seqs(branch.id) == [1]
+
+      assert Postgres.delete(branch.id, @config) == :ok
+
+      assert logged_seqs(branch.id) == []
+    end
+  end
+
   describe "the owner column" do
     alias Ecto.Adapters.SQL
 
@@ -429,6 +540,25 @@ defmodule Ramal.Storage.PostgresTest do
       stop_supervised!(Ramal.Supervisor)
 
       assert fetch_in_new_vm(branch.id) == in_memory
+    end
+
+    @tag timeout: 120_000
+    test "a durable branch's snapshot and write log are loaded identically by a new BEAM" do
+      start_supervised!({Ramal.Supervisor, storage: Postgres, repo: TestRepo, durable: true})
+      {:ok, branch} = Ramal.branch(Farm, name: "durable")
+      on_exit(fn -> Postgres.delete(branch.id, @config) end)
+
+      Ramal.run!(branch, fn -> Ash.create!(Herd, %{name: "R78", head: 8}, authorize?: false) end)
+
+      Ramal.run!(branch, fn ->
+        Ash.create!(Paddock, %{name: "L99", capacity_head: 10}, authorize?: false)
+      end)
+
+      # The process is still up: storage holds the branch as created and two deltas.
+      {:ok, in_memory} = Ramal.get(branch.id)
+      assert in_memory.wal == 2
+
+      assert fetch_in_new_vm(branch.id, true) == in_memory
     end
 
     @tag timeout: 120_000

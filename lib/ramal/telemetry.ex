@@ -11,7 +11,9 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :branch, :fork]` | a branch was forked from another (extra metadata: `parent_id`) |
   | `[:ramal, :branch, :load]` | a branch process started from storage, or right after creation |
   | `[:ramal, :branch, :unload]` | a branch process stopped after persisting (`reason`: `:idle` or `:shutdown`) |
-  | `[:ramal, :branch, :persist_failed]` | storage refused the write of a branch (`reason`: `:idle`, `:shutdown` or `:merged`, `error`): an idle branch stays loaded and tries again; so does a merge whose commit succeeded but whose `:merged` status could not be stored (`Ramal.Merge.Result` `persist_failed`); on a shutdown its last persisted state is what remains |
+  | `[:ramal, :branch, :persist_failed]` | storage refused the write of a branch (`reason`: `:idle`, `:shutdown`, `:merged`, `:append` or `:compact`, `error`): an idle branch stays loaded and tries again; so does a merge whose commit succeeded but whose `:merged` status could not be stored (`Ramal.Merge.Result` `persist_failed`); on a shutdown its last persisted state is what remains; a refused `:append` fails the action it belongs to (ADR 0048), and a refused `:compact` is tried again after fifty more appends |
+  | `[:ramal, :branch, :append]` | a durable branch (ADR 0048) stored the writes of an action that ended in its write log, before the action returned (extra metadata: `seq`, `rows`, the rows the delta holds; measurement `duration`, in native time units, of the storage call) |
+  | `[:ramal, :branch, :compact]` | a durable branch stored a snapshot that covers its write log, which deleted the deltas it covers (extra metadata: `wal`, the last `seq` the snapshot covers; measurement `duration`) |
   | `[:ramal, :branch, :discard]` | a branch was discarded |
   | `[:ramal, :branch, :propose]` | a branch was proposed for a decision |
   | `[:ramal, :branch, :approve]` | a proposed branch was approved and merged (after the `[:ramal, :merge]` span) |
@@ -47,6 +49,8 @@ defmodule Ramal.Telemetry do
           :fork,
           :load,
           :unload,
+          :append,
+          :compact,
           :persist_failed,
           :discard,
           :too_large,
@@ -71,18 +75,19 @@ defmodule Ramal.Telemetry do
   end
 
   @doc """
-  Emits a branch lifecycle event for `branch` (anything with `:id` and `:domain`), merging `extra` into the metadata.
+  Emits a branch lifecycle event for `branch` (anything with `:id` and `:domain`), merging `extra` into the metadata and
+  `measurements` into the measurements (`system_time` is always there).
 
   ## Example
 
       iex> Ramal.Telemetry.branch(:discard, %{id: "b1", domain: MyApp.Farm}, %{reason: :requested})
       :ok
   """
-  @spec branch(atom, %{id: String.t(), domain: module}, map) :: :ok
-  def branch(step, %{id: id, domain: domain}, extra \\ %{}) do
+  @spec branch(atom, %{id: String.t(), domain: module}, map, map) :: :ok
+  def branch(step, %{id: id, domain: domain}, extra \\ %{}, measurements \\ %{}) do
     :telemetry.execute(
       [:ramal, :branch, step],
-      %{system_time: System.system_time()},
+      Map.put(measurements, :system_time, System.system_time()),
       Map.merge(%{branch_id: id, domain: domain}, extra)
     )
   end
