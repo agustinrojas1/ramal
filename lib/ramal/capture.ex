@@ -39,6 +39,7 @@ defmodule Ramal.Capture do
   """
   use Ash.Resource.Change
 
+  alias Ash.Error.Changes.StaleRecord
   alias Ash.Resource.Info
   alias Ramal.{Branch, Current, Error, Resource, Telemetry}
   alias Ramal.Branch.Server
@@ -135,18 +136,16 @@ defmodule Ramal.Capture do
         key = Resource.key(resource, record)
         entry = log_entry(changeset, key, nested?)
 
-        put = fn branch ->
-          {branch, undo} =
-            Branch.put_write(branch, kind, {resource, key}, record, base_row, entry)
-
-          {undo, branch}
-        end
+        put = &put_write(&1, kind, {resource, key}, record, base_row, entry)
 
         case Server.write(id, put) do
-          {:ok, undo, summary} ->
+          {:ok, {:ok, undo}, summary} ->
             remember(undo)
             emit(summary, changeset, nested?)
             Ash.Changeset.set_result(changeset, {:ok, result_record(kind, record, resource)})
+
+          {:ok, {:error, :destroyed}, _summary} ->
+            Ash.Changeset.add_error(changeset, stale_error(changeset, key))
 
           {:error, %Error{} = error} ->
             Ash.Changeset.add_error(changeset, error)
@@ -154,6 +153,19 @@ defmodule Ramal.Capture do
 
       {:error, %Error{} = error} ->
         Ash.Changeset.add_error(changeset, error)
+    end
+  end
+
+  # Updating or destroying a row the branch already destroyed is what the data layer refuses on the real base:
+  # AshPostgres answers `StaleRecord` when its UPDATE or DELETE touches no row (`update/2` and `destroy/2` in
+  # `lib/data_layer.ex`, AshPostgres 2.15). Taking it would bring the row back (an update) or log a second destroy,
+  # and a merge replays both against a row that is not there.
+  defp put_write(branch, kind, ref, record, base_row, entry) do
+    if kind != :created and Map.get(branch.overlay, ref) == :deleted do
+      {{:error, :destroyed}, branch}
+    else
+      {branch, undo} = Branch.put_write(branch, kind, ref, record, base_row, entry)
+      {{:ok, undo}, branch}
     end
   end
 
@@ -247,6 +259,16 @@ defmodule Ramal.Capture do
       nested?: nested?
     })
   end
+
+  defp stale_error(changeset, key) do
+    StaleRecord.exception(
+      resource: changeset.resource,
+      filter: Enum.zip(Info.primary_key(changeset.resource), key_values(key))
+    )
+  end
+
+  defp key_values(key) when is_tuple(key), do: Tuple.to_list(key)
+  defp key_values(key), do: [key]
 
   defp key_error(changeset) do
     Error.new(
