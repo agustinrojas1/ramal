@@ -136,9 +136,21 @@ defmodule Ramal.Capture do
       key = Resource.key(resource, record)
       entry = log_entry(changeset, key, nested?)
 
-      put = &put_write(&1, kind, {resource, key}, record, base_row, entry)
+      # If the call times out the process may still carry the write out, with no one left to remember how to undo it, so
+      # the write sends its undo to this process as well; see `settle_late_write/2`.
+      tag = make_ref()
+      caller = self()
 
-      case Server.write(id, put) do
+      put = fn branch ->
+        {reply, branch} = put_write(branch, kind, {resource, key}, record, base_row, entry)
+        send(caller, {tag, reply})
+        {reply, branch}
+      end
+
+      result = Server.write(id, put)
+      settle_late_write(result, id, tag)
+
+      case result do
         {:ok, {:ok, undo}, summary} ->
           remember(undo)
           emit(summary, changeset, nested?)
@@ -152,6 +164,28 @@ defmodule Ramal.Capture do
       end
     else
       {:error, %Error{} = error} -> Ash.Changeset.add_error(changeset, error)
+    end
+  end
+
+  # A write that timed out is taken back. The process handles requests in order, so once it answers a later request it
+  # has handled the write too, and the undo it sent is in the mailbox if it was made. After a write that was answered
+  # the message is only discarded.
+  defp settle_late_write({:error, %Error{reason: :timeout}}, id, tag) do
+    with :ok <- Server.settle(id) do
+      receive do
+        {^tag, {:ok, undo}} -> Server.update(id, &Branch.undo(&1, [undo]))
+        {^tag, _refused} -> :ok
+      after
+        0 -> :ok
+      end
+    end
+  end
+
+  defp settle_late_write(_result, _id, tag) do
+    receive do
+      {^tag, _reply} -> :ok
+    after
+      0 -> :ok
     end
   end
 

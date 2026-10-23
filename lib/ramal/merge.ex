@@ -14,7 +14,10 @@ defmodule Ramal.Merge do
        wrote them runs their hook again. An update or destroy of a row step 2 read and locked uses that row instead of
        reading it again, once per row, until the first entry a hook wrote.
     4. On success the branch is marked `:merged`, persisted, and its process stops. On any failure the transaction is
-       rolled back and the branch stays open.
+       rolled back and the branch stays open. Once the transaction has committed the merge is never reported as failed:
+       if the storage refuses the `:merged` write, `merge/2` returns `{:ok, result}` with the error in
+       `result.persist_failed`, and the branch process keeps the branch as merged and writes it again when it is idle
+       (ADR 0023, `docs/adr/0023-merge-commit-is-final.md`).
 
   Rows a replayed create writes keep the primary key they had in the branch (the key is forced onto the changeset), so
   later log entries and the branch's own diff still name the right rows.
@@ -43,7 +46,7 @@ defmodule Ramal.Merge do
 
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
-  alias Ramal.{Current, Error, Overlay, Resource}
+  alias Ramal.{Current, Error, Overlay, Resource, Telemetry}
   alias Ramal.Merge.Result
 
   @lock :for_update
@@ -122,12 +125,29 @@ defmodule Ramal.Merge do
 
   defp claim_and_merge(id, opts, from, decide) do
     with {:ok, branch} <- Server.begin_merge(id, from),
-         {:ok, result} <- merge_or_release(id, branch, opts),
-         annotate = if(decide, do: decide.(result), else: & &1),
-         :ok <- Server.finish_merge(id, :merged, annotate) do
-      {:ok, %{result | branch: annotate.(result.branch)}}
+         {:ok, result} <- merge_or_release(id, branch, opts) do
+      annotate = if(decide, do: decide.(result), else: & &1)
+      {:ok, finish(id, %{result | branch: annotate.(result.branch)}, annotate)}
     end
   end
+
+  # The replay has committed, so nothing here may turn the merge into an error: a branch that is merged in the database
+  # and open in storage can be merged a second time (ADR 0023). A failed persist is reported in the result.
+  defp finish(id, result, annotate) do
+    case Server.finish_merge(id, :merged, annotate) do
+      :ok ->
+        result
+
+      {:persist_failed, error} ->
+        persist_failed(result, error)
+
+      {:error, error} ->
+        Telemetry.branch(:persist_failed, result.branch, %{reason: :merged, error: error})
+        persist_failed(result, error)
+    end
+  end
+
+  defp persist_failed(result, error), do: %{result | persist_failed: error}
 
   # The claim is released on every way out except success, so a failed or crashed merge leaves the branch open.
   defp merge_or_release(id, branch, opts) do

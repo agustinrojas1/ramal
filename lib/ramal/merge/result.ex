@@ -9,6 +9,9 @@ defmodule Ramal.Merge.Result do
       because replaying that action ran the hook again
     * `stale` - the rows that had changed under the branch and that `on_stale` let through, each
       `%{resource: module, key: term, reason: :changed | :deleted}`
+    * `persist_failed` - `nil`, or the `Ramal.Error` of the storage when the merge committed but the `:merged` status
+      could not be stored. The merge happened: the rows are in the database. The branch is `:merged` in its process, which
+      writes it again when it unloads; until then the stored copy still says open (ADR 0023, `docs/adr/0023-merge-commit-is-final.md`)
 
   ## Example
 
@@ -21,9 +24,10 @@ defmodule Ramal.Merge.Result do
           branch: Ramal.Branch.t(),
           records: Ramal.Overlay.t(),
           replayed: non_neg_integer,
-          stale: [stale_row]
+          stale: [stale_row],
+          persist_failed: Ramal.Error.t() | nil
         }
 
   @enforce_keys [:branch]
-  defstruct [:branch, records: %{}, replayed: 0, stale: []]
+  defstruct [:branch, records: %{}, replayed: 0, stale: [], persist_failed: nil]
 end

@@ -372,6 +372,17 @@ defmodule Ramal.MergeTest do
     end
   end
 
+  test "a branch cannot be forked while a merge holds it", %{branch: branch} do
+    inside(branch, fn -> Ash.create!(Herd, %{name: "X", head: 1}, authorize?: false) end)
+    {:ok, _} = Server.begin_merge(branch.id)
+
+    assert {:error, %Error{reason: :not_open}} = Ramal.fork(branch)
+    assert {:ok, [_only_the_parent]} = Ramal.list(Farm)
+
+    :ok = Server.finish_merge(branch.id, :aborted)
+    assert {:ok, _fork} = Ramal.fork(branch)
+  end
+
   test "emits start and stop telemetry with the outcome", %{branch: branch} do
     test = self()
 

@@ -45,3 +45,6 @@ concurrent writers to the branch, rows created by hooks, actors, and the ids of 
   compensating writes, which would run real actions a second time.
 - If the process that called `merge/2` dies mid-replay, the transaction rolls back with it and the monitor releases the
   claim; the branch stays open.
+- A branch claimed by a merge cannot be forked (`:not_open`, like a write): its log is about to be replayed, and a fork
+  of it would replay the same writes again. A merge that commits is never reported as failed, even if the storage
+  refuses the `:merged` write afterwards ([ADR 0023](0023-merge-commit-is-final.md)).
