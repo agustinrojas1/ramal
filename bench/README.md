@@ -29,6 +29,8 @@ The baselines are raw SQL through Ecto with no Ash in the path, no validations, 
 ## Cases
 
 * **fork**: fork a node whose overlay holds 0, 100 or 1,000 updated rows.
+* **diff**: `Ramal.diff/1` of a node whose overlay holds 100 or 1,000 updated rows. Only Ramal has this case: the baselines have no diff that needs no query. The run raises unless the diff holds one change per updated row.
+* **aggregate**: the sum of `score` over the whole table in a node with that overlay (`Ramal.aggregate!/4` for `ramal`), next to `ash_no_branch`, the same sum with no branch at all.
 * **read**: a filtered read (`bucket < n`) returning about 1% (`small`) or 10% (`wide`) of the rows, from a node with that overlay.
 * **write**: one update in a node with that overlay.
 * **merge**: apply 100 or 1,000 updates to the base. Ramal replays each through the real update action in one transaction and checks staleness; `delta` applies them in one SQL statement.
