@@ -339,11 +339,11 @@ a herd to a different paddock, and merging one makes the others stale. The
 
 ## Benchmark
 
-[`bench/`](https://github.com/agustinrojas1/ramal/tree/main/bench) is a separate project that runs the same work against Ramal and two plain-Postgres baselines (one table copied per fork, one shared delta table) on 20,000 rows. In the run published in [`bench/README.md`](https://github.com/agustinrojas1/ramal/blob/main/bench/README.md), on one shared sandbox with the database on localhost:
+[`bench/`](https://github.com/agustinrojas1/ramal/tree/main/bench) is a separate project that runs the same work against Ramal and two plain-Postgres baselines (one table copied per fork, one shared delta table) on 20,000 rows. In the run of 2026-10-23 on Ramal 0.6.1 published in [`bench/README.md`](https://github.com/agustinrojas1/ramal/blob/main/bench/README.md), on one shared sandbox with the database on localhost (which moves by tens of percent between runs):
 
-- **Fork** takes 0.04 ms against 20 ms for a table copy, because a fork copies a map.
-- **A tree search** (20 forks, 100 updates, 20 scorings) takes 183 ms against 586 ms for table copies and 172 ms for the delta table.
-- **Where it loses:** reading 2,000 rows inside a branch takes about 10 ms against about 1 ms for raw SQL, and merging replays every change through your action at about 0.7 ms each, against one SQL statement for the baseline.
+- **Fork** takes 0.05 ms against 31 ms for a table copy with an empty overlay, and 2.7 ms against 29 ms with 1,000 changes, because a fork copies a map.
+- **A tree search** (20 forks, 100 updates, 20 scorings) takes 280 ms against 873 ms for table copies and 279 ms for the delta table.
+- **Where it loses:** reading 2,000 rows inside a branch takes 9 to 18 ms (about 10 ms through Ash with no branch) against about 2 ms for raw SQL, `Ramal.aggregate/4` costs 8 ms with 100 changes and 32 ms with 1,000, and merging replays every change through your action at about 0.4 ms each, against one SQL statement for the baseline.
 
 The figures are indicative. Run `mix bench` on your own hardware before drawing a conclusion; the file also says how it differs from the DAPLab study quoted above.
 
