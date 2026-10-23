@@ -80,6 +80,22 @@ defmodule Ramal.OverlayTest do
     end
   end
 
+  describe "keys/2 and any?/2" do
+    test "list the keys of one resource and say whether it has any entry" do
+      overlay = %{
+        {Herd, 1} => {:created, row(1)},
+        {Herd, {2, "a"}} => :deleted,
+        {Paddock, 1} => {:updated, row(1)}
+      }
+
+      assert Enum.sort_by(Overlay.keys(overlay, Herd), &inspect/1) == [1, {2, "a"}]
+      assert Overlay.keys(overlay, Move) == []
+      assert Overlay.any?(overlay, Herd)
+      refute Overlay.any?(overlay, Move)
+      refute Overlay.any?(%{}, Herd)
+    end
+  end
+
   describe "patch/4" do
     defp patch(base, slice, predicate \\ &all/1, opts \\ []) do
       Overlay.patch(base, slice, predicate, Keyword.merge([key: & &1.id], opts))

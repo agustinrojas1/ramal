@@ -127,6 +127,18 @@ defmodule Ramal.Overlay do
   end
 
   @doc """
+  The keys of the entries for one resource, without the entries.
+
+  ## Example
+
+      iex> overlay = %{{MyApp.Herd, 1} => :deleted, {MyApp.Paddock, 9} => {:created, %{id: 9}}}
+      iex> Ramal.Overlay.keys(overlay, MyApp.Herd)
+      [1]
+  """
+  @spec keys(t, resource) :: [key]
+  def keys(overlay, resource), do: for({{^resource, key}, _entry} <- overlay, do: key)
+
+  @doc """
   Whether the overlay holds any entry for `resource`. Stops at the first one, so it does not build a slice.
 
   ## Example

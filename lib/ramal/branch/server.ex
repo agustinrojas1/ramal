@@ -143,6 +143,13 @@ defmodule Ramal.Branch.Server do
   def slice(id, resource), do: call(id, {:slice, resource})
 
   @doc """
+  The primary keys of the overlay entries of `resource`, for a caller that needs which rows the branch touched and not
+  what it put in them (`Ramal.aggregate/4`). Rejected unless the branch is open.
+  """
+  @spec keys(String.t(), module) :: {:ok, [term]} | {:error, Error.t()}
+  def keys(id, resource), do: call(id, {:keys, resource})
+
+  @doc """
   Whether the branch holds any overlay entry for `resource`. A read asks it first, because without one the read needs
   nothing else from the process. Rejected unless the branch is open.
   """
@@ -277,6 +284,14 @@ defmodule Ramal.Branch.Server do
   def handle_call({:slice, resource}, _from, state) do
     if usable?(state) do
       reply(state, {:ok, Overlay.slice(state.branch.overlay, resource)})
+    else
+      reply(state, {:error, unavailable(state)})
+    end
+  end
+
+  def handle_call({:keys, resource}, _from, state) do
+    if usable?(state) do
+      reply(state, {:ok, Overlay.keys(state.branch.overlay, resource)})
     else
       reply(state, {:error, unavailable(state)})
     end
