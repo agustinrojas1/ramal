@@ -226,7 +226,7 @@ Ramal.run!(branch, fn ->
 end)
 ```
 
-It supports `:count`, `:exists`, `:sum`, `:min`, `:max` and `:avg`.
+It supports `:count`, `:exists`, `:sum`, `:min`, `:max`, `:avg`, `:first` and `:list`. The last two follow the query's sort and accept `uniq?:` and `include_nil?:`.
 
 ### Per-tenant branches
 
@@ -287,8 +287,8 @@ Ramal is deliberately small, and it says what it does not do:
 
 - **Not a database branch.** No schema changes inside a branch, no branch-local indexes, and a branch lives on one node. `Ramal.run/2` cannot be nested.
 - **Aggregates loaded inside a branch are recomputed from the branch's rows,** which reads the related rows of each
-  returned row where the database would sum them in one query. `first`, `list` and `custom` aggregates, `uniq?`, and
-  an aggregate query with a limit keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
+  returned row where the database would sum them in one query. `custom` aggregates (data-layer SQL),
+  a join filter and a custom read action keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
   test can notice. A filter or sort on an aggregate sees the branch too, and when the branch changed a resource on its path
   that reads the aggregate for every row the rest of the filter matches. For one total over a large table,
   `Ramal.aggregate/4` is cheaper.
@@ -315,7 +315,7 @@ Ramal is deliberately small, and it says what it does not do:
   merging through your own rules.
 - **Writes since the last save are lost if the node crashes.** A branch is saved at the moments listed above, not on every write.
 - **Bulk actions run record by record** inside a branch, each one captured like a single action, so they cost what a loop costs. A bulk update or destroy of a query must allow `strategy: [:atomic, :stream]`.
-- **A `through` path of several hops stays unsupported:** it sees the base rows of its intermediate resources.
+- **A `through` path with a many_to_many hop** (`through: [:herds, :vets]`) is left to the database, which returns nothing for it with or without a branch (AshPostgres 2.15 ignores the join resource). A `through` path of has_many and belongs_to hops sees the branch.
 - **Authorization is yours.** Anyone who holds a branch id can act on it. Ramal records who decided and never checks.
 - **Pre-1.0.** The public API may change before 1.0; the changelog says when it does.
 

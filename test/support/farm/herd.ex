@@ -172,6 +172,23 @@ defmodule Ramal.Test.Farm.Herd do
     calculate(:shouted, :string, Ramal.Test.Farm.Calculations.Shouted, public?: true)
   end
 
+  aggregates do
+    # `from_paddock_id` can be nil, so these show what `include_nil?` keeps.
+    list(:origins, :moves, :from_paddock_id, public?: true, sort: [moved_on: :asc])
+
+    list(:origins_with_nil, :moves, :from_paddock_id,
+      public?: true,
+      include_nil?: true,
+      sort: [moved_on: :asc]
+    )
+
+    first(:first_origin, :moves, :from_paddock_id,
+      public?: true,
+      include_nil?: true,
+      sort: [moved_on: :asc]
+    )
+  end
+
   relationships do
     belongs_to(:paddock, Ramal.Test.Farm.Paddock, public?: true, attribute_writable?: true)
     has_many(:moves, Ramal.Test.Farm.Move, public?: true)

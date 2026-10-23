@@ -14,8 +14,12 @@ defmodule Ramal.Aggregate do
     * **read** (`compute/4`). Read every matching row through the patched path and aggregate in Elixir. Exact for any
       query, and as expensive as the read.
 
-  The kinds follow Ash's: `:count` (rows), `:exists`, `:sum`, `:min`, `:max` and `:avg`. As in SQL, `nil` values are
-  skipped, and `:sum`, `:min`, `:max` and `:avg` of no values are `nil`. `:sum` of decimals is a `Decimal`, `:avg` is a
+  The kinds follow Ash's: `:count` (rows), `:exists`, `:sum`, `:min`, `:max`, `:avg`, `:first` and `:list`. As in SQL,
+  `nil` values are skipped, and `:sum`, `:min`, `:max` and `:avg` of no values are `nil`. `:first` and `:list` read the
+  records in the order given, so the caller sorts them first (the aggregate's own sort, or the query's); `:first` is the
+  first value, `:list` every value, both skipping `nil` unless `include_nil?: true`, and `uniq?: true` keeps the first of
+  each value in a `:list` and counts distinct non-nil values in a `:count`. A `:custom` aggregate is a data-layer module
+  that produces SQL, so it is not here. `:sum` of decimals is a `Decimal`, `:avg` is a
   float (Ash types it as `:float`, `lib/ash/query/aggregate.ex`). `:min` and `:max` order values the way a runtime sort
   does (the runtime sort in Ash.Actions.Sort), so dates, decimals and strings compare by their type.
 
@@ -42,10 +46,10 @@ defmodule Ramal.Aggregate do
   alias Ash.Resource.Info
   alias Ramal.Resource
 
-  @kinds [:count, :exists, :sum, :min, :max, :avg]
+  @kinds [:count, :exists, :sum, :min, :max, :avg, :first, :list]
 
   @typedoc "An aggregate kind."
-  @type kind :: :count | :exists | :sum | :min | :max | :avg
+  @type kind :: :count | :exists | :sum | :min | :max | :avg | :first | :list
 
   @doc """
   The kinds `compute/4` knows.
@@ -53,14 +57,18 @@ defmodule Ramal.Aggregate do
   ## Example
 
       iex> Ramal.Aggregate.kinds()
-      [:count, :exists, :sum, :min, :max, :avg]
+      [:count, :exists, :sum, :min, :max, :avg, :first, :list]
   """
   @spec kinds() :: [kind]
   def kinds, do: @kinds
 
   @doc """
   Computes `kind` over `records`, which are rows of `resource`. `field` is the attribute to aggregate; `:count` and
-  `:exists` ignore it. Raises `ArgumentError` for an unknown kind or a field that is not an attribute of `resource`.
+  `:exists` ignore it unless `:count` has one to count. Raises `ArgumentError` for an unknown kind, or for a field that
+  is not an attribute of `resource` when the kind is `:sum`, `:min`, `:max` or `:avg`. `:first`, `:list` and a `:count`
+  of a field take whatever the records hold under `field`, so a calculation loaded onto them works too.
+
+  `opts` are `:uniq?` and `:include_nil?`, as on an Ash aggregate (both default to `false`).
 
   ## Example
 
@@ -70,12 +78,42 @@ defmodule Ramal.Aggregate do
       21.0
       iex> Ramal.Aggregate.compute(:exists, nil, [], Ramal.Test.Farm.Herd)
       false
+      iex> Ramal.Aggregate.compute(:list, :head, [%{head: 30}, %{head: 30}, %{head: nil}], Ramal.Test.Farm.Herd, uniq?: true)
+      [30]
+      iex> Ramal.Aggregate.compute(:first, :head, [%{head: nil}, %{head: 12}], Ramal.Test.Farm.Herd)
+      12
   """
-  @spec compute(kind, atom | nil, [map], module) :: term
-  def compute(:count, _field, records, _resource), do: length(records)
-  def compute(:exists, _field, records, _resource), do: records != []
+  @spec compute(kind, atom | nil, [map], module, keyword) :: term
+  def compute(kind, field, records, resource, opts \\ [])
 
-  def compute(kind, field, records, resource) when kind in [:sum, :min, :max, :avg] do
+  def compute(:count, field, records, _resource, opts) do
+    if field != nil and opts[:uniq?] do
+      records |> present(field) |> uniq() |> length()
+    else
+      length(records)
+    end
+  end
+
+  def compute(:exists, _field, records, _resource, _opts), do: records != []
+
+  def compute(:first, field, records, _resource, opts) do
+    if opts[:include_nil?] do
+      records |> List.first() |> then(&if(&1, do: Map.fetch!(&1, field)))
+    else
+      records |> present(field) |> List.first()
+    end
+  end
+
+  def compute(:list, field, records, _resource, opts) do
+    values =
+      if opts[:include_nil?],
+        do: Enum.map(records, &Map.fetch!(&1, field)),
+        else: present(records, field)
+
+    if opts[:uniq?], do: uniq(values), else: values
+  end
+
+  def compute(kind, field, records, resource, _opts) when kind in [:sum, :min, :max, :avg] do
     validate!(kind, field, resource)
 
     values =
@@ -86,7 +124,15 @@ defmodule Ramal.Aggregate do
     reduce(kind, field, values, resource)
   end
 
-  def compute(kind, field, _records, resource), do: validate!(kind, field, resource)
+  def compute(kind, field, _records, resource, _opts), do: validate!(kind, field, resource)
+
+  defp present(records, field),
+    do: records |> Enum.map(&Map.fetch!(&1, field)) |> Enum.reject(&is_nil/1)
+
+  # Keeps the first of each value, as `array_agg(DISTINCT ...)` and the ETS data layer do. Postgres treats 1.0 and 1.00
+  # as one numeric, so decimals are compared normalized.
+  defp uniq(values),
+    do: Enum.uniq_by(values, &if(is_struct(&1, Decimal), do: Decimal.normalize(&1), else: &1))
 
   @doc """
   Joins the database's answer for the rows outside the overlay with the branch's rows inside it. `base` is the
@@ -218,7 +264,7 @@ defmodule Ramal.Aggregate do
   @spec validate!(kind, atom | nil, module) :: :ok
   def validate!(kind, _field, _resource) when kind in [:count, :exists], do: :ok
 
-  def validate!(kind, field, resource) when kind in [:sum, :min, :max, :avg] do
+  def validate!(kind, field, resource) when kind in [:sum, :min, :max, :avg, :first, :list] do
     unless is_atom(field) and not is_nil(field) and Info.attribute(resource, field) do
       raise ArgumentError,
             "#{inspect(field)} is not an attribute of #{inspect(resource)}; aggregates here cover attributes only"

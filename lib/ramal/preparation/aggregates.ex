@@ -16,9 +16,15 @@ defmodule Ramal.Preparation.Aggregates do
   # number in one query, so only the rows that need it are recomputed: every row when the branch holds entries for a
   # resource on the aggregate's path, otherwise only the ones the overlay supplied (they have no value).
   #
-  # What this cannot do keeps the data layer's value and emits `[:ramal, :read, :unpatched_aggregate]`: the kinds
-  # `first`, `list` and `custom`, `uniq?`, a join filter, a custom read action, a field that is not an attribute, and
-  # an aggregate query with a limit, an offset or a distinct.
+  # `first` and `list` are the field of the first and of every related row in the order the aggregate's sort gave them,
+  # `uniq?` deduplicates a `list` and counts distinct values in a `count`, and `include_nil?` keeps the `nil`s
+  # (ADR 0039). The field may also be a calculation of the related resource: it is loaded onto the related rows with the
+  # query, so a row the branch changed is judged by its new values.
+  #
+  # What this cannot do keeps the data layer's value and emits `[:ramal, :read, :unpatched_aggregate]`: the kind
+  # `custom` (a data-layer module that produces SQL), a join filter, a custom read action, a field that is neither an
+  # attribute nor a calculation, a calculation field on `sum`, `min`, `max` or `avg`, and an aggregate query with a
+  # limit, an offset or a distinct.
 
   alias Ash.Resource.Info
   alias Ramal.Aggregate
@@ -52,7 +58,7 @@ defmodule Ramal.Preparation.Aggregates do
   defp one(rows, query, aggregate, id) do
     if supported?(query.resource, aggregate) do
       with {:ok, touched?} <- touched?(query.resource, aggregate, id) do
-        compute(rows, query, aggregate, touched?)
+        compute(rows, query, named_field(aggregate), touched?)
       end
     else
       load_base(rows, query, aggregate)
@@ -88,7 +94,11 @@ defmodule Ramal.Preparation.Aggregates do
   # The nested load that reads the aggregate's related records, the aggregate's query on the last hop.
   defp load(resource, %{relationship_path: path} = aggregate) do
     destination = destination(resource, path)
-    query = aggregate.query || Ash.Query.new(destination)
+
+    query =
+      (aggregate.query || Ash.Query.new(destination))
+      |> load_calculation(destination, aggregate.field)
+
     Enum.reduce(Enum.reverse(path), query, fn relationship, inner -> [{relationship, inner}] end)
   end
 
@@ -121,11 +131,28 @@ defmodule Ramal.Preparation.Aggregates do
       end)
       |> counted(aggregate)
 
-    case Aggregate.compute(aggregate.kind, aggregate.field, related, destination) do
+    shape = [uniq?: aggregate.uniq?, include_nil?: aggregate.include_nil?]
+
+    case Aggregate.compute(aggregate.kind, aggregate.field, related, destination, shape) do
       nil -> aggregate.default_value
       value -> value
     end
   end
+
+  # A resource aggregate over a calculation holds the calculation struct as its field; the related rows carry its value
+  # under the name it is loaded as.
+  defp named_field(%{field: %Ash.Query.Calculation{load: load}} = aggregate),
+    do: %{aggregate | field: load}
+
+  defp named_field(aggregate), do: aggregate
+
+  # The field of a `first`, `list` or `count` can be a calculation, which the related read has to compute: for a row the
+  # branch changed it is evaluated in memory by the preparation of that read.
+  defp load_calculation(query, destination, field) when is_atom(field) and field != nil do
+    if Info.calculation(destination, field), do: Ash.Query.load(query, field), else: query
+  end
+
+  defp load_calculation(query, _destination, _field), do: query
 
   # Ash's `count` of a field counts the rows where it is not nil, unless `include_nil?` is set.
   defp counted(records, %{kind: :count, field: field, include_nil?: false}) when field != nil,
@@ -173,8 +200,7 @@ defmodule Ramal.Preparation.Aggregates do
       relationships ->
         destination = List.last(relationships).destination
 
-        aggregate.kind in Aggregate.kinds() and not aggregate.uniq? and
-          aggregate.join_filters == %{} and
+        aggregate.kind in Aggregate.kinds() and aggregate.join_filters == %{} and
           default_read?(aggregate, destination) and is_nil(aggregate.implementation) and
           field_ok?(aggregate, destination) and query_ok?(aggregate.query)
     end
@@ -189,8 +215,13 @@ defmodule Ramal.Preparation.Aggregates do
 
   defp field_ok?(%{kind: kind, field: nil}, _destination), do: kind in [:count, :exists]
 
+  defp field_ok?(%{field: %Ash.Query.Calculation{load: load}} = aggregate, destination)
+       when load != nil,
+       do: field_ok?(%{aggregate | field: load}, destination)
+
   defp field_ok?(%{kind: kind, field: field}, destination) when is_atom(field) do
-    Info.attribute(destination, field) != nil or kind == :exists
+    Info.attribute(destination, field) != nil or kind == :exists or
+      (kind in [:count, :first, :list] and Info.calculation(destination, field) != nil)
   end
 
   defp field_ok?(_aggregate, _destination), do: false
