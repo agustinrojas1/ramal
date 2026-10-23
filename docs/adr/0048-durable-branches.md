@@ -51,7 +51,8 @@ running action's writes in storage, and ADR 0033 says they are the action's own 
 - In a cluster (`Storage.claim/2`, the `epoch` of ADR 0044), `append/4` gets the branch with its epoch and must write
   only while the stored epoch is that one, as `put/2` does, or a fenced process could add deltas the new holder never
   sees; its `:fenced` error stops the process the way a refused `put/2` does. This is not in the code, which has no
-  epoch yet. Database-generated keys change only what a delta holds. Nested branches (ADR 0043) add writes to a
+  epoch yet. A delta also holds the count of placeholder keys handed out for generated keys (ADR 0042), which a call
+  that is not one of the action's writes bumps; a recovered branch would otherwise give out one again. Nested branches (ADR 0043) add writes to a
   parent that do not come through `Capture`, when a child merges into it; for a durable parent those must be appended
   as a delta too, or stored as a snapshot, or a crash after the merge of the child loses them.
 - The TLA+ model has `Durable`: `DurableAcked`, `RecoveredMatchesLog` and `NoHeldPersisted` hold, and

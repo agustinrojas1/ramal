@@ -65,7 +65,7 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
 - Durable branches (`durable: true` at `branch/2`, or on `Ramal.Supervisor`, ADR 0048): when the outermost captured action
   of a process ends, `Capture` calls `Server.commit/1` instead of casting `release`. The server builds the delta of that
   action (`Ramal.Branch.delta/2`: the overlay entries and base rows of the rows the action wrote as they stand, the rows
-  whose entry is gone, the log entries), appends it to the storage's write log under the next `seq` and answers; the
+  whose entry is gone, the log entries, the count of placeholder keys), appends it to the storage's write log under the next `seq` and answers; the
   action returns only then, and fails with `:storage` if the append fails. A delta holds the action's own rows and no
   other, so it holds nothing of an action still running (a row is never held by two). The log is compacted by a
   snapshot (`put/2` of the branch without running actions' writes, which deletes the deltas up to its `wal`) after 100
