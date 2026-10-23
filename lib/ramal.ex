@@ -314,8 +314,10 @@ defmodule Ramal do
   changes.
 
   `kind` is `:count`, `:exists`, `:sum`, `:min`, `:max` or `:avg`; `field` is an attribute (not needed for `:count` and
-  `:exists`). `opts` go to the read: `:actor`, `:authorize?`, `:tenant`, `:domain`. Returns `{:ok, value}` or the error
-  Ash returned. Raises `ArgumentError` for an unknown kind or a field that is not an attribute, in a branch or not.
+  `:exists`). `opts` go to the read: `:actor`, `:authorize?`, `:tenant`, `:domain`, `:context`. A branch carried only by
+  `context: Ramal.context(branch)`, in `opts` or in the query's context, counts as a current branch, as it does for
+  reads. Returns `{:ok, value}` or the error Ash returned. Raises `ArgumentError` for an unknown kind or a field that is
+  not an attribute, in a branch or not.
 
   Confirmed against Ash 3.37 (`lib/ash.ex`): `Ash.count/2` takes no field, and the others take `(query, field, opts)`.
 
@@ -337,10 +339,11 @@ defmodule Ramal do
     query = Ash.Query.new(query)
     Ramal.Aggregate.validate!(kind, field, query.resource)
 
-    if Current.id() do
-      in_branch(query, kind, field, opts)
-    else
-      outside_branch(query, kind, field, opts)
+    # The hooks resolve the branch from the process and from the query's context, so this does too: an agent or MCP
+    # caller carries it only in `context: Ramal.context(branch)` or in the query's context.
+    case Current.resolve(query.context) || Current.resolve(opts[:context] || %{}) do
+      nil -> outside_branch(query, kind, field, opts)
+      id -> in_branch(id, query, kind, field, opts)
     end
   end
 
@@ -361,8 +364,8 @@ defmodule Ramal do
 
   # With overlay entries the database aggregates the rows outside the overlay and the branch reads only the overlaid
   # ones (Ramal.Aggregate). Without any, the base is the branch, so the data layer's answer is exact.
-  defp in_branch(query, kind, field, opts) do
-    case Server.keys(Current.id(), query.resource) do
+  defp in_branch(id, query, kind, field, opts) do
+    case Server.keys(id, query.resource) do
       {:ok, []} ->
         outside_branch(query, kind, field, opts)
 

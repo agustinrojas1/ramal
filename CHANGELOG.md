@@ -21,6 +21,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Calls to a branch process have explicit timeouts: 5 seconds for reads and writes and 60 for the calls that persist the whole branch (merge, propose, reject, discard). A timeout is `{:error, %Ramal.Error{reason: :timeout}}`, a new reason, and a captured write that timed out is taken back instead of being applied late.
 - `Ramal.fork/2` is refused with `:not_open` while a merge holds the branch. Before, a fork of a log that was about to be replayed could be merged again and write the same rows twice.
 - A calculation that a read action loads in its own `prepare` is now evaluated on the rows the branch created or changed; before, those rows came back `NotLoaded` for it (#116).
+- `Ramal.aggregate/4` now sees a branch carried only by `context: Ramal.context(branch)`, in the options or in the query's context, as reads do; before, it answered with the base's numbers (#114).
 
 ## [0.4.2] - 2026-10-23
 
