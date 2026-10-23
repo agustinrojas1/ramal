@@ -131,7 +131,7 @@ If the script cannot reach Postgres it says so and stops before changing anythin
 
 ## Running it against a checkout
 
-By default the demo installs the published `ramal ~> 0.2.0`. If you are working on Ramal and want to see your changes in the
+By default the demo installs the published `ramal ~> 0.3.0`, and uses the checkout you run it from when that version is not on Hex. If you are working on Ramal and want to see your changes in the
 walkthrough, set `RAMAL_DEMO_SOURCE=path`, which uses the checkout you are running from:
 
 ```sh
