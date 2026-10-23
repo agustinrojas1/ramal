@@ -1,6 +1,8 @@
 # RamalLive
 
-A LiveView inspector for [Ramal](https://github.com/agustinrojas1/ramal) branches. Not on Hex yet.
+A LiveView inspector for [Ramal](https://github.com/agustinrojas1/ramal) branches.
+
+[![Hex.pm](https://img.shields.io/hexpm/v/ramal_live.svg)](https://hex.pm/packages/ramal_live) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal__live-blue.svg)](https://hexdocs.pm/ramal_live)
 
 It shows the open and proposed branches of one Ash domain as columns. Each column has the branch's name, status, age and
 overlay size, and its `Ramal.diff/1` as before and after rows. Buttons fork, merge and discard an open branch and approve
@@ -16,9 +18,9 @@ LiveView socket and your JavaScript. The decision is in [ADR 0015](https://githu
 Requires Phoenix 1.7+, Phoenix LiveView 1.1+ and a running `Phoenix.PubSub`.
 
 ```elixir
-# mix.exs: not on Hex yet, so use a checkout of this repository, which holds both packages
-{:ramal, path: "../ramal"},
-{:ramal_live, path: "../ramal/ramal_live"}
+# mix.exs
+{:ramal, "~> 0.2.0"},
+{:ramal_live, "~> 0.2.0"}
 
 # application.ex, after the PubSub and Ramal.Supervisor, in every node that runs branches
 {RamalLive.Broadcaster, pubsub: MyApp.PubSub}

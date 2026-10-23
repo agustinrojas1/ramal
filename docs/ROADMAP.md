@@ -30,7 +30,7 @@ README runs as written; every **[confirm]** mark in `docs/DESIGN.md` is resolved
 - Many-to-many join resources inside a branch. Done: they get overlay entries like any resource; a many_to_many load and
   `manage_relationship` do not see links the branch changed, which is a documented limit (ADR 0014).
 - Several domains per branch if a real host needs it.
-- Publish 0.2 to Hex. Prepared (versions, changelog, `mix hex.build`); the tag and the publish are the maintainer's, see "Releasing" in `CONTRIBUTING.md`.
+- Publish 0.2 to Hex. Done: `ramal` and `ramal_live` 0.2.0 are on Hex and the install snippets in the docs point at them.
 
 ## 0.3 Inspector
 
