@@ -54,6 +54,15 @@ defmodule Ramal.Supervisor do
   state. A merge it was running is refused too, inside the merge transaction. When the nodes find each other again
   `:global` keeps the process with the higher epoch and stops the other.
 
+  `:global` has a long record of trouble under partial network partitions, where nodes see different subsets of the
+  cluster. OTP 25 turned on `prevent_overlapping_partitions` by default, which disconnects nodes to restore a fully
+  connected view. By default a name clash after a split is settled by killing one of the two processes; Ramal's
+  resolver asks the loser to stop through its own persist path instead, and the storage refuses any save that would
+  overwrite the winner. Registration takes a cluster-wide lock, so it costs
+  more as the cluster grows. Ramal accepts this because it does not rely on `:global` for safety: `:global` only
+  decides which process serves a branch, and the storage's epoch decides which process may write. A process that
+  `:global` gets wrong is refused at its next save (ADR 0044).
+
   The split loses writes. Without `durable: true`, what the losing process held since its last save is lost, and the
   `:fenced` event announces it. A durable branch (`:durable`, ADR 0048) stores each action before the action returns, so
   no acknowledged write is lost, and an action the losing process cannot store fails with `:fenced`. Another node loads

@@ -385,6 +385,15 @@ epoch are conditional on it and return `:fenced` otherwise; the process then emi
 The epoch is the `Ramal.Branch` field `epoch` (`nil` without a cluster), the `epoch` column of `ramal_branches`, and is
 never part of `state`. `verification/tla/Cluster.tla` models it.
 
+`:global` has a long record of trouble under partial network partitions, where nodes see different subsets of the
+cluster. OTP 25 turned on `prevent_overlapping_partitions` by default, which disconnects nodes to restore a fully
+connected view. By default a name clash after a split is settled by killing one of the two processes; Ramal's resolver
+asks the loser to stop through its own persist path instead, and the storage refuses any save that would overwrite the
+winner (Ramal.Cluster). Registration takes a cluster-wide lock, so it costs
+more as the cluster grows. Ramal accepts this because it does not rely on `:global` for safety: `:global` only decides
+which process serves a branch, and the storage's epoch decides which process may write. A process that `:global` gets
+wrong is refused at its next save (ADR 0044, `verification/tla/Cluster.tla`).
+
 Serialization is `Ramal.Storage.Codec`, a pure module any text-based backend can use. The branch columns hold `id`,
 `domain`, `name` and `status`; `state` holds the overlay (`resource`, `key`, `op`, `record`), the base (`resource`,
 `key`, `fingerprint`, `snapshot`), the log, the metadata and `inserted_at`. A record is `attrs` (each attribute dumped
