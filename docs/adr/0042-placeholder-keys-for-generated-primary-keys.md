@@ -1,4 +1,4 @@
-# 0039. Placeholder keys for database-generated primary keys
+# 0042. Placeholder keys for database-generated primary keys
 
 Status: accepted, 2026-10-23. Amends [ADR 0005](0005-write-capture.md) and [ADR 0007](0007-merge.md).
 

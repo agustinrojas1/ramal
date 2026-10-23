@@ -690,7 +690,7 @@ defmodule Ramal.PreparationTest do
       on_exit(fn -> :telemetry.detach("unpatched-#{inspect(test)}") end)
 
       inside(branch, fn ->
-        Paddock |> Ash.Query.load(:first_herd_name) |> Ash.read!(authorize?: false)
+        Paddock |> Ash.Query.load(:herd_name_csv) |> Ash.read!(authorize?: false)
       end)
 
       assert_receive {:unpatched, %{branch_id: id, resource: Paddock}} when id == branch.id

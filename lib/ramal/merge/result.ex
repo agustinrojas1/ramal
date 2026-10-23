@@ -6,7 +6,7 @@ defmodule Ramal.Merge.Result do
     * `records` - what the replay wrote, keyed like an overlay (`Ramal.Overlay`): `{:created, record}`,
       `{:updated, record}` or `:deleted` per `{resource, key}`, with the records as the real actions returned them
     * `keys` - for each row a replayed create wrote with a key the database generated, the placeholder the branch gave it
-      and the real key: `%{{resource, placeholder} => real_key}`. `records` is keyed by the real key (ADR 0039)
+      and the real key: `%{{resource, placeholder} => real_key}`. `records` is keyed by the real key (ADR 0042)
     * `replayed` - how many log entries were replayed; entries written by a hook of another action are not counted,
       because replaying that action ran the hook again
     * `stale` - the rows that had changed under the branch and that `on_stale` let through, each

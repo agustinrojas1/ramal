@@ -27,6 +27,11 @@ defmodule Ramal.Test.Farm.Herd do
       )
     end
 
+    # A keyset-only list, so a page can start after a cursor.
+    read :keyset_list do
+      pagination(keyset?: true, countable: true, required?: false)
+    end
+
     # A read whose policy has a check that only runs on the rows the read returned (`authorize_results`).
     read :checked do
       pagination(offset?: true, countable: true, required?: false)
@@ -117,7 +122,7 @@ defmodule Ramal.Test.Farm.Herd do
       authorize_if(Checks.SmallHerd)
     end
 
-    policy action([:read, :list, :create, :update, :destroy]) do
+    policy action([:read, :list, :keyset_list, :create, :update, :destroy]) do
       authorize_if(always())
     end
   end
@@ -137,6 +142,23 @@ defmodule Ramal.Test.Farm.Herd do
     # Calculations with their own module: one has an expression (the data layer computes it), one runs in Elixir.
     calculate(:doubled, :integer, Ramal.Test.Farm.Calculations.Doubled, public?: true)
     calculate(:shouted, :string, Ramal.Test.Farm.Calculations.Shouted, public?: true)
+  end
+
+  aggregates do
+    # `from_paddock_id` can be nil, so these show what `include_nil?` keeps.
+    list(:origins, :moves, :from_paddock_id, public?: true, sort: [moved_on: :asc])
+
+    list(:origins_with_nil, :moves, :from_paddock_id,
+      public?: true,
+      include_nil?: true,
+      sort: [moved_on: :asc]
+    )
+
+    first(:first_origin, :moves, :from_paddock_id,
+      public?: true,
+      include_nil?: true,
+      sort: [moved_on: :asc]
+    )
   end
 
   relationships do

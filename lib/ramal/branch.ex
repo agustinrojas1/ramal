@@ -18,7 +18,7 @@ defmodule Ramal.Branch do
   * `tenant` - the one tenant the branch works in, `nil` unless given at `branch/2` (ADR 0034). A fork keeps it
   * `proposal` - `nil` until `Ramal.propose/2`; then `t:proposal/0`
   * `next_placeholder` - how many placeholder keys the branch handed out for rows whose key the database generates
-    (ADR 0039). A fork keeps the count, and its placeholders are its own
+    (ADR 0042). A fork keeps the count, and its placeholders are its own
 
   Nothing here touches a process or storage, so it is tested with plain data.
 
@@ -65,7 +65,7 @@ defmodule Ramal.Branch do
   was called with, `opts` carries `:key` (the primary key written), `:tenant`, `:nested?` (the write was made by
   a hook of another captured action, so replaying that action reproduces it), `:upsert` (`{identity, fields, found?}`
   for a create that was an upsert, ADR 0037) and `:generated_key?` (the key is a placeholder for one the database
-  generates, ADR 0039).
+  generates, ADR 0042).
   """
   @type log_entry ::
           {Ash.Resource.Actions.action_type(), module, atom, map, term, keyword, DateTime.t()}

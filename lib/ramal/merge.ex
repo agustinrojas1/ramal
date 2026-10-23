@@ -376,7 +376,7 @@ defmodule Ramal.Merge do
   # wrote (`nested?`): that hook may have changed any row, and replaying it again may change a different one.
   #
   # `renames` maps the placeholder of a row whose key the database generates to the key the replayed create got
-  # (ADR 0039). Every later entry is rewritten with it before it is replayed.
+  # (ADR 0042). Every later entry is rewritten with it before it is replayed.
   defp replay(entries, fetched, opts) do
     entries
     |> Enum.reduce_while({:ok, Overlay.new(), 0, fetched, %{}}, fn {entry, index},

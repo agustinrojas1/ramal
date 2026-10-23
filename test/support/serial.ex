@@ -1,6 +1,6 @@
 defmodule Ramal.Test.Serial do
   @moduledoc false
-  # Resources whose primary key the database generates (ADR 0039): Note has a serial integer key, Tag a uuid key from
+  # Resources whose primary key the database generates (ADR 0042): Note has a serial integer key, Tag a uuid key from
   # a column default. A Note can point at a parent Note and at a Tag, so a test can create a row and a row that refers
   # to it in one branch.
   use Ash.Domain, otp_app: :ramal, validate_config_inclusion?: false

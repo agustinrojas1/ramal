@@ -64,7 +64,7 @@ defmodule Ramal.Test.Capture.Slug do
   end
 
   attributes do
-    # A text key the database would generate: a branch has no placeholder for that type (ADR 0039).
+    # A text key the database would generate: a branch has no placeholder for that type (ADR 0042).
     attribute(:slug, :string,
       primary_key?: true,
       allow_nil?: false,
