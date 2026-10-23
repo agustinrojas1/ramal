@@ -14,6 +14,10 @@ defmodule Ramal.Preparation do
       `Ash.get/3` all see the patched rows.
     * A many_to_many load is one SQL query that joins the join table in the database. When the branch changed the join
       resource, a helper in lib/ramal/preparation/many_to_many.ex swaps that join for the patched join rows (ADR 0017).
+    * A relationship with a `through` path of several hops is one lateral join over the intermediate tables. When the
+      branch changed a resource after the first hop, or the destination, lib/ramal/preparation/lateral.ex walks the hops
+      with the patched reads instead and tags the destination rows with the sources that reach them (ADR 0046). A path
+      with a many_to_many hop stays with the database, which is wrong for it with or without a branch.
     * A relationship load runs a read on the related resource through its own preparation, in a task that does not
       inherit the process dictionary. The branch id therefore also travels in the query's `shared` context, which
       Ash copies into related queries (`lib/ash/actions/read/relationships.ex`).
