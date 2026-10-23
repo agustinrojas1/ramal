@@ -146,7 +146,9 @@ defmodule Ramal do
   Unlike `run/2` this does not check that the branch exists or is open: an unknown, proposed, merged or discarded
   branch makes the action fail instead, with the error `run/2` would have returned. It also does not queue the
   notifications of the writes, so a notifier fires for a write made in a branch even on a resource without
-  `notify_in_branch? true`. Prefer `run/2` whenever you can wrap the call in a function.
+  `notify_in_branch? true`. Ash has no per-call switch to hold notifications back, so the notifier has to skip them
+  itself: `in_branch?/1` tells it that the write belongs to a branch. Prefer `run/2` whenever you can wrap the call in
+  a function.
 
   ## Example
 
@@ -156,6 +158,40 @@ defmodule Ramal do
   """
   @spec context(branch_or_id) :: map
   def context(branch_or_id), do: Current.shared_context(id_of(branch_or_id))
+
+  @doc """
+  Whether a notification, changeset, query or context map carries a branch passed with `context/1`.
+
+  A write made with `context: Ramal.context(branch)` sends its notifications, unlike a write inside `run/2`, and Ash
+  offers no way to hold them back per call (it builds the notification from the resource's notifiers and the
+  action's, `for: Ash.Resource.Info.notifiers(resource) ++ action.notifiers`). A notifier that must not fire for a what-if checks this first.
+  Writes inside `run/2` do not need it: their notifications are dropped, or sent after `run/2` returns for a resource
+  with `notify_in_branch? true`, and are then no longer marked.
+
+  ## Example
+
+      iex> Ramal.in_branch?(Ramal.context("b1"))
+      true
+      iex> Ramal.in_branch?(%{})
+      false
+
+  In a notifier:
+
+      def notify(notification) do
+        unless Ramal.in_branch?(notification), do: send_the_email(notification)
+        :ok
+      end
+  """
+  @spec in_branch?(Ash.Notifier.Notification.t() | Ash.Changeset.t() | Ash.Query.t() | map) ::
+          boolean
+  def in_branch?(%Ash.Notifier.Notification{changeset: changeset}), do: in_branch?(changeset)
+
+  def in_branch?(%struct{context: context}) when struct in [Ash.Changeset, Ash.Query],
+    do: in_branch?(context)
+
+  def in_branch?(%_{}), do: false
+  def in_branch?(context) when is_map(context), do: is_binary(Current.shared_id(context))
+  def in_branch?(_other), do: false
 
   @doc """
   The branch with that id, with its overlay and log as they are now.

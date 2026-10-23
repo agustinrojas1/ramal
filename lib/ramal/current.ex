@@ -19,7 +19,12 @@ defmodule Ramal.Current do
   do not inherit the process dictionary but do receive the shared context of the query that started them.
   """
   @spec resolve(map) :: String.t() | nil
-  def resolve(context), do: id() || get_in(context, [:shared, @shared_key])
+  def resolve(context), do: id() || shared_id(context)
+
+  @doc "The branch id `Ramal.context/1` put in `context[:shared]`, whatever the calling process is running in."
+  @spec shared_id(map) :: String.t() | nil
+  def shared_id(context) when is_map(context), do: get_in(context, [:shared, @shared_key])
+  def shared_id(_context), do: nil
 
   @doc "The context map that carries `id` into the queries and changesets Ash derives from this one."
   @spec shared_context(String.t()) :: map

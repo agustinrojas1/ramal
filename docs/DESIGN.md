@@ -170,7 +170,9 @@ This is the section that decides correctness. In a read action's preparation, wh
   relationships can write other rows and only the outer action can replay them (ADR 0014).
 - A failing action takes back its own writes and those of the actions its hooks ran.
 - **Notifications** are dropped by default. `Ramal.run/2` runs the function inside `Ash.transaction([], ...,
-  return_notifications?: true)` and sends only the notifications of resources with `notify_in_branch? true`.
+  return_notifications?: true)` and sends only the notifications of resources with `notify_in_branch? true`. A write
+  made with `context: Ramal.context(branch)` cannot be held back that way, so its notifiers fire; `Ramal.in_branch?/1`
+  lets a notifier skip it.
 - **Atomic updates:** `atomic/3` returns `{:not_atomic, reason}` while a branch is current, and the transformer sets
   `require_atomic? false` on the resource's update and destroy actions so that Ash falls back to the path above.
 - **Atomic updates** (`atomic_update`) are evaluated in Elixir against the row with the action's attribute changes

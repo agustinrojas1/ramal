@@ -16,7 +16,9 @@ framework, and `AshAi` exposes only Ash actions, whereas the branch calls are pl
 - **`Ramal.context/1`** returns the Ash context (`%{shared: %{ramal_branch_id: id}}`) that the hooks already read
   (ADR 0002). Passed as `context:` to a read or write it puts that call in the branch. It is the existing carrier made
   public, with no new mechanism. It does not check that the branch is open before the call (the hooks fail the action
-  with `:not_found` or `:not_open`) and it does not queue notifications as `run/2` does.
+  with `:not_found` or `:not_open`) and it does not queue notifications as `run/2` does. Ash has no documented per-call way to suppress them (the
+  list is built from the resource's notifiers), so `Ramal.in_branch?/1` lets a notifier recognise a write made through
+  the context and skip it.
 - **`Ramal.Tools`** is a catalogue of six tools as data (`definitions/1`: name, description, JSON Schema) and one
   function (`call/3`) that runs one with the arguments a model produced: `ramal_open_branch`, `ramal_list_branches`,
   `ramal_fork_branch`, `ramal_branch_diff`, `ramal_propose_branch`, `ramal_discard_branch`. It has no dependency. The

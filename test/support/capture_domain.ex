@@ -19,9 +19,13 @@ defmodule Ramal.Test.Capture.Notifier do
 
   # A test registers itself as :ramal_test_notifications to hear what was sent.
   @impl true
-  def notify(%Ash.Notifier.Notification{resource: resource, action: action}) do
+  def notify(%Ash.Notifier.Notification{resource: resource, action: action} = notification) do
     if pid = Process.whereis(:ramal_test_notifications) do
       send(pid, {:notified, resource, action.name})
+    end
+
+    if pid = Process.whereis(:ramal_test_notifications) do
+      send(pid, {:notified_struct, notification})
     end
 
     :ok
