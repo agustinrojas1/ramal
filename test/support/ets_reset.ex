@@ -9,7 +9,8 @@ defmodule Ramal.Test.Ets do
 
   @doc "The registered manager process of a resource's table (Ash.DataLayer.Ets.TableManager), or nil."
   @spec manager(module) :: pid | nil
-  def manager(resource), do: Process.whereis(Module.concat(Info.table(resource), Ets.TableManager))
+  def manager(resource),
+    do: Process.whereis(Module.concat(Info.table(resource), Ets.TableManager))
 
   @spec reset(module) :: :ok
   def reset(resource) do
