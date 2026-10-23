@@ -234,6 +234,12 @@ A branch of a multitenant application works in one tenant: `Ramal.branch(MyApp.F
 inside it must carry that tenant (`:tenant_mismatch` otherwise), other tenants' rows never enter its overlay, and the
 merge checks and replays in the tenant. Both the attribute and the schema-per-tenant strategies work.
 
+### Per-tenant branches
+
+A branch of a multitenant application works in one tenant: `Ramal.branch(MyApp.Farm, tenant: "acme")`. Reads and writes
+inside it must carry that tenant (`:tenant_mismatch` otherwise), other tenants' rows never enter its overlay, and the
+merge checks and replays in the tenant. Both the attribute and the schema-per-tenant strategies work.
+
 ### Per-user branches
 
 Pass `owner:` to `Ramal.branch/2` and `Ramal.list(domain, owner: user_id)` shows each user their own. It is a filter, not
@@ -304,8 +310,13 @@ Ramal is deliberately small, and it says what it does not do:
 - **Every resource of the domain is covered or opts out.** `Ramal.branch/2` refuses a domain with a resource that has
   write actions and neither uses `Ramal.Resource` nor sets `branchable? false`; a resource that opts out is written for
   real, from a branch too. Only the branch's domain is checked: a resource of another domain works in the branch if it uses `Ramal.Resource`, and is written for real if it does not. Build a changeset in the same `Ramal.run/2` that runs it. A query prepared outside a branch and read inside it is patched.
-- **Resources whose primary key the database generates cannot be created** in a branch (use UUIDs), and
-  notifications are dropped unless a resource opts in with `notify_in_branch? true`.
+- **Notifications are dropped** unless a resource opts in with `notify_in_branch? true`.
+- **A key the database generates is a placeholder until the merge.** A row created with a `generated? true` integer or
+  UUID primary key (`integer_primary_key`, `gen_random_uuid()`) gets a key from a range no real key uses (integers from
+  `-2_147_483_648` up), and the merge renames it to the key the database gives the row, in the input of the later
+  actions too. `Ramal.Merge.Result.keys` maps each placeholder to its real key. A placeholder that a hook stores outside
+  the action's input, such as inside a JSON blob, is not renamed, and a `smallint` key is not supported. Other key
+  types, and composite keys, are still refused (`:database_generated_key`).
 - **Upserts work, with two exceptions.** An upsert looks its row up in the branch's view, so it updates a base row, a row
   the branch created, or creates one. An `upsert_condition` is refused (`:upsert_unsupported`), and `upsert?: true` given
   only to `Ash.create/2` at call time cannot be seen and acts as a create: set it on the action or pass it to

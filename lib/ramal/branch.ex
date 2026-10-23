@@ -17,6 +17,8 @@ defmodule Ramal.Branch do
     interprets it: `Ramal.list/2` can filter by it (ADR 0018) and nothing else reads it
   * `tenant` - the one tenant the branch works in, `nil` unless given at `branch/2` (ADR 0034). A fork keeps it
   * `proposal` - `nil` until `Ramal.propose/2`; then `t:proposal/0`
+  * `next_placeholder` - how many placeholder keys the branch handed out for rows whose key the database generates
+    (ADR 0042). A fork keeps the count, and its placeholders are its own
 
   Nothing here touches a process or storage, so it is tested with plain data.
 
@@ -60,8 +62,10 @@ defmodule Ramal.Branch do
 
   @typedoc """
   A captured write: `{action_type, resource, action_name, input, actor, opts, at}`. `input` is the params the action
-  was called with, `opts` carries `:key` (the primary key written), `:tenant` and `:nested?` (the write was made by
-  a hook of another captured action, so replaying that action reproduces it).
+  was called with, `opts` carries `:key` (the primary key written), `:tenant`, `:nested?` (the write was made by
+  a hook of another captured action, so replaying that action reproduces it), `:upsert` (`{identity, fields, found?}`
+  for a create that was an upsert, ADR 0037) and `:generated_key?` (the key is a placeholder for one the database
+  generates, ADR 0042).
   """
   @type log_entry ::
           {Ash.Resource.Actions.action_type(), module, atom, map, term, keyword, DateTime.t()}
@@ -89,7 +93,8 @@ defmodule Ramal.Branch do
           metadata: map,
           owner: term,
           tenant: term,
-          proposal: proposal | nil
+          proposal: proposal | nil,
+          next_placeholder: non_neg_integer
         }
 
   # `inspect/1` shows the branch's identity and nothing it holds. The log keeps the raw input of every captured action
@@ -110,7 +115,8 @@ defmodule Ramal.Branch do
     metadata: %{},
     owner: nil,
     tenant: nil,
-    proposal: nil
+    proposal: nil,
+    next_placeholder: 0
   ]
 
   @doc """
@@ -142,6 +148,37 @@ defmodule Ramal.Branch do
       tenant: opts[:tenant]
     }
   end
+
+  @placeholder_base -2_147_483_648
+
+  @doc """
+  A placeholder key for a row whose key the database generates, and the branch that has handed it out.
+
+  An integer key gets `-2_147_483_648 + n` for the branch's `n`th placeholder: it fits `int4` and `int8`, so a filter on
+  it reaches Postgres without overflowing, and a generated key is positive, so it cannot be mistaken for a real one.
+  A UUID key gets a fresh UUID. Any other type has no placeholder (`:error`).
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> {:ok, key, branch} = Ramal.Branch.placeholder(branch, Ash.Type.Integer)
+      iex> {key, branch.next_placeholder}
+      {-2_147_483_647, 1}
+      iex> Ramal.Branch.placeholder(branch, Ash.Type.String)
+      :error
+  """
+  @spec placeholder(t, module) :: {:ok, term, t} | :error
+  def placeholder(%__MODULE__{} = branch, Ash.Type.Integer) do
+    n = branch.next_placeholder + 1
+    {:ok, @placeholder_base + n, %{branch | next_placeholder: n}}
+  end
+
+  def placeholder(%__MODULE__{} = branch, type) when type in [Ash.Type.UUID, Ash.Type.UUIDv7] do
+    n = branch.next_placeholder + 1
+    {:ok, Ash.UUID.generate(), %{branch | next_placeholder: n}}
+  end
+
+  def placeholder(%__MODULE__{}, _type), do: :error
 
   @doc """
   Whether the branch still accepts reads, writes and merges.

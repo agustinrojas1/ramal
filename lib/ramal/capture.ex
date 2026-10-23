@@ -38,6 +38,9 @@ defmodule Ramal.Capture do
       on as it is. An `upsert_condition` is a filter the database evaluates against the existing row, which a branch
       cannot, so it is refused. A call-time `Ash.create(changeset, upsert?: true)` reaches only `do_run/4`'s options,
       which no hook sees, and acts as a plain create.
+    * A create whose single `generated? true` primary key is `nil` after `apply_attributes/2` (the `INSERT` would give
+      it) gets a placeholder key from `Ramal.Branch.placeholder/2`, and its log entry says `generated_key?: true`; the
+      merge renames the placeholder to the key the database gives the row (ADR 0042).
 
   A failed action leaves the branch as it found it: the writes of the action and of the actions its hooks ran are
   taken back. A write made by a hook of another captured action is logged with `nested?: true`, because replaying the
@@ -62,6 +65,7 @@ defmodule Ramal.Capture do
 
   @frame :ramal_capture_frame
   @key_plan :ramal_key_plan
+  @learned_keys :ramal_learned_keys
   @wrapped :ramal_wrapped
 
   @impl true
@@ -101,6 +105,7 @@ defmodule Ramal.Capture do
 
   def with_key_plan(plan, fun) do
     Process.put(@key_plan, plan)
+    Process.delete(@learned_keys)
 
     try do
       fun.()
@@ -109,8 +114,18 @@ defmodule Ramal.Capture do
     end
   end
 
+  @doc false
+  # The real keys that the creates of a key plan got for the placeholders they were planned with, as
+  # `{resource, placeholder, real_key}` in the order they were created, and forgets them (ADR 0042).
+  @spec take_learned_keys() :: [{module, term, term}]
+  def take_learned_keys, do: @learned_keys |> Process.delete() |> List.wrap() |> Enum.reverse()
+
   defp planned_key(%{action_type: :create} = changeset) do
     case Process.get(@key_plan) do
+      [{resource, {:generated, placeholder}} | rest] when resource == changeset.resource ->
+        Process.put(@key_plan, rest)
+        learn_key(changeset, placeholder)
+
       [{resource, :keep} | rest] when resource == changeset.resource ->
         Process.put(@key_plan, rest)
         changeset
@@ -129,6 +144,19 @@ defmodule Ramal.Capture do
   end
 
   defp planned_key(changeset), do: changeset
+
+  # The key is the database's to give, so nothing is forced; once the row is created its key is the placeholder's.
+  defp learn_key(changeset, placeholder) do
+    Ash.Changeset.after_action(changeset, fn _changeset, record ->
+      real = Resource.key(record.__struct__, record)
+
+      Process.put(@learned_keys, [
+        {record.__struct__, placeholder, real} | Process.get(@learned_keys, [])
+      ])
+
+      {:ok, record}
+    end)
+  end
 
   defp what(changeset),
     do:
@@ -323,6 +351,7 @@ defmodule Ramal.Capture do
           emit(summary, changeset, nested?)
 
           changeset
+          |> keep_generated_key(record, extra)
           |> Ash.Changeset.set_result({:ok, result_record(kind, record, resource)})
           |> settle_foreign_keys(id, {resource, key}, extra[:upsert])
 
@@ -334,6 +363,16 @@ defmodule Ramal.Capture do
       end
     else
       {:error, error} -> Ash.Changeset.add_error(changeset, error)
+    end
+  end
+
+  # The after-action hooks of a create read the key from the changeset as well as from the record.
+  defp keep_generated_key(changeset, record, extra) do
+    if extra[:generated_key?] do
+      [field] = Info.primary_key(changeset.resource)
+      Ash.Changeset.force_change_attribute(changeset, field, Map.get(record, field))
+    else
+      changeset
     end
   end
 
@@ -466,7 +505,7 @@ defmodule Ramal.Capture do
     upsert = if upsert?, do: plan_upsert(changeset, built)
 
     with {:ok, upsert} <- find_conflict(upsert, changeset, built, id) do
-      written_create(changeset, built, upsert)
+      written_create(changeset, built, id, upsert)
     end
   end
 
@@ -494,27 +533,29 @@ defmodule Ramal.Capture do
     {:ok, :deleted, changeset.data, base_row(changeset.data), []}
   end
 
-  defp written_create(changeset, built, nil) do
-    if Enum.all?(Info.primary_key(changeset.resource), &(Map.get(built, &1) != nil)) do
-      {:ok, :created, built, nil, []}
-    else
-      {:error, key_error(changeset)}
+  defp written_create(changeset, built, id, nil) do
+    resource = changeset.resource
+
+    case Enum.filter(Info.primary_key(resource), &(Map.get(built, &1) == nil)) do
+      [] -> {:ok, :created, built, nil, []}
+      [field] -> placeholder_key(changeset, built, id, field)
+      _several -> {:error, key_error(changeset)}
     end
   end
 
   # No row in the branch's view has the upsert's key, so it is an ordinary create that the merge replays as an upsert:
   # `found?: false` has it force the branch's primary key, and the fields keep the key out of what a row that appeared
   # in the base meanwhile would take.
-  defp written_create(changeset, built, %{found: nil} = upsert) do
-    with {:ok, :created, record, nil, []} <- written_create(changeset, built, nil) do
-      {:ok, :created, record, nil, upsert: log_upsert(upsert, false)}
+  defp written_create(changeset, built, id, %{found: nil} = upsert) do
+    with {:ok, :created, record, nil, extra} <- written_create(changeset, built, id, nil) do
+      {:ok, :created, record, nil, [upsert: log_upsert(upsert, false)] ++ extra}
     end
   end
 
   # The row is there, in the base or created by the branch: the upsert updates it. The record copies the upsert fields
   # from the row Ash built, plus the update defaults unless `touch_update_defaults?: false` was given, and never the
   # primary key (AshPostgres leaves keys out of `DO UPDATE SET` as well).
-  defp written_create(changeset, built, %{found: found} = upsert) do
+  defp written_create(changeset, built, _id, %{found: found} = upsert) do
     resource = changeset.resource
 
     record =
@@ -526,6 +567,30 @@ defmodule Ramal.Capture do
   end
 
   # `{identity, fields, found?}`: a tuple, like the entry around it, so a stored branch needs no atom of Ramal's own.
+  # The key is one the database generates (`generated? true`, such as `integer_primary_key`): the branch cannot know it,
+  # so the row gets a placeholder that the merge renames to the key the database gives the replayed create (ADR 0042). A
+  # key of a type with no placeholder, a composite key, or one that is not generated stays refused.
+  defp placeholder_key(changeset, built, id, field) do
+    resource = changeset.resource
+    attribute = Info.attribute(resource, field)
+    type = attribute.type
+
+    with true <- attribute.generated? and Info.primary_key(resource) == [field],
+         {:ok, {:ok, key}, _summary} <- Server.write(id, &next_placeholder(&1, type)) do
+      {:ok, :created, Map.put(built, field, key), nil, [generated_key?: true]}
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      _no_placeholder -> {:error, key_error(changeset)}
+    end
+  end
+
+  defp next_placeholder(branch, type) do
+    case Branch.placeholder(branch, type) do
+      {:ok, key, branch} -> {{:ok, key}, branch}
+      :error -> {:error, branch}
+    end
+  end
+
   defp log_upsert(upsert, found?), do: {upsert.identity, upsert.fields, found?}
 
   # What the upsert does if the row exists: the identity it conflicts on, the keys and their values, and the fields
@@ -733,7 +798,8 @@ defmodule Ramal.Capture do
     Error.new(
       :database_generated_key,
       "#{inspect(changeset.resource)} has no value for its primary key after the #{changeset.action.name} action, " <>
-        "so it is generated by the database and a branch cannot create the row; give the key a default such as uuid_primary_key",
+        "so it is generated by the database and a branch cannot create the row; a branch stands in for a single " <>
+        "`generated? true` key of type integer or uuid, so give the key one of those types or a default such as uuid_primary_key",
       %{resource: changeset.resource, action: changeset.action.name}
     )
   end
