@@ -16,7 +16,7 @@ What it shows, and tests:
 - `RamalAshAiExample.BranchPlug` takes the branch id from an `x-ramal-branch` header and checks that the branch belongs to
   the caller before putting it in the request's Ash context. `AshAi.Mcp.Router` is driven with `Plug.Test` behind it.
 - `Ramal.Tools` and the AshAi tools work in one loop.
-- An AshAi `update` or `destroy` tool is a bulk action (`Ash.bulk_update!/4` on a `limit(1)` query), which a branch refuses;
-  the write tool is a generic action that updates the one record itself.
+- An AshAi `update` tool is a bulk action (`Ash.bulk_update!/4` on a `limit(1)` query), and a branch runs it record by
+  record, so it writes the branch and not the data layer. `move_herd` shows a generic action that does the same by hand.
 
 The data layer is ETS, so no database is needed.
