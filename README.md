@@ -280,7 +280,7 @@ and what is and is not tested.
 
 - **Real actions inside a branch.** Validations, policies, hooks, defaults and managed relationships run as they do outside.
 - **Fork, diff, merge, discard** as ordinary function calls, plus **proposals** with a recorded proposer and decider.
-- **Persistent.** With `Ramal.Storage.Postgres` a branch is saved when it is created, proposed, discarded, unloaded or when the supervisor shuts down, so it survives restarts; idle branches unload from memory and come back on demand. With `durable: true` the writes of every action that ended are stored before the action returns, so a crash of the node loses none of them.
+- **Persistent.** With `Ramal.Storage.Postgres` a branch is saved when it is created, proposed, discarded, unloaded or when the supervisor shuts down, so it survives restarts; idle branches unload from memory and come back on demand. With `durable: true` the writes of every action that ended are stored before the action returns, so a crash of the node loses none of them. A durable branch does not store the fingerprint of a row it only read since its last save, so after a crash the merge cannot tell that such a row changed in the database; every row an action wrote keeps its fingerprint.
 - **Staleness detection** at merge, with a choice of what to do about it.
 - **Exact aggregates** for a branch without scanning the table, and loaded, filtered and sorted aggregates that agree with the branch.
 - **Pages, prepared queries and module calculations** that see the branch.

@@ -31,9 +31,11 @@ defmodule Ramal.Supervisor do
       machine). A branch exceeding it is killed and its last persisted state remains.
     * `:durable` - `true` to make every branch durable unless `Ramal.branch/2` says otherwise, default `false`
       (ADR 0048). A durable branch appends the writes of each action that ends to the storage's write log before the
-      action returns, so a crash of the node loses none of them. The storage must define `c:Ramal.Storage.append/4` and
-      `c:Ramal.Storage.writes_after/2`, as `Ramal.Storage.ETS` and `Ramal.Storage.Postgres` do; the supervisor refuses
-      to start otherwise. It costs one storage write per action.
+      action returns, so a crash of the node loses none of them. The fingerprints of rows the branch read and did not
+      write since its last save are not in that log, so after a crash the merge cannot tell that such a row changed in
+      the database; every row an action wrote keeps its fingerprint. The storage must define `c:Ramal.Storage.append/4`
+      and `c:Ramal.Storage.writes_after/2`, as `Ramal.Storage.ETS` and `Ramal.Storage.Postgres` do; the supervisor
+      refuses to start otherwise. It costs one storage write per action.
     * any other option is the storage config, for example `:repo` for the Postgres backend
 
   Both limits are off by default, so adding them is the only change; see ADR 0016 for why they exist (a client that can

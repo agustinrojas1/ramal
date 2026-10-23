@@ -42,8 +42,10 @@ defmodule Ramal do
       tenant refuses multitenant resources used with a tenant (`:multitenancy_unsupported`). Default `nil`
     * `:durable` - `true` to append the writes of every action that ends to the storage's write log before the action
       returns, so that a crash of the node loses none of them (ADR 0048). Default: the supervisor's `:durable`, which is
-      `false`. Costs one storage write per action; the writes of an action that has not ended are never stored. Needs a
-      storage that defines `c:Ramal.Storage.append/4` and `c:Ramal.Storage.writes_after/2`
+      `false`. Costs one storage write per action; the writes of an action that has not ended are never stored. The
+      fingerprints of rows the branch read but did not write since its last save are not in the log, so after a crash
+      the merge cannot see a change to those rows in the database. Needs a storage that defines
+      `c:Ramal.Storage.append/4` and `c:Ramal.Storage.writes_after/2`
 
   Returns `{:error, %Ramal.Error{reason: :not_started}}` when `Ramal.Supervisor` is not running, and
   `:no_branchable_resources` when no resource of the domain uses `Ramal.Resource` (or all of them opted out), since
