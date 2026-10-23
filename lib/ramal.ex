@@ -319,6 +319,9 @@ defmodule Ramal do
   reads. Returns `{:ok, value}` or the error Ash returned. Raises `ArgumentError` for an unknown kind or a field that is
   not an attribute, in a branch or not.
 
+  `:min` and `:max` over strings compare bytes for the branch's rows, and the database compares by its collation for the
+  rest, so they can disagree on mixed-case text (ADR 0024).
+
   Confirmed against Ash 3.37 (`lib/ash.ex`): `Ash.count/2` takes no field, and the others take `(query, field, opts)`.
 
   ## Example

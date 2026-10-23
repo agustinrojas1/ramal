@@ -24,6 +24,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - `Ramal.aggregate/4` now sees a branch carried only by `context: Ramal.context(branch)`, in the options or in the query's context, as reads do; before, it answered with the base's numbers (#114).
 - An update or destroy through a record read with `Ash.Query.select/2` no longer stores a partial row in the branch or skips its staleness check: the full row is read inside the branch first, and the write is refused with `:partial_record` if that fails (#113).
 - A create that manages a `belongs_to` now stores the new row's foreign key in the branch: the record the action returns, later reads and the diff showed `nil` until merge (#112).
+- A limit is now documented: a text sort inside a branch uses byte order, not the database's collation, once the branch has changed the resource, so mixed-case text can sort differently than outside it; `Ramal.aggregate/4` `:min` and `:max` on strings have the same gap. Ramal does not guess a collation ([ADR 0024](docs/adr/0024-text-sort-order.md), #117).
 
 ## [0.4.2] - 2026-10-23
 

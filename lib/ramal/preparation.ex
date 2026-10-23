@@ -44,6 +44,8 @@ defmodule Ramal.Preparation do
       `lib/ash/actions/read/read.ex`), so a foreign key the branch changed is not seen and the load follows the
       database's. Pass `reuse_values?: true`, which skips the reselect, or load through a read
       (`Ash.Query.load/2`), which goes through this preparation;
+    * a sort on text uses byte order once the overlay touches the resource, where Postgres uses its collation, so mixed-case
+      text can come out in another order than outside the branch (ADR 0024);
     * paginated reads (`page:`) are paged by the database and patched afterwards, so pages can be short or miss rows
       created in the branch, and `count` is the database's.
 
