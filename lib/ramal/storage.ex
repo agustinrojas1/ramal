@@ -34,7 +34,13 @@ defmodule Ramal.Storage do
   @doc "Removes the branch. Removing a missing id is not an error."
   @callback delete(id :: String.t(), config) :: :ok | {:error, Error.t()}
 
-  @doc "The branches of a domain, optionally filtered by `status:`, oldest first."
+  @doc """
+  The branches of a domain, optionally filtered by `status:` and `owner:`, oldest first.
+
+  `owner:` is present only when the caller filters; `owner: nil` then means the branches that have no owner. A backend
+  that ignores it is still safe, because `Ramal.list/2` checks the owner of what comes back, but it reads and returns
+  every branch of the domain.
+  """
   @callback list(domain :: module, filters :: keyword, config) ::
               {:ok, [Branch.t()]} | {:error, Error.t()}
 

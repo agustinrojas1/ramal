@@ -41,6 +41,12 @@ defmodule RamalLive.Test.Inspector do
   # `actor: {RamalLive.Test.Inspector, :actor}`: the host reads its current user from the socket's assigns.
   def actor(socket), do: socket.assigns[:current_user]
 
+  # `owner: {RamalLive.Test.Inspector, :owner}`: the owner of a signed-in user's branches.
+  def owner(actor), do: actor.name
+
+  # An owner function that finds no owner for a user who is signed in.
+  def no_owner(_actor), do: nil
+
   # A session that ended: the function the host wrote finds no user.
   def nobody(_socket), do: nil
 

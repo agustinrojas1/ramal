@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- An optional owner on a branch: `Ramal.branch/2` and `Ramal.fork/2` take `owner:` (a fork keeps its parent's), `Ramal.list/2` takes `owner:` to list one owner's branches (`owner: nil` lists the unowned), and `ramal_inspector` takes an `:owner` `{module, function}` that scopes the page to the signed-in actor's branches. All are off by default and a branch stored by 0.2.0 loads as unowned. The owner is stored in the branch state (no migration) and filtered in SQL by `Ramal.Storage.Postgres`. It filters; it does not authorize ([ADR 0018](docs/adr/0018-branch-owner.md), `SECURITY.md`).
+
 ### Fixed
 
 - A many_to_many load inside a branch sees the links the branch created or destroyed, so `manage_relationship` with `type: :remove` finds a link the branch created and `type: :append` no longer links a vet twice. `type: :append_and_remove` with a link to remove is still refused as a bulk action ([ADR 0017](docs/adr/0017-many-to-many-links-in-a-branch.md)).

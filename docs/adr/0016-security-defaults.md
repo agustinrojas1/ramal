@@ -32,8 +32,11 @@ input of every captured write; and a malformed `state` column crashed the caller
   emit `[:ramal, :limit, :reached]`. Both are off by default. Counting uses a new optional `c:Ramal.Storage.count/3`
   (one query with Postgres, `list/3` for a backend without it). Limits are per domain, not per user, and the first is
   soft under concurrency: user scoping stays with the host.
+- **Follow-up, 2026-10-23: an optional owner.** A branch can carry an `owner` set at `branch/2` or `fork/2`;
+  `Ramal.list/2` takes `owner:` and the inspector takes an `:owner` option, both off by default, so a host can show each
+  user their own branches. It is a filter, not access control (ADR 0018).
 - Not changed: the ETS tables stay `:public` (every branch process writes to them) and branch ids stay the only
-  capability to a branch. Both are documented in `SECURITY.md` as the host's boundary.
+  capability to a branch (an owner filters `list/2`; it does not guard `get/1`). Both are documented in `SECURITY.md` as the host's boundary.
 
 ## Consequences
 

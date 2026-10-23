@@ -3,8 +3,8 @@ defmodule Ramal.Storage.Codec do
   Turns a branch into a JSON-safe map and back, for storage backends that keep text (`Ramal.Storage.Postgres` keeps it
   in a `jsonb` column).
 
-  `encode_state/1` covers what the table has no column for: overlay, base (fingerprints and snapshots), log, metadata
-  and the proposal. `decode_state/2` takes that map and the columns and gives the branch back, equal to the one encoded.
+  `encode_state/1` covers what the table has no column for: overlay, base (fingerprints and snapshots), log, metadata,
+  the owner and the proposal. `decode_state/2` takes that map and the columns and gives the branch back, equal to the one encoded.
 
   How values are written, confirmed against Ash 3.37 (`lib/ash/type/type.ex`):
 
@@ -53,7 +53,7 @@ defmodule Ramal.Storage.Codec do
   @opt_names %{"key" => :key, "tenant" => :tenant, "nested?" => :nested?}
 
   @doc """
-  The JSON-safe state of `branch`: overlay, base, log, metadata and `inserted_at`.
+  The JSON-safe state of `branch`: overlay, base, log, metadata, owner and `inserted_at`.
 
   ## Example
 
@@ -70,6 +70,7 @@ defmodule Ramal.Storage.Codec do
        "base" => Enum.map(branch.base, &base_entry/1),
        "log" => Enum.map(branch.log, &log_entry/1),
        "metadata" => term(branch.metadata, ["metadata"]),
+       "owner" => term(branch.owner, ["owner"]),
        "inserted_at" => term(branch.inserted_at, ["inserted_at"]),
        "proposal" => proposal(branch.proposal)
      }}
@@ -77,6 +78,25 @@ defmodule Ramal.Storage.Codec do
     {:codec, message, path} ->
       {:error,
        Error.new(:storage, "branch #{branch.id} cannot be stored: #{message}", %{path: path})}
+  end
+
+  @doc """
+  The JSON form of an owner, as `encode_state/1` writes it under `"owner"`, so that a storage can compare it in the
+  database.
+
+  ## Example
+
+      iex> Ramal.Storage.Codec.encode_owner("user-7")
+      {:ok, "user-7"}
+      iex> Ramal.Storage.Codec.encode_owner({:user, 7})
+      {:ok, %{"$t" => [%{"$a" => "user"}, 7]}}
+  """
+  @spec encode_owner(term) :: {:ok, term} | {:error, Error.t()}
+  def encode_owner(owner) do
+    {:ok, term(owner, ["owner"])}
+  catch
+    {:codec, message, path} ->
+      {:error, Error.new(:storage, "the owner cannot be stored: #{message}", %{path: path})}
   end
 
   @doc """
@@ -102,6 +122,7 @@ defmodule Ramal.Storage.Codec do
        status: status!(columns.status),
        inserted_at: unterm(state["inserted_at"]),
        metadata: unterm(state["metadata"]),
+       owner: unterm(state["owner"]),
        overlay: Map.new(state["overlay"], &decode_overlay_entry/1),
        base: Map.new(state["base"], &decode_base_entry/1),
        log: Enum.map(state["log"], &decode_log_entry/1),
@@ -444,7 +465,8 @@ defmodule Ramal.Storage.Codec do
   end
 
   defp unterm(value)
-       when is_nil(value) or is_boolean(value) or is_number(value) or is_binary(value), do: value
+       when is_nil(value) or is_boolean(value) or is_number(value) or is_binary(value),
+       do: value
 
   defp unterm(value) when is_list(value), do: Enum.map(value, &unterm/1)
   defp unterm(%{"$a" => name}), do: atom!(name)

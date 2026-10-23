@@ -340,6 +340,7 @@ defmodule RamalLive.InspectorLiveTest do
         assigns: %{
           __changed__: %{},
           config: config,
+          scope: :all,
           columns: [%{column | busy: :merge}],
           confirming: nil,
           banner: nil
@@ -538,6 +539,123 @@ defmodule RamalLive.InspectorLiveTest do
       assert {:ok, %{status: :proposed}} = Ramal.get(proposed.id)
       assert {:ok, branches} = Ramal.list(Farm, status: :open)
       assert length(branches) == 1
+    end
+  end
+
+  describe "with an :owner function" do
+    defp owned!(name, owner) do
+      {:ok, branch} = Ramal.branch(Farm, name: name, owner: owner)
+      branch
+    end
+
+    test "the page lists the signed-in user's branches and no one else's", %{conn: conn} do
+      mine = owned!("mine", "Marta")
+      theirs = owned!("theirs", "Luis")
+      unowned = owned!("unowned", nil)
+      {:ok, proposed} = Ramal.propose(owned!("mine, proposed", "Marta"))
+
+      {:ok, view, _html} = live(conn, "/ramal-owned")
+
+      assert column_ids(view) |> Enum.sort() ==
+               Enum.sort(["branch-#{mine.id}", "branch-#{proposed.id}"])
+
+      refute render(view) =~ theirs.id
+      refute render(view) =~ unowned.id
+    end
+
+    test "a change to someone else's branch does not put it on the page", %{conn: conn} do
+      start_supervised!({Broadcaster, pubsub: RamalLive.Test.PubSub})
+      herd = herd!("R7", 30)
+      theirs = owned!("theirs", "Luis")
+      {:ok, view, _html} = live(conn, "/ramal-owned")
+
+      Ramal.run!(theirs, fn -> Ash.update!(herd, %{head: 31}) end)
+      # The page has been told about the change by now; it read the branch and left it out.
+      Process.sleep(100)
+
+      refute has_element?(view, column(theirs))
+    end
+
+    test "a change to the user's own branch is shown", %{conn: conn} do
+      start_supervised!({Broadcaster, pubsub: RamalLive.Test.PubSub})
+      herd = herd!("R7", 30)
+      mine = owned!("mine", "Marta")
+      {:ok, view, _html} = live(conn, "/ramal-owned")
+
+      Ramal.run!(mine, fn -> Ash.update!(herd, %{head: 31}) end)
+
+      eventually(fn -> has_element?(view, "#{column(mine)} .rl-after", "31") end)
+    end
+
+    test "a fork belongs to the user who made it", %{conn: conn} do
+      mine = owned!("mine", "Marta")
+      {:ok, view, _html} = live(conn, "/ramal-owned")
+
+      click(view, mine, "fork", "fork")
+
+      assert {:ok, forks} = Ramal.list(Farm, owner: "Marta")
+      assert length(forks) == 2
+      assert length(column_ids(view)) == 2
+    end
+
+    test "an action on someone else's branch is ignored, even when the client sends it", %{
+      conn: conn
+    } do
+      theirs = owned!("theirs", "Luis")
+      {:ok, view, _html} = live(conn, "/ramal-owned")
+
+      render_click(view, "ask", %{"id" => theirs.id, "action" => "discard"})
+      render_click(view, "confirm", %{"id" => theirs.id, "action" => "discard"})
+      render_click(view, "fork", %{"id" => theirs.id})
+
+      assert {:ok, %{status: :open}} = Ramal.get(theirs.id)
+      assert {:ok, [_only]} = Ramal.list(Farm, owner: "Luis")
+    end
+
+    test "Reload keeps the page in the user's scope", %{conn: conn} do
+      mine = owned!("mine", "Marta")
+      theirs = owned!("theirs", "Luis")
+      {:ok, view, _html} = live(conn, "/ramal-owned")
+
+      render_click(view, "reload", %{})
+
+      assert has_element?(view, column(mine))
+      refute has_element?(view, column(theirs))
+    end
+
+    test "an owner function that returns nil shows nothing and says why", %{conn: conn} do
+      _unowned = owned!("unowned", nil)
+      _theirs = owned!("theirs", "Luis")
+      {:ok, view, html} = live(conn, "/ramal-no-owner")
+
+      refute has_element?(view, "article")
+      assert html =~ "returned nil"
+    end
+
+    test "without the option the page lists every branch, as before", %{conn: conn} do
+      mine = owned!("mine", "Marta")
+      theirs = owned!("theirs", "Luis")
+      {:ok, view, _html} = live(conn, "/ramal")
+
+      assert has_element?(view, column(mine))
+      assert has_element?(view, column(theirs))
+    end
+
+    test "a route whose owner function does not exist stops the page when it opens" do
+      socket = %Phoenix.LiveView.Socket{
+        router: RamalLive.Test.Router,
+        assigns: %{__changed__: %{}, config: nil}
+      }
+
+      assert_raise ArgumentError,
+                   ~r/:owner option is .*no_such_owner\/1, which does not exist/,
+                   fn ->
+                     RamalLive.InspectorLive.handle_params(
+                       %{},
+                       "http://localhost/ramal-typo-owner",
+                       socket
+                     )
+                   end
     end
   end
 
