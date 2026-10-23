@@ -105,8 +105,9 @@ ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: {MyAp
 ```
 
 To see it move before wiring it into an app, `elixir ramal_live/examples/farm_demo.exs` starts a seeded farm where one button
-opens four branches that each move a herd to a different paddock, and merging one makes the others stale. There is no
-screenshot yet.
+opens four branches that each move a herd to a different paddock, and merging one makes the others stale.
+
+![The Ramal inspector with four open branches, each moving herd R7 to a different paddock, shown as columns of before and after rows](assets/inspector.png)
 
 See the [ramal_live README](https://github.com/agustinrojas1/ramal/blob/main/ramal_live/README.md) for the setup and [ADR 0015](docs/adr/0015-inspector-mounting.md) for why it is built this way.
 

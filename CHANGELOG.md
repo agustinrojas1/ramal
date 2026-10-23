@@ -14,6 +14,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- The READMEs show a screenshot of the inspector running the farm demo, and the `ramal_live` README an animation of the columns filling in (`assets/inspector.png`, `assets/inspector.gif`), instead of saying there is none.
 - The install snippets in the READMEs and the `RamalLive` module doc point at Hex (`{:ramal, "~> 0.2.0"}`, `{:ramal_live, "~> 0.2.0"}`), with Hex and HexDocs badges.
 
 ## [0.2.0] - 2026-10-23

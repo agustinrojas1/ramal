@@ -2,6 +2,8 @@
 
 A LiveView inspector for [Ramal](https://github.com/agustinrojas1/ramal) branches.
 
+![The inspector with four open branches, each moving herd R7 to a different paddock, shown as columns of before and after rows](https://raw.githubusercontent.com/agustinrojas1/ramal/main/assets/inspector.png)
+
 [![Hex.pm](https://img.shields.io/hexpm/v/ramal_live.svg)](https://hex.pm/packages/ramal_live) [![HexDocs](https://img.shields.io/badge/hexdocs-ramal__live-blue.svg)](https://hexdocs.pm/ramal_live)
 
 It shows the open and proposed branches of one Ash domain as columns. Each column has the branch's name, status, age and
@@ -61,7 +63,7 @@ For a development tool with no users, return a constant (`def actor(_socket), do
 
 ## Try it
 
-A runnable demo, the one to record the GIF from, lives in `examples/farm_demo.exs`. It is a single file that installs its own
+A runnable demo, the one the screenshot above and the animation below come from, lives in `examples/farm_demo.exs`. It is a single file that installs its own
 dependencies with `Mix.install` (so the first start compiles for a few minutes), runs a [Phoenix
 Playground](https://github.com/phoenixframework/phoenix_playground) app on a seeded farm in Postgres, and mounts the
 inspector with the `ramal_inspector` line above.
@@ -75,6 +77,8 @@ Open <http://localhost:4000> and press **Explore 4 alternatives**. Four branches
 out of paddock L07 into a different paddock, and the columns fill in as the writes happen. Merge one: the database now has
 R7 in its new paddock, and merging any other column is refused as stale, because that branch read R7 where it used to be.
 **Reset** discards every branch and seeds the farm again.
+
+![The columns filling in as the four branches write](https://raw.githubusercontent.com/agustinrojas1/ramal/main/assets/inspector.gif)
 
 The demo uses a `ramal_dev` database on the server of the test database, creates it if it is missing, and drops and
 recreates its three tables on every start, so do not point it at data you want to keep. `RAMAL_PG_HOST`, `RAMAL_PG_PORT`,
