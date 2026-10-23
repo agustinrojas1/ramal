@@ -17,6 +17,10 @@ defmodule Ramal.Preparation do
     * A relationship load runs a read on the related resource through its own preparation, in a task that does not
       inherit the process dictionary. The branch id therefore also travels in the query's `shared` context, which
       Ash copies into related queries (`lib/ash/actions/read/relationships.ex`).
+    * `distinct` on attributes is applied after the patch, not by the data layer: while the overlay touches the
+      resource the base query is read without it and the patch keeps the first row of each group in the order of
+      `distinct_sort` (or `sort`). Otherwise a group whose database pick was destroyed in the branch vanished and a
+      group got a second row from the branch. A distinct on a calculation or aggregate keeps the data layer's.
     * Filters are evaluated on overlay records with `Ash.Filter.Runtime.filter_matches/4` and sorting uses
       Ash.Actions.Sort.runtime_sort/3.
 
@@ -89,9 +93,17 @@ defmodule Ramal.Preparation do
         Ash.Query.set_context(query, %{ramal: %{slice: slice, limit: nil, offset: nil}})
 
       {:ok, slice} ->
+        {query, distinct} = take_over_distinct(query, links)
+
         query
         |> Ash.Query.set_context(%{
-          ramal: %{slice: slice, limit: query.limit, offset: query.offset, links: links}
+          ramal: %{
+            slice: slice,
+            limit: query.limit,
+            offset: query.offset,
+            links: links,
+            distinct: distinct
+          }
         })
         |> Ash.Query.unset([:limit, :offset])
 
@@ -99,6 +111,36 @@ defmodule Ramal.Preparation do
         Ash.Query.add_error(query, error)
     end
   end
+
+  # `distinct` is applied by the data layer to the base rows, where a row the branch changed or destroyed still stands for
+  # its group and a row the branch created is not in any group. When the overlay touches the resource the preparation
+  # takes it over: the base query returns every row, and the patch keeps the first row of each group in the order of
+  # `distinct_sort` (or `sort`), as DISTINCT ON does. Only distinct attributes are handled; a calculation, an aggregate
+  # or a many_to_many read keeps the data layer's distinct.
+  defp take_over_distinct(query, links) do
+    if links == nil and distinct_attributes?(query) do
+      fields = for {field, _direction} <- query.distinct, do: field
+      pick = if query.distinct_sort in [nil, []], do: query.sort, else: query.distinct_sort
+
+      query =
+        query
+        |> Ash.Query.unset([:distinct, :distinct_sort])
+        |> Ash.Query.ensure_selected(fields)
+
+      {query, %{fields: fields, sort: pick}}
+    else
+      {query, nil}
+    end
+  end
+
+  defp distinct_attributes?(%{distinct: [_ | _] = distinct, resource: resource}) do
+    Enum.all?(distinct, fn
+      {field, _direction} when is_atom(field) -> Info.attribute(resource, field) != nil
+      _other -> false
+    end)
+  end
+
+  defp distinct_attributes?(_query), do: false
 
   defp after_data_layer(query, results, id) do
     %{slice: slice, limit: limit, offset: offset} = query.context.ramal
@@ -163,6 +205,7 @@ defmodule Ramal.Preparation do
           key: &Resource.key(resource, &1),
           replace: &carry_lateral_source/2
         )
+        |> distinct(query)
         |> sort(query)
         |> Enum.drop(offset || 0)
         |> take(limit)
@@ -218,6 +261,19 @@ defmodule Ramal.Preparation do
   end
 
   defp apply_select(record, _query, _slice), do: record
+
+  defp distinct(rows, %{context: %{ramal: %{distinct: %{fields: fields, sort: pick}}}} = query) do
+    rows
+    |> sort_by(pick, query)
+    |> Enum.uniq_by(fn row -> Enum.map(fields, &Map.get(row, &1)) end)
+  end
+
+  defp distinct(rows, _query), do: rows
+
+  defp sort_by(rows, pick, _query) when pick in [nil, []], do: rows
+
+  defp sort_by(rows, pick, query),
+    do: Sort.runtime_sort(rows, pick, resource: query.resource, domain: query.domain)
 
   defp sort(rows, %{sort: sort} = query) when sort not in [nil, []] do
     Sort.runtime_sort(rows, sort, resource: query.resource, domain: query.domain)

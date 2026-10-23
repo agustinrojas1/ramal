@@ -111,6 +111,9 @@ This is the section that decides correctness. In a read action's preparation, wh
      `Ash.Sort`, and sorts a list, not pairs), then the remembered `offset` and `limit`. `Ramal.Overlay.patch/4`
      does the merge as a pure function and supplies the filter predicate's rows; the preparation calls it without
      `:sort`, `:offset` and `:limit` and applies those itself;
+   - apply `distinct` on attributes itself while the overlay touches the resource: the base query is read without it
+     and the patch keeps the first row of each group in the order of `distinct_sort` (or `sort`), as `DISTINCT ON`
+     does; a distinct on a calculation or aggregate stays with the data layer;
    - trim overlay records to the query's `select`, since an overlay record is a whole struct and a base row carries
      only the selected attributes (the primary key is always kept);
    - record a fingerprint (section 7) for every base row the data layer returned, before patching (ADR 0006); a read
