@@ -124,7 +124,8 @@ def deps do
 end
 ```
 
-Requires Elixir 1.18+ and Ash 3.36 or later. AshPostgres is optional and only needed for the Postgres storage backend.
+Requires Elixir 1.18+ and Ash 3.36 or later. CI tests Ash 3.36, 3.37, the latest 3.x and Ash's main branch, and Ramal
+warns at boot when the host's Ash is outside the range it is tested with (`Ramal.Ash`). AshPostgres is optional and only needed for the Postgres storage backend.
 
 **1. Add the extension to each resource a branch should see.**
 

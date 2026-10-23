@@ -18,22 +18,30 @@ defmodule Ramal.Ash do
 
   ## Ash internals Ramal relies on
 
-  Ash does not present these as public API, so a minor release may change them. The modules that call each one say why
-  the public API is not enough:
+  Ramal hooks into Ash above the data layer, and some of what it needs there is internal to Ash or undocumented. Each
+  assumption has a tripwire, a test in `test/ramal/ash_contract_test.exs` named `"assumption: ..."` that checks it
+  against Ash alone, so a change in Ash fails CI with the assumption's name instead of writing a wrong row.
 
-    * `Ash.Filter.Runtime.filter_matches/3` and `/4`: judge a filter on the rows of a branch, in Elixir
-      (`Ramal.Preparation`, `Ramal.Preparation.Related`, `Ramal.Preparation.Paged`)
-    * `Ash.Filter.list_refs/4` and `/5`, `Ash.Filter.hydrate_refs/2`: the fields and relationships a filter or sort names
-      (`Ramal.Preparation.Related`, `Ramal.Collation`)
-    * `Ash.Actions.Sort.runtime_sort/3` and `sorting_on_identity?/1`: order rows in Elixir
-      (`Ramal.Collation`, `Ramal.Aggregate`, `Ramal.Preparation.Paged`)
-    * `Ash.Actions.Read.Relationships.has_parent_expr?/1`: tells a relationship load that walks through the branch's rows
-      (`Ramal.Preparation.Lateral`, `Ramal.Preparation.ManyToMany`)
-    * `Ash.Query.Aggregate` and `Ash.Query.Calculation`: the structs of an aggregate and a calculation, matched on their
-      fields (`Ramal.Preparation.Related`, `Ramal.Preparation.Aggregates`, `Ramal.Collation`)
-
-  Ramal's calls are listed here so that a change in Ash has one place to look. Moving more of them into this module is
-  planned, not done.
+    * A result set with `Ash.Changeset.set_result/2` in the last `before_action` hook skips the data layer on create,
+      update and destroy (`Ramal.Capture`).
+    * A bulk action runs a changeset with an `around_action` hook one record at a time (`Ramal.Capture`).
+    * `change/3` sees an upsert in `context.private` (`upsert?`, `upsert_identity`, `upsert_fields`,
+      `upsert_condition`), and a resource's global changes run after the action's own (`Ramal.Capture`).
+    * A change that answers `{:not_atomic, _}` from `atomic/3` sends an update or destroy with `require_atomic? false`
+      down the path that runs `change/3` and the hooks (`Ramal.Capture`, the resource transformer).
+    * `Ash.Query.set_result/2` in the last `before_action` hook of a read and `full_count` in its context become the
+      page and its count (`Ramal.Preparation`).
+    * A relationship load paged per source carries `context.data_layer.lateral_join_source` as `{records, path}` and
+      tags rows with `__lateral_join_source__` (`Ramal.Preparation` and its lateral and many-to-many readers).
+    * `Ash.load/3` reselects a record's source attribute without running read preparations, which is why
+      `Ramal.load/3` exists.
+    * An atomic bulk update of a query with a `before_action` hook is refused, and a streamed one runs the query's
+      `before_transaction` hook and the `before_action` hooks it adds (`Ramal.Preparation`).
+    * The context markers `accessing_from`, `query_for`, `private.actor` and `private.authorize?` are where Ramal reads
+      them, and `Ash.Query` has the hook fields Ramal rebuilds a query with.
+    * The internal functions `Ash.Actions.Read.unpaginated_read/3`, `Ash.Actions.Sort.runtime_sort/3` and
+      `sorting_on_identity?/1`, `Ash.Actions.Read.Relationships.has_parent_expr?/1`, `Ash.Filter.list_refs/4`,
+      `Ash.Filter.map/2` and `Ash.Filter.Runtime.filter_matches/4` exist with the arity Ramal calls.
 
   ## Example
 
