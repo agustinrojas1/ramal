@@ -1,6 +1,7 @@
 #!/bin/sh
-# Runs every check under verification/: the Bend proofs, then TLC on the TLA+ models. Each regression config must fail
-# on the property it names, which shows the model still sees the bug its fix closed.
+# Runs every check under verification/: the Bend proofs, then TLC on the TLA+ models (the branch lifecycle, a nested fork
+# merging into its parent, and a branch in a cluster). Each regression config must fail on the property it names, which
+# shows the model still sees the bug its fix closed.
 #
 #   verification/check.sh            # both; needs java and bend, see README.md
 #   verification/check.sh tla        # only TLC
@@ -60,5 +61,17 @@ grep -E "^[0-9,]+ states generated|No error has been found" tlc.out
 expect bug-adopt-unversioned.cfg NoLostParentWrite MCNested
 expect bug-no-merged-children.cfg NoDoubleNestedMerge MCNested
 expect bug-no-reconcile.cfg ParentGetsChildWritesOnce MCNested
+
+echo "== TLC: Cluster.cfg (every property holds)"
+$tlc -config Cluster.cfg Cluster.tla > tlc.out 2>&1 || { tail -60 tlc.out; exit 1; }
+grep -E "^[0-9,]+ states generated|No error has been found" tlc.out
+
+echo "== TLC: Cluster-durable.cfg (durable branches in a cluster; every property holds)"
+$tlc -config Cluster-durable.cfg Cluster.tla > tlc.out 2>&1 || { tail -60 tlc.out; exit 1; }
+grep -E "^[0-9,]+ states generated|No error has been found" tlc.out
+
+expect bug-unfenced.cfg NoLostUpdateUnreported Cluster
+expect bug-unfenced-append.cfg SingleLogWriter Cluster
+expect bug-unfenced-writer.cfg SingleWriter Cluster
 rm -f tlc.out
 echo "== all checks passed"

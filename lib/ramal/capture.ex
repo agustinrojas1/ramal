@@ -325,6 +325,12 @@ defmodule Ramal.Capture do
             Process.put(@frame, %{frame | undos: []})
             result
 
+          # The process that held the writes was replaced by another (ADR 0044) and stopped with them: there is nothing
+          # to take back, and asking for it would load the branch again, on this side of a split, over the new holder.
+          {:error, %Error{reason: :fenced}} = failed ->
+            Process.put(@frame, %{frame | undos: Enum.take(frame.undos, -mark)})
+            failed
+
           {:error, _error} = failed ->
             rollback(id, mark, failed)
         end

@@ -8,12 +8,14 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
         $ mix ramal.gen.migration
         $ mix ramal.gen.migration -r MyApp.Repo
 
-    Three migrations make the tables: `create_ramal_branches`; `add_ramal_branch_owner`, which adds the `owner` column
-    Postgres generates from `state -> 'owner'` and its index (ADR 0021); and `create_ramal_branch_writes`, the table of
-    the write log of durable branches (ADR 0048). A new install gets all three. A host that installed 0.3.0 or earlier
-    already has the first and gets the other two; adding `owner` is safe on a table that has the column, and rewrites
-    the table once, which is small. The task writes whichever of the three are missing and refuses when none is. The
-    write log is only read and written by branches with `durable: true`, so a host that has none can skip that migration.
+    Four migrations make the tables: `create_ramal_branches`; `add_ramal_branch_owner`, which adds the `owner` column
+    Postgres generates from `state -> 'owner'` and its index (ADR 0021); `add_ramal_branch_epoch`, which adds the
+    `epoch` column a cluster fences writes with (ADR 0044); and `create_ramal_branch_writes`, the table of the write log
+    of durable branches (ADR 0048). A new install gets all four. A host that installed 0.3.0 or earlier already has the
+    first and gets the others; it is safe to run on a table that has the columns. Adding `owner` rewrites the table once,
+    which is small; adding `epoch` does not rewrite it. The task writes whichever of the four are missing and refuses
+    when none is. The epoch is only read with `cluster: true`, and the write log only by branches with `durable: true`,
+    so a host that uses neither can skip those migrations.
 
     The files go where `mix ecto.gen.migration` would put them: `priv/<repo>/migrations`, or the directory given with
     `--migrations-path`.
@@ -29,7 +31,8 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
         $ mix ramal.gen.migration -r MyApp.Repo
         * creating priv/repo/migrations/20261022120000_create_ramal_branches.exs
         * creating priv/repo/migrations/20261022120001_add_ramal_branch_owner.exs
-        * creating priv/repo/migrations/20261022120002_create_ramal_branch_writes.exs
+        * creating priv/repo/migrations/20261022120002_add_ramal_branch_epoch.exs
+        * creating priv/repo/migrations/20261022120003_create_ramal_branch_writes.exs
     """
 
     use Mix.Task
@@ -46,6 +49,7 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
     ]
     @create "create_ramal_branches"
     @owner "add_ramal_branch_owner"
+    @epoch "add_ramal_branch_epoch"
     @writes "create_ramal_branch_writes"
 
     @impl true
@@ -57,12 +61,12 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
         ensure_repo(repo, args)
         path = opts[:migrations_path] || Path.join(source_repo_priv(repo), "migrations")
 
-        # Each timestamp is one second after the one before, so that a column is added to a table that exists, and the
-        # write log refers to one.
+        # Each timestamp is one second after the one before, so that a column is added to a table that exists.
         missing =
           [
             {@create, &create_template/1},
             {@owner, &owner_template/1},
+            {@epoch, &epoch_template/1},
             {@writes, &writes_template/1}
           ]
           |> Enum.reject(fn {name, _template} ->
@@ -134,6 +138,25 @@ if Code.ensure_loaded?(Mix.EctoSQL) do
             add :seq, :bigint, primary_key: true, null: false
             add :delta, :map, null: false
           end
+        end
+      end
+      """
+    end
+
+    # A constant default is stored in the catalog, not written to every row (Postgres 11), so this does not rewrite the
+    # table. bigint, because the epoch counts every load of a branch for as long as the row lives.
+    defp epoch_template(repo) do
+      """
+      defmodule #{inspect(repo)}.Migrations.AddRamalBranchEpoch do
+        use Ecto.Migration
+
+        # Created by `mix ramal.gen.migration`. Only a Ramal.Supervisor with `cluster: true` reads it.
+        def up do
+          execute "ALTER TABLE ramal_branches ADD COLUMN IF NOT EXISTS epoch bigint NOT NULL DEFAULT 0"
+        end
+
+        def down do
+          execute "ALTER TABLE ramal_branches DROP COLUMN IF EXISTS epoch"
         end
       end
       """

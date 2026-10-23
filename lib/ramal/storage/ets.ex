@@ -9,6 +9,10 @@ defmodule Ramal.Storage.ETS do
   first one is scanned whole by `list/3` and `count/3`, which must not meet deltas. It makes a durable branch survive
   the death of its process, which is all an ETS table can promise.
 
+  The table belongs to one node, so this backend cannot be shared by a cluster. It still fences by epoch
+  (`c:Ramal.Storage.claim/2`), which lets `Ramal.Supervisor` run with `cluster: true` on a single node, for tests. The
+  epochs are counters in the supervisor's own table, and a check and the write that follows it are not one atomic step.
+
   ## Example
 
       iex> Ramal.Storage.ETS.table()
@@ -42,6 +46,16 @@ defmodule Ramal.Storage.ETS do
   def writes_table, do: Module.concat(__MODULE__, Writes)
 
   @impl true
+  def put(%{epoch: epoch} = branch, _config) when is_integer(epoch) do
+    with :ok <- check_epoch(branch.id, epoch) do
+      :ets.insert(table(), {branch.id, %{branch | epoch: nil}})
+      drop_covered(branch)
+      :ok
+    end
+  rescue
+    ArgumentError -> unavailable()
+  end
+
   def put(branch, _config) do
     :ets.insert(table(), {branch.id, branch})
     drop_covered(branch)
@@ -52,8 +66,10 @@ defmodule Ramal.Storage.ETS do
 
   @impl true
   def append(branch, seq, delta, _config) do
-    :ets.insert(writes_table(), {{branch.id, seq}, delta})
-    :ok
+    with :ok <- check_held(branch) do
+      :ets.insert(writes_table(), {{branch.id, seq}, delta})
+      :ok
+    end
   rescue
     ArgumentError -> unavailable()
   end
@@ -62,13 +78,15 @@ defmodule Ramal.Storage.ETS do
   def writes_after(branch, _config) do
     id = branch.id
 
-    # The key's first element is bound, so an ordered set walks only this branch's deltas, already in `seq` order.
-    deltas =
-      :ets.select(writes_table(), [
-        {{{id, :"$1"}, :"$2"}, [{:>, :"$1", branch.wal}], [{{:"$1", :"$2"}}]}
-      ])
+    with :ok <- check_held(branch) do
+      # The key's first element is bound, so an ordered set walks only this branch's deltas, already in `seq` order.
+      deltas =
+        :ets.select(writes_table(), [
+          {{{id, :"$1"}, :"$2"}, [{:>, :"$1", branch.wal}], [{{:"$1", :"$2"}}]}
+        ])
 
-    {:ok, deltas}
+      {:ok, deltas}
+    end
   rescue
     ArgumentError -> unavailable()
   end
@@ -79,21 +97,47 @@ defmodule Ramal.Storage.ETS do
 
   defp drop_covered(_not_durable), do: :ok
 
-  # ETS has no transaction to join, so a merge whose commit fails after this call puts the open branch back (ADR 0035).
-  # Only the process holding the merge claim calls this for a branch, so the lookup and the insert do not race.
   @impl true
-  def mark_merged(branch, _config) do
-    case :ets.lookup(table(), branch.id) do
-      [{_id, %{status: :merged}}] ->
-        {:error, Ramal.Storage.already_merged(branch.id)}
+  def claim(id, _config) do
+    case :ets.lookup(table(), id) do
+      [{^id, branch}] ->
+        epoch = :ets.update_counter(Ramal.Supervisor.table(), {:epoch, id}, 1, {{:epoch, id}, 0})
+        {:ok, %{branch | epoch: epoch}}
 
-      _open_or_missing ->
-        :ets.insert(table(), {branch.id, %{branch | status: :merged}})
-        :ok
+      [] ->
+        {:error, Error.new(:not_found, "no branch with id #{inspect(id)}", %{id: id})}
     end
   rescue
     ArgumentError -> unavailable()
   end
+
+  defp check_epoch(id, epoch) do
+    case :ets.lookup(Ramal.Supervisor.table(), {:epoch, id}) do
+      [{_key, ^epoch}] -> :ok
+      _other -> {:error, Ramal.Storage.fenced(id, epoch)}
+    end
+  end
+
+  # ETS has no transaction to join, so a merge whose commit fails after this call puts the open branch back (ADR 0035).
+  # Only the process holding the merge claim calls this for a branch, so the lookup and the insert do not race.
+  @impl true
+  def mark_merged(branch, _config) do
+    with :ok <- check_held(branch) do
+      case :ets.lookup(table(), branch.id) do
+        [{_id, %{status: :merged}}] ->
+          {:error, Ramal.Storage.already_merged(branch.id)}
+
+        _open_or_missing ->
+          :ets.insert(table(), {branch.id, %{branch | status: :merged, epoch: nil}})
+          :ok
+      end
+    end
+  rescue
+    ArgumentError -> unavailable()
+  end
+
+  defp check_held(%{epoch: nil}), do: :ok
+  defp check_held(%{id: id, epoch: epoch}), do: check_epoch(id, epoch)
 
   @impl true
   def fetch(id, _config) do

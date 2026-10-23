@@ -50,16 +50,20 @@ defmodule Ramal.Branch.Server do
   end
 
   @doc false
-  def start_link({:handoff, id, _ref, _config} = arg) do
-    GenServer.start_link(__MODULE__, arg, name: Supervisor.via(id))
+  def start_link({:handoff, id, _ref, config} = arg) do
+    GenServer.start_link(__MODULE__, arg, name: Supervisor.via(id, config))
   end
 
-  def start_link({:scratch, branch, _config} = arg) do
-    GenServer.start_link(__MODULE__, arg, name: Supervisor.via(branch.id))
+  def start_link({:load, id, config} = arg) do
+    GenServer.start_link(__MODULE__, arg, name: Supervisor.via(id, config))
+  end
+
+  def start_link({:scratch, branch, config} = arg) do
+    GenServer.start_link(__MODULE__, arg, name: Supervisor.via(branch.id, config))
   end
 
   def start_link({branch, config}) do
-    GenServer.start_link(__MODULE__, {branch, config}, name: Supervisor.via(branch.id))
+    GenServer.start_link(__MODULE__, {branch, config}, name: Supervisor.via(branch.id, config))
   end
 
   @doc """
@@ -120,6 +124,10 @@ defmodule Ramal.Branch.Server do
       {:error, {:already_started, pid}} ->
         {:ok, pid}
 
+      # A process that could not claim its branch (cluster mode) stops with the storage's error.
+      {:error, %Error{} = error} ->
+        {:error, error}
+
       {:error, reason} ->
         {:error,
          Error.new(:storage, "could not start the branch process: #{inspect(reason)}", %{
@@ -149,11 +157,13 @@ defmodule Ramal.Branch.Server do
         :exit, {reason, {GenServer, :call, _}} when reason in [:noproc, :normal, :shutdown] ->
           # The process stopped between the lookup and the call. The Registry drops its entry a moment after the
           # process dies, so wait for this pid to be gone before looking again, or the retry finds the same corpse.
-          await_down(pid)
+          # `:global` does the same in a cluster.
+          retry_stopped(id, pid, request, timeout, attempts)
 
-          if attempts > 1,
-            do: call(id, request, timeout, attempts - 1),
-            else: stopping_error(id)
+        :exit, {{:nodedown, _node}, {GenServer, :call, _}} ->
+          # The node of the process went away; `:global` forgets its names once it sees that, so a retry loads the
+          # branch from storage on this node, as after a crash of one node.
+          retry_stopped(id, pid, request, timeout, attempts)
 
         :exit, {:timeout, {GenServer, :call, _}} ->
           {:error, timeout_error(id, timeout)}
@@ -164,6 +174,14 @@ defmodule Ramal.Branch.Server do
           {:error, too_large_error(id)}
       end
     end
+  end
+
+  defp retry_stopped(id, pid, request, timeout, attempts) do
+    await_down(pid)
+
+    if attempts > 1,
+      do: call(id, request, timeout, attempts - 1),
+      else: stopping_error(id)
   end
 
   defp await_down(pid) do
@@ -216,6 +234,11 @@ defmodule Ramal.Branch.Server do
       Supervisor.running?(id) ->
         Supervisor.mark_too_large(id)
         {:error, too_large_error(id)}
+
+      # In a cluster the process claims the branch itself once `:global` has given it the name (see init/1): claiming
+      # here would bump the epoch of the process that holds the branch if another caller won the name first.
+      config.cluster ->
+        start_child({:load, id, config}, & &1)
 
       true ->
         with {:ok, branch} <- config.storage.fetch(id, config.storage_config),
@@ -420,10 +443,7 @@ defmodule Ramal.Branch.Server do
   @spec release(String.t()) :: :ok
   def release(id) do
     # A cast to a process that has just died is dropped, which is what a release of it needs; so no liveness check.
-    case Registry.lookup(Supervisor.registry(), id) do
-      [{pid, _}] -> GenServer.cast(pid, {:release, self()})
-      [] -> :ok
-    end
+    if pid = Supervisor.whereis(id), do: GenServer.cast(pid, {:release, self()})
 
     :ok
   end
@@ -525,14 +545,42 @@ defmodule Ramal.Branch.Server do
     {:ok, %{state | scratch: true}, :infinity}
   end
 
+  def init({:load, id, config}) do
+    flags(config)
+
+    with {:ok, branch} <- claim(id, config) do
+      {:ok, started(branch, config), config.idle_timeout}
+    end
+  end
+
   def init({branch, config}) do
     flags(config)
+
+    # In a cluster the storage, not the caller, says what the branch holds: another node may have saved it since.
+    with {:ok, branch} <- if(config.cluster, do: claim(branch.id, config), else: {:ok, branch}) do
+      {:ok, started(branch, config), config.idle_timeout}
+    end
+  end
+
+  defp started(branch, config) do
     branch = branch |> share(config) |> found_adopted(config)
     watch(branch)
     Telemetry.branch(:load, branch)
     Supervisor.mark_running(branch.id)
+    process_state(branch, config)
+  end
 
-    {:ok, process_state(branch, config), config.idle_timeout}
+  # Loads the branch and takes its epoch (`c:Ramal.Storage.claim/2`), which makes every earlier holder's writes fail.
+  # A durable branch is then read with its write log (ADR 0048), after the claim and not before: once the epoch is
+  # taken, the earlier holder can append nothing more, so the log read is every delta it was told was stored.
+  defp claim(id, config) do
+    with {:ok, branch} <- config.storage.claim(id, config.storage_config),
+         {:ok, branch, recovered} <- recover(branch, config) do
+      if recovered > 0, do: GenServer.cast(self(), :compact)
+      {:ok, branch}
+    else
+      {:error, error} -> {:stop, error}
+    end
   end
 
   defp flags(config) do
@@ -578,24 +626,44 @@ defmodule Ramal.Branch.Server do
     }
 
   @impl true
-  def handle_continue({:handoff, ref}, %{config: config} = state) do
+  def handle_continue({:handoff, ref}, state) do
     receive do
       {:handoff, ^ref, branch} ->
-        watch(branch)
-        Telemetry.branch(:load, branch)
-        {:noreply, %{state | branch: branch}, config.idle_timeout}
+        handed_over(branch, state)
     after
       @handoff_timeout -> {:stop, :normal, %{state | stop: :unclaimed}}
     end
   end
 
-  def handle_continue(:compact, state) do
-    state = compact(state)
-    {:noreply, state, timeout(state)}
+  def handle_continue(:compact, state), do: state |> compact() |> compacted()
+
+  # The fork is stored already; in a cluster it is claimed like any branch a process loads (see init/1).
+  defp handed_over(branch, %{config: %{cluster: true} = config} = state) do
+    case claim(branch.id, config) do
+      {:ok, claimed} ->
+        {:noreply, %{state | branch: started_branch(claimed)}, config.idle_timeout}
+
+      {:stop, _error} ->
+        Supervisor.clear_running(branch.id)
+        {:stop, :normal, %{state | stop: :unclaimed}}
+    end
+  end
+
+  defp handed_over(branch, %{config: config} = state) do
+    {:noreply, %{state | branch: started_branch(branch)}, config.idle_timeout}
+  end
+
+  defp started_branch(branch) do
+    watch(branch)
+    Telemetry.branch(:load, branch)
+    branch
   end
 
   @impl true
   def handle_call(:get, _from, state), do: reply(state, {:ok, state.branch})
+
+  # `Ramal.Cluster.resolve/3` asks for it when two processes of a branch meet after a netsplit.
+  def handle_call(:epoch, _from, state), do: reply(state, state.branch && state.branch.epoch)
 
   def handle_call(:fork_source, _from, state) do
     if usable?(state),
@@ -774,6 +842,9 @@ defmodule Ramal.Branch.Server do
             Telemetry.branch(:adopt, branch, %{child_id: child.id})
             reply(bump(%{state | branch: branch}), :ok)
 
+          {:error, %Error{reason: :fenced} = error} ->
+            {:stop, :normal, {:error, error}, fence(state, error)}
+
           {:error, _} = error ->
             reply(state, error)
         end
@@ -808,6 +879,11 @@ defmodule Ramal.Branch.Server do
           :ok ->
             {:stop, :normal, :ok, %{state | branch: branch, stop: :merged}}
 
+          # Another process holds the branch now and this one may not write it. The commit stands, and so does the
+          # merged status the transaction stored; there is nothing left here to keep.
+          {:error, %Error{reason: :fenced} = error} ->
+            {:stop, :normal, {:persist_failed, error}, fence(%{state | branch: branch}, error)}
+
           {:error, error} ->
             # The replay has committed, so the merge happened whatever the storage says. Stopping would lose the
             # `:merged` status and leave the stored branch open, to be merged a second time. Keep it loaded as merged;
@@ -829,6 +905,9 @@ defmodule Ramal.Branch.Server do
           Telemetry.branch(:propose, branch)
           reply(%{state | branch: branch}, {:ok, branch})
 
+        {:error, %Error{reason: :fenced} = error} ->
+          {:stop, :normal, {:error, error}, fence(state, error)}
+
         {:error, _} = error ->
           reply(state, error)
       end
@@ -844,6 +923,9 @@ defmodule Ramal.Branch.Server do
       :ok ->
         Telemetry.branch(:reject, branch)
         {:stop, :normal, {:ok, branch}, %{state | branch: branch, stop: :rejected}}
+
+      {:error, %Error{reason: :fenced} = error} ->
+        {:stop, :normal, {:error, error}, fence(state, error)}
 
       {:error, _} = error ->
         reply(state, error)
@@ -864,6 +946,9 @@ defmodule Ramal.Branch.Server do
         Telemetry.branch(:discard, branch)
         {:stop, :normal, :ok, %{state | branch: branch, stop: :discarded}}
 
+      {:error, %Error{reason: :fenced} = error} ->
+        {:stop, :normal, {:error, error}, fence(state, error)}
+
       {:error, _} = error ->
         reply(state, error)
     end
@@ -879,6 +964,9 @@ defmodule Ramal.Branch.Server do
     case persist(state, branch) do
       :ok ->
         {:stop, :normal, %{state | stop: :idle, persisted: true}}
+
+      {:error, %Error{reason: :fenced} = error} ->
+        {:stop, :normal, fence(state, error)}
 
       {:error, error} ->
         Telemetry.branch(:persist_failed, branch, %{reason: :idle, error: error})
@@ -930,15 +1018,16 @@ defmodule Ramal.Branch.Server do
   def handle_info(_message, state), do: {:noreply, state, timeout(state)}
 
   @impl true
+  # `:global` kept the other process of this branch after a netsplit (`Ramal.Cluster.resolve/3`). Unloading saves the
+  # branch like an idle one, which the storage refuses if this process is the one that lost the epoch.
+  def handle_cast(:superseded, state), do: {:stop, :normal, %{state | stop: :superseded}}
+
   def handle_cast({:release, pid}, state) do
     state = state |> drop_running(pid) |> serve_waiting()
     {:noreply, state, timeout(state)}
   end
 
-  def handle_cast(:compact, state) do
-    state = compact(state)
-    {:noreply, state, timeout(state)}
-  end
+  def handle_cast(:compact, state), do: state |> compact() |> compacted()
 
   @impl true
   def terminate(reason, state) do
@@ -949,7 +1038,9 @@ defmodule Ramal.Branch.Server do
 
   # A process that never received its branch has nothing to persist; storage already holds the fork.
   defp stopped(_reason, %{branch: nil}), do: :ok
-  defp stopped(_reason, %{stop: stop}) when stop in [:discarded, :merged, :rejected], do: :ok
+
+  defp stopped(_reason, %{stop: stop}) when stop in [:discarded, :merged, :rejected, :fenced],
+    do: :ok
 
   defp stopped(_reason, %{scratch: true}), do: :ok
 
@@ -959,7 +1050,10 @@ defmodule Ramal.Branch.Server do
     # A durable branch stores nothing of an action that has not ended (ADR 0048): one that never ends is not stored.
     with false <- persisted,
          {:error, error} <- persist(state, stored_branch(state)) do
-      Telemetry.branch(:persist_failed, branch, %{reason: stop || :shutdown, error: error})
+      if match?(%Error{reason: :fenced}, error),
+        do: announce_fenced(branch, error),
+        else:
+          Telemetry.branch(:persist_failed, branch, %{reason: stop || :shutdown, error: error})
     else
       _persisted -> Telemetry.branch(:unload, branch, %{reason: stop || :shutdown})
     end
@@ -969,6 +1063,16 @@ defmodule Ramal.Branch.Server do
 
   defp stored_branch(%{branch: %{durable: true}} = state), do: without_running(state)
   defp stored_branch(state), do: state.branch
+
+  # The storage refused a write of this process because another one loaded the branch after it (ADR 0044). Whatever it
+  # held since its last save is gone for good, so the process announces that and stops without saving again.
+  defp fence(state, error) do
+    announce_fenced(state.branch, error)
+    %{state | stop: :fenced}
+  end
+
+  defp announce_fenced(branch, error),
+    do: Telemetry.branch(:fenced, branch, %{epoch: branch.epoch, error: error})
 
   # A branch being merged must not unload: the merge would lose its claim. Nor one with actions running: their writes
   # would be stored as if they had ended, and a death of their process would go unnoticed.
@@ -1052,6 +1156,11 @@ defmodule Ramal.Branch.Server do
           do: {:reply, :ok, state, {:continue, :compact}},
           else: reply(state, :ok)
 
+      # Another process holds the branch now (ADR 0044): nothing was stored, and nothing this one holds may be. The
+      # action fails with the error, and the process stops as it does when a save is refused.
+      {:error, %Error{reason: :fenced} = error} ->
+        {:stop, :normal, {:error, error}, fence(state, error)}
+
       {:error, error} ->
         Telemetry.branch(:persist_failed, branch, %{reason: :append, error: error})
         {:reply, {:error, error}, state, {:continue, :compact}}
@@ -1072,6 +1181,9 @@ defmodule Ramal.Branch.Server do
 
         %{state | appended: 0}
 
+      {:error, %Error{reason: :fenced} = error} ->
+        fence(state, error)
+
       {:error, error} ->
         Telemetry.branch(:persist_failed, snapshot, %{reason: :compact, error: error})
 
@@ -1081,6 +1193,10 @@ defmodule Ramal.Branch.Server do
   end
 
   defp compact(state), do: state
+
+  # A compaction the storage refused because another process holds the branch now ends this one (see `fence/2`).
+  defp compacted(%{stop: :fenced} = state), do: {:stop, :normal, state}
+  defp compacted(state), do: {:noreply, state, timeout(state)}
 
   defp writes_lost(state) do
     Error.new(
@@ -1257,6 +1373,9 @@ defmodule Ramal.Branch.Server do
     case persist(state, branch) do
       :ok ->
         {:stop, :normal, %{state | branch: branch, stop: :merged, persisted: true}}
+
+      {:error, %Error{reason: :fenced} = error} ->
+        {:stop, :normal, fence(state, error)}
 
       {:error, error} ->
         Telemetry.branch(:persist_failed, branch, %{reason: :merged, error: error})

@@ -15,6 +15,7 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :branch, :append]` | a durable branch (ADR 0048) stored the writes of an action that ended in its write log, before the action returned (extra metadata: `seq`, `rows`, the rows the delta holds; measurement `duration`, in native time units, of the storage call) |
   | `[:ramal, :branch, :compact]` | a durable branch stored a snapshot that covers its write log, which deleted the deltas it covers (extra metadata: `wal`, the last `seq` the snapshot covers; measurement `duration`) |
   | `[:ramal, :branch, :adopt]` | a branch took the work of a nested fork that merged into it (extra metadata: `child_id`; ADR 0043) |
+  | `[:ramal, :branch, :fenced]` | the storage refused a write of a branch process because another process loaded the branch after it did (`Ramal.Supervisor` `cluster: true`, metadata `epoch` and `error`): the process stops, and what it held since its last save is lost |
   | `[:ramal, :branch, :discard]` | a branch was discarded |
   | `[:ramal, :branch, :propose]` | a branch was proposed for a decision |
   | `[:ramal, :branch, :approve]` | a proposed branch was approved and merged (after the `[:ramal, :merge]` span) |
@@ -54,6 +55,7 @@ defmodule Ramal.Telemetry do
           :append,
           :compact,
           :persist_failed,
+          :fenced,
           :discard,
           :too_large,
           :propose,

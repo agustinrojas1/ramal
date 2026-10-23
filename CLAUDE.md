@@ -12,6 +12,7 @@ A library. No OTP application of its own beyond `Ramal.Supervisor`, which the ho
 lib/ramal.ex                 public API (branch, run, fork, diff, merge, discard, current)
 lib/ramal/branch.ex          the Branch struct and pure functions over it
 lib/ramal/branch/server.ex   GenServer: one process per open branch
+lib/ramal/cluster.ex         the :via module over :global and the resolver for branches in a cluster (ADR 0044)
 lib/ramal/current.ex         the current branch id of the calling process (process dictionary and Ash shared context)
 lib/ramal/overlay.ex         the overlay map: apply, patch, diff (pure)
 lib/ramal/resource.ex        Spark extension: adds the read preparation and the write change

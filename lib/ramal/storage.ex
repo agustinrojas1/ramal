@@ -17,6 +17,9 @@ defmodule Ramal.Storage do
   | `Ramal.Storage.ETS` | an ETS table owned by `Ramal.Supervisor` | until the supervisor stops |
   | `Ramal.Storage.Postgres` | the `ramal_branches` table, and the `ramal_branch_writes` table for the write log | durable |
 
+  Only the Postgres backend serves a cluster of several nodes, because the nodes must share it. Both backends fence
+  writes by epoch, see `c:claim/2`.
+
   ## Example
 
       iex> Ramal.Storage.ETS in [Ramal.Storage.ETS, Ramal.Storage.Postgres]
@@ -72,13 +75,31 @@ defmodule Ramal.Storage do
   @callback mark_merged(Branch.t(), config) :: :ok | {:error, Error.t()}
 
   @doc """
+  Loads the branch for a process that is about to hold it, and fences every process that held it before.
+
+  Optional; `Ramal.Supervisor` with `cluster: true` needs it (ADR 0044). It increments the branch's epoch and returns the
+  stored branch with `epoch` set to the new value, in one atomic step, so the caller has the state as of that epoch and
+  no other. A missing branch is `{:error, %Ramal.Error{reason: :not_found}}`.
+
+  From then on `put/2` and `mark_merged/2` of a branch whose `epoch` is not `nil` are conditional on the stored epoch
+  still being that one: a write that finds another returns `{:error, %Ramal.Error{reason: :fenced}}` and changes nothing.
+  A branch with `epoch: nil` is written unconditionally, as it is without a cluster. The epoch is not part of the
+  branch's state, so `fetch/2` and `list/3` leave it `nil`.
+  """
+  @callback claim(id :: String.t(), config) :: {:ok, Branch.t()} | {:error, Error.t()}
+
+  @doc """
   Appends one delta to the write log of a durable branch (ADR 0048): what one action that ended added to the branch,
   as `Ramal.Branch.delta/2` builds it. `seq` is the delta's place in the log, one more than the one before it, and
   is never reused for the branch. Returns `:ok` once the delta is stored, because the action that made it returns
   only then; a failure is `{:error, %Ramal.Error{reason: :storage}}` and the action fails with it.
 
   Optional; a branch can be `durable: true` only on a storage that defines this and `c:writes_after/2`. `branch` is the
-  branch as the process holds it; a backend needs its `id` (and, where it fences writers, more of it).
+  branch as the process holds it. Like `c:put/2`, an append for a branch whose `epoch` is not `nil` is conditional on
+  the stored epoch still being that one (`c:claim/2`, ADR 0044): a process that another one replaced stores nothing and
+  gets `{:error, %Ramal.Error{reason: :fenced}}`, and the delta of an append that was accepted is there for the process
+  that claims the branch next. The check and the write are one step, so no delta of the old process can appear after the
+  new one has read the log.
 
   The delta is a term. A backend that keeps text encodes it with `Ramal.Storage.Codec.encode_delta/1`.
   """
@@ -91,12 +112,14 @@ defmodule Ramal.Storage do
   ended in. `branch` is the snapshot.
 
   Optional, with `c:append/4`. A stored snapshot makes the deltas it covers (`seq <= wal`) dead: `c:put/2` deletes
-  them, and this callback never returns them, even if the delete did not happen.
+  them, and this callback never returns them, even if the delete did not happen. For a branch whose `epoch` is not `nil`
+  it answers `{:error, %Ramal.Error{reason: :fenced}}` when the stored epoch is another one, instead of a log that the
+  newer holder may have changed.
   """
   @callback writes_after(Branch.t(), config) ::
               {:ok, [{pos_integer, Branch.delta()}]} | {:error, Error.t()}
 
-  @optional_callbacks count: 3, mark_merged: 2, append: 4, writes_after: 2
+  @optional_callbacks count: 3, mark_merged: 2, claim: 2, append: 4, writes_after: 2
 
   @doc """
   Whether `storage` can keep the write log of a durable branch: it defines `c:append/4` and `c:writes_after/2`.
@@ -127,6 +150,25 @@ defmodule Ramal.Storage do
       "#{inspect(storage)} cannot keep the write log of a durable branch: it defines neither append/4 nor " <>
         "writes_after/2 (Ramal.Storage). Use Ramal.Storage.Postgres, add the two callbacks, or drop durable: true",
       %{storage: storage}
+    )
+  end
+
+  @doc """
+  The error a fenced write returns: the branch was loaded by another process after the writer loaded it (`c:claim/2`).
+
+  ## Example
+
+      iex> error = Ramal.Storage.fenced("b1", 3)
+      iex> {error.reason, error.details}
+      {:fenced, %{id: "b1", epoch: 3}}
+  """
+  @spec fenced(String.t(), non_neg_integer) :: Error.t()
+  def fenced(id, epoch) do
+    Error.new(
+      :fenced,
+      "branch #{inspect(id)} was loaded by another process after this one loaded it (epoch #{epoch} is no longer " <>
+        "current), so this process may not write it any more; what it held since its last save is lost",
+      %{id: id, epoch: epoch}
     )
   end
 

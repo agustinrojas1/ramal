@@ -14,7 +14,9 @@ defmodule RamalLive.Broadcaster do
   `[:ramal, :merge]`, and detaches them when it stops. A handler broadcasts `{:ramal_live, branch_id, event}` on the
   topic of the branch's domain and nothing else, so no row data travels through the PubSub. Telemetry is node-local,
   and so are branches (a branch lives on one node), which is why the broadcaster belongs in the tree of every node that
-  runs `Ramal.Supervisor`.
+  runs `Ramal.Supervisor`. With `cluster: true` a branch is served from whichever node holds its process, so the
+  PubSub must be a clustered one (the default `Phoenix.PubSub` adapter is, over distributed Erlang) for a page on one node
+  to see the events of a branch held by another.
 
   The inspector works without it, but only shows what was there when the page loaded or after an action made from the
   page, and says so.

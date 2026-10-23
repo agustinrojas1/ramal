@@ -25,7 +25,7 @@ running action's writes in storage, and ADR 0033 says they are the action's own 
   unchanged, so a custom backend keeps working and a durable branch on one without them is refused
   (`:durability_unsupported`). `put/2` of a durable branch deletes the deltas up to `branch.wal`. The snapshot is written
   first, so a failure between leaves deltas `writes_after/2` ignores. Postgres: table `ramal_branch_writes`
-  (`branch_id`, `seq`, `delta`), key `(branch_id, seq)`, cascading from `ramal_branches`, in a third migration. ETS: a
+  (`branch_id`, `seq`, `delta`), key `(branch_id, seq)`, cascading from `ramal_branches`, in the last migration of `mix ramal.gen.migration`. ETS: a
   second, ordered table, because the first is scanned whole by `list/3`.
 - **Load** is the snapshot with the deltas after its `wal` applied in `seq` order, which is the order the actions ended
   in, not the order they began. Rows differ between concurrent actions, so the result is the same overlay; the log is in
@@ -48,10 +48,18 @@ running action's writes in storage, and ADR 0033 says they are the action's own 
 - The fingerprint of a row that was read and not written since the last snapshot is not in a delta, so after a crash the
   merge cannot tell that such a row changed. Every row an action wrote has its fingerprint.
 - A load reads one row and the deltas after it; `Ramal.list/2` still reads the snapshots only.
-- In a cluster (`Storage.claim/2`, the `epoch` of ADR 0044), `append/4` gets the branch with its epoch and must write
-  only while the stored epoch is that one, as `put/2` does, or a fenced process could add deltas the new holder never
-  sees; its `:fenced` error stops the process the way a refused `put/2` does. This is not in the code, which has no
-  epoch yet. A delta also holds the count of placeholder keys handed out for generated keys (ADR 0042), which a call
+- In a cluster (`Storage.claim/2`, the `epoch` of ADR 0044) the log is fenced like the snapshot. `append/4` gets the
+  branch with its epoch and stores only while the stored epoch is that one: Postgres inserts `FROM ramal_branches WHERE
+  epoch = n FOR SHARE`, so a claim, which updates the row, waits for an append that is storing, and an append that comes
+  after the claim stores nothing; ETS checks the epoch counter. A refused append fails the action with `:fenced`, the
+  process emits `[:ramal, :branch, :fenced]` and stops without saving, and `Capture` does not ask it to undo (that call
+  would load the branch again, on the wrong side of a split). A load claims first and reads the log after
+  (`writes_after/2` answers `:fenced` if the epoch is no longer the process's), so it reads every delta the earlier
+  holder was told was stored and none it was refused; a snapshot of an older epoch deletes no delta. After a crash of
+  the node, another node loads the branch with every committed write, which the non-durable cluster cannot. The one gap
+  is the lost reply of an append (see above): the earlier holder cannot compact it away any more, so the delta of an
+  action it saw fail can reappear on the next holder. `Cluster-durable.cfg` checks `DurableAcked` and
+  `SingleLogWriter`, and `bug-unfenced-append.cfg` shows the append without the guard. A delta also holds the count of placeholder keys handed out for generated keys (ADR 0042), which a call
   that is not one of the action's writes bumps; a recovered branch would otherwise give out one again. Nested branches (ADR 0043) compose as
   follows. A nested fork is a durable branch like any other; a delta also holds `seen`, what the fork recorded of its
   parent for the rows it wrote (`parent_seen`), while what it recorded for rows it only read is, like a fingerprint, not

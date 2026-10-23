@@ -147,4 +147,125 @@ defmodule Ramal.Storage.ETSTest do
     assert {:error, %Error{reason: :storage}} = ETS.delete("x", [])
     assert {:error, %Error{reason: :storage}} = ETS.count(MyApp.Farm, [:open], [])
   end
+
+  describe "the write log of a branch with an epoch" do
+    setup do
+      branch = %{Branch.new(MyApp.Farm, durable: true) | wal: 0}
+      :ok = ETS.put(branch, [])
+      {:ok, branch: branch}
+    end
+
+    test "the holder of the current epoch appends and reads the log", %{branch: branch} do
+      {:ok, held} = ETS.claim(branch.id, [])
+
+      assert ETS.append(held, 1, delta(1), []) == :ok
+      assert ETS.writes_after(held, []) == {:ok, [{1, delta(1)}]}
+    end
+
+    test "the holder of an older epoch is refused and stores nothing", %{branch: branch} do
+      {:ok, old} = ETS.claim(branch.id, [])
+      {:ok, newer} = ETS.claim(branch.id, [])
+
+      assert {:error, %Error{reason: :fenced, details: %{epoch: 1}}} =
+               ETS.append(old, 1, delta(1), [])
+
+      assert ETS.writes_after(newer, []) == {:ok, []}
+      assert ETS.append(newer, 1, delta(2), []) == :ok
+    end
+
+    test "the next holder reads every delta the earlier one stored, and the earlier one can read none",
+         %{
+           branch: branch
+         } do
+      {:ok, old} = ETS.claim(branch.id, [])
+      :ok = ETS.append(old, 1, delta(1), [])
+      :ok = ETS.append(old, 2, delta(2), [])
+      {:ok, newer} = ETS.claim(branch.id, [])
+
+      assert ETS.writes_after(newer, []) == {:ok, [{1, delta(1)}, {2, delta(2)}]}
+      assert {:error, %Error{reason: :fenced}} = ETS.writes_after(old, [])
+      assert {:error, %Error{reason: :fenced}} = ETS.append(old, 3, delta(3), [])
+    end
+
+    test "a snapshot of the holder deletes the deltas it covers, and one of an older epoch deletes none",
+         %{
+           branch: branch
+         } do
+      {:ok, old} = ETS.claim(branch.id, [])
+      :ok = ETS.append(old, 1, delta(1), [])
+      {:ok, newer} = ETS.claim(branch.id, [])
+
+      assert {:error, %Error{reason: :fenced}} = ETS.put(%{old | wal: 1}, [])
+      assert ETS.writes_after(newer, []) == {:ok, [{1, delta(1)}]}
+
+      assert ETS.put(%{newer | wal: 1}, []) == :ok
+      assert ETS.writes_after(%{newer | wal: 0}, []) == {:ok, []}
+    end
+
+    test "a branch without an epoch is written unconditionally, whatever the epoch of the row", %{
+      branch: branch
+    } do
+      {:ok, _claimed} = ETS.claim(branch.id, [])
+
+      assert branch.epoch == nil
+      assert ETS.append(branch, 1, delta(1), []) == :ok
+      assert ETS.writes_after(branch, []) == {:ok, [{1, delta(1)}]}
+    end
+  end
+
+  describe "fencing by epoch" do
+    setup do
+      branch = Branch.new(MyApp.Farm)
+      :ok = ETS.put(branch, [])
+      {:ok, branch: branch}
+    end
+
+    test "each claim takes the next epoch and returns the stored branch with it", %{
+      branch: branch
+    } do
+      assert {:ok, %{epoch: 1} = claimed} = ETS.claim(branch.id, [])
+      assert %{claimed | epoch: nil} == branch
+      assert {:ok, %{epoch: 2}} = ETS.claim(branch.id, [])
+    end
+
+    test "the epoch is a token and not part of what is stored", %{branch: branch} do
+      {:ok, held} = ETS.claim(branch.id, [])
+      :ok = ETS.put(%{held | name: "renamed"}, [])
+
+      assert {:ok, %{name: "renamed", epoch: nil}} = ETS.fetch(branch.id, [])
+    end
+
+    test "a write by the holder of an older epoch is refused and changes nothing", %{
+      branch: branch
+    } do
+      {:ok, old} = ETS.claim(branch.id, [])
+      {:ok, _newer} = ETS.claim(branch.id, [])
+
+      assert {:error, %Error{reason: :fenced, details: %{id: id, epoch: 1}}} =
+               ETS.put(%{old | name: "stale"}, [])
+
+      assert id == branch.id
+      assert {:ok, %{name: nil}} = ETS.fetch(branch.id, [])
+    end
+
+    test "a merge mark by the holder of an older epoch is refused", %{branch: branch} do
+      {:ok, old} = ETS.claim(branch.id, [])
+      {:ok, current} = ETS.claim(branch.id, [])
+
+      assert {:error, %Error{reason: :fenced}} = ETS.mark_merged(old, [])
+      assert {:ok, %{status: :open}} = ETS.fetch(branch.id, [])
+      assert ETS.mark_merged(current, []) == :ok
+      assert {:ok, %{status: :merged}} = ETS.fetch(branch.id, [])
+    end
+
+    test "a write with no epoch is not fenced", %{branch: branch} do
+      {:ok, _held} = ETS.claim(branch.id, [])
+
+      assert ETS.put(%{branch | name: "plain"}, []) == :ok
+    end
+
+    test "claiming a branch that is not there is :not_found" do
+      assert {:error, %Error{reason: :not_found, details: %{id: "nope"}}} = ETS.claim("nope", [])
+    end
+  end
 end
