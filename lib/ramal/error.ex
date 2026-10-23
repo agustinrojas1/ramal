@@ -16,7 +16,7 @@ defmodule Ramal.Error do
   | `:merge_failed` | a replayed action failed; `details` has `index`, `type`, `resource`, `action` and the Ash `error` |
   | `:database_generated_key` | a branch cannot create a row whose primary key the database generates |
   | `:bulk_unsupported` | a bulk create, update or destroy inside a branch |
-  | `:upsert_unsupported` | an upsert inside a branch |
+  | `:upsert_unsupported` | an upsert with an `upsert_condition` (or an identity `where` that cannot be evaluated for the new row) inside a branch |
   | `:atomic_unsupported` | an atomic update whose expression cannot be evaluated in Elixir inside a branch (`details.attribute`) |
   | `:partial_record` | an update or destroy of a record read with `Ash.Query.select/2`, whose full row could not be read inside the branch |
   | `:multitenancy_unsupported` | a multitenant resource used with a tenant inside a branch that has none (create it with `tenant:`) |

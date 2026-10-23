@@ -302,8 +302,12 @@ Ramal is deliberately small, and it says what it does not do:
 - **Every resource of the domain is covered or opts out.** `Ramal.branch/2` refuses a domain with a resource that has
   write actions and neither uses `Ramal.Resource` nor sets `branchable? false`; a resource that opts out is written for
   real, from a branch too. Only the branch's domain is checked: a resource of another domain works in the branch if it uses `Ramal.Resource`, and is written for real if it does not. Build a changeset in the same `Ramal.run/2` that runs it. A query prepared outside a branch and read inside it is patched.
-- **Bulk actions and upserts are refused** inside a branch, resources whose primary key the database generates cannot be
+- **Bulk actions are refused** inside a branch, resources whose primary key the database generates cannot be
   created in one (use UUIDs), and notifications are dropped unless a resource opts in with `notify_in_branch? true`.
+- **Upserts work, with two exceptions.** An upsert looks its row up in the branch's view, so it updates a base row, a row
+  the branch created, or creates one. An `upsert_condition` is refused (`:upsert_unsupported`), and `upsert?: true` given
+  only to `Ash.create/2` at call time cannot be seen and acts as a create: set it on the action or pass it to
+  `Ash.Changeset.for_create/4`.
 - **A branch works in one tenant,** given at `Ramal.branch/2`.
 - **Reads fetch candidate rows and patch them in memory.** That is cheap for the rows a session touches and wrong for an
   analytics table: Ramal is meant for OLTP-sized working sets.

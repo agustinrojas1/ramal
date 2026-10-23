@@ -408,11 +408,19 @@ defmodule Ramal.Merge do
 
       case replay_entry(entry, row, opts) do
         {:ok, kind, ref, record} ->
-          {:ok, kind, ref, record, fetched}
+          {:ok, kind, ref, record, forget_upserted(fetched, ref, entry_opts)}
 
         {:error, error} ->
           {:error, merge_failed(entry, index, error, written_before(entries, index))}
       end
+    end
+  end
+
+  # An upsert that found its row changed it, so the copy the staleness check read is out of date.
+  defp forget_upserted(fetched, ref, entry_opts) do
+    case entry_opts[:upsert] do
+      {_identity, _fields, true} -> Map.delete(fetched, ref)
+      _not_a_found_upsert -> fetched
     end
   end
 
@@ -447,11 +455,7 @@ defmodule Ramal.Merge do
 
     case type do
       :create ->
-        resource
-        |> Ash.Changeset.for_create(action, params, run_opts)
-        |> force_key(resource, key)
-        |> Ash.create(run_opts)
-        |> tag(:created, ref)
+        replay_create(resource, action, params, run_opts, entry_opts[:upsert], ref, key)
 
       :update ->
         with {:ok, record} <- row_or_fetch(row, resource, key, entry_opts[:tenant]) do
@@ -468,6 +472,30 @@ defmodule Ramal.Merge do
           |> Ash.destroy(Keyword.put(run_opts, :return_destroyed?, true))
           |> tag(:deleted, ref)
         end
+    end
+  end
+
+  # A create the branch logged as an upsert is replayed as one, with the identity and the fields it had in the branch.
+  # It forces the key only when the branch found no row: a found row has its own key, and forcing the branch's would
+  # conflict on the primary key instead of the identity.
+  defp replay_create(resource, action, params, run_opts, nil, ref, key) do
+    resource
+    |> Ash.Changeset.for_create(action, params, run_opts)
+    |> force_key(resource, key)
+    |> Ash.create(run_opts)
+    |> tag(:created, ref)
+  end
+
+  defp replay_create(resource, action, params, run_opts, {identity, fields, found?}, ref, key) do
+    run_opts =
+      Keyword.merge(run_opts, upsert?: true, upsert_identity: identity, upsert_fields: fields)
+
+    changeset = Ash.Changeset.for_create(resource, action, params, run_opts)
+
+    if found? do
+      changeset |> Ash.create(run_opts) |> tag(:updated, ref)
+    else
+      changeset |> force_key(resource, key) |> Ash.create(run_opts) |> tag(:created, ref)
     end
   end
 
