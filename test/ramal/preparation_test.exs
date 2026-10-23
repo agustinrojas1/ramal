@@ -266,6 +266,37 @@ defmodule Ramal.PreparationTest do
       assert Ash.load!(herd, :paddock, authorize?: false).paddock.name == "L07"
     end
 
+    # Documents a limit: Ash.load reselects the source attribute of the relationship (here paddock_id) from the data
+    # layer with Ash.DataLayer.run_query, which runs none of the read hooks (deps/ash/lib/ash/actions/read/read.ex,
+    # reselect_and_load/6), so the foreign key a branch changed is not seen. `reuse_values?: true` skips the reselect.
+    test "Ash.load onto a record the branch moved follows the database's foreign key unless reuse_values? is set",
+         %{
+           branch: branch,
+           herds: h,
+           paddocks: p
+         } do
+      {moved, by_default, lazily, reusing, in_a_read} =
+        inside(branch, fn ->
+          moved = Ash.update!(h.r7, %{paddock_id: p.l18.id}, authorize?: false)
+
+          {moved, Ash.load!(moved, :paddock, authorize?: false),
+           Ash.load!(moved, :paddock, authorize?: false, lazy?: true),
+           Ash.load!(moved, :paddock, authorize?: false, reuse_values?: true),
+           Herd
+           |> Ash.Query.filter(name == "R7")
+           |> Ash.Query.load(:paddock)
+           |> Ash.read_one!(authorize?: false)}
+        end)
+
+      assert moved.paddock_id == p.l18.id
+      assert by_default.paddock.name == "L07"
+      assert lazily.paddock.name == "L07"
+      assert reusing.paddock.name == "L18"
+      assert in_a_read.paddock.name == "L18"
+      # The record itself keeps the branch's value either way.
+      assert by_default.paddock_id == p.l18.id
+    end
+
     test "reading an aggregate emits the unpatched_aggregate event", %{branch: branch} do
       test = self()
 

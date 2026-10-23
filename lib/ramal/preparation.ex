@@ -29,6 +29,11 @@ defmodule Ramal.Preparation do
       `[:ramal, :read, :unpatched_aggregate]`. `Ramal.aggregate/4` is the exact alternative for the common kinds;
     * overlay records are added without running the action's `authorize_results` checks, though the query's filter,
       including any policy filter, is applied to them;
+    * `Ash.load/3` onto a record the branch changed reselects the relationship's source attribute (for example
+      `paddock_id`) from the data layer, and that reselect runs none of the read hooks (`reselect_and_load/6` in
+      `lib/ash/actions/read/read.ex`), so a foreign key the branch changed is not seen and the load follows the
+      database's. Pass `reuse_values?: true`, which skips the reselect, or load through a read
+      (`Ash.Query.load/2`), which goes through this preparation;
     * paginated reads (`page:`) are paged by the database and patched afterwards, so pages can be short or miss rows
       created in the branch, and `count` is the database's.
 
