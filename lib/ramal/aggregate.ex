@@ -44,7 +44,6 @@ defmodule Ramal.Aggregate do
 
   require Ash.Expr
 
-  alias Ash.Actions.Sort
   alias Ash.Resource.Info
   alias Ramal.{Collation, Resource}
 
@@ -230,10 +229,10 @@ defmodule Ramal.Aggregate do
   defp database(query, kind, field, opts), do: apply(Ash, kind, [query, field, opts])
 
   defp exclude(query, keys) do
-    Ash.Query.do_filter(query, Ash.Expr.expr(not (^key_expression(query.resource, keys))))
+    Ramal.Ash.do_filter(query, Ash.Expr.expr(not (^key_expression(query.resource, keys))))
   end
 
-  defp restrict(query, keys), do: Ash.Query.do_filter(query, key_expression(query.resource, keys))
+  defp restrict(query, keys), do: Ramal.Ash.do_filter(query, key_expression(query.resource, keys))
 
   defp key_expression(resource, keys) do
     case Info.primary_key(resource) do
@@ -300,7 +299,7 @@ defmodule Ramal.Aggregate do
   defp runtime_sorted(field, values, resource) do
     values
     |> Enum.map(&struct(resource, [{field, &1}]))
-    |> Sort.runtime_sort([{field, :asc}], resource: resource, domain: Info.domain(resource))
+    |> Ramal.Ash.runtime_sort([{field, :asc}], resource: resource, domain: Info.domain(resource))
     |> Enum.map(&Map.fetch!(&1, field))
   end
 

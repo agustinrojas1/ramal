@@ -14,8 +14,6 @@ defmodule Ramal.Preparation.Paged do
   #
   # This module is the pure part: whether a query is paged, and the cut. The read itself is in `Ramal.Preparation`.
 
-  alias Ash.Actions.Sort
-  alias Ash.Filter.Runtime
   alias Ash.Page.Keyset
   alias Ash.Resource.Info
   alias Ramal.Resource
@@ -73,21 +71,18 @@ defmodule Ramal.Preparation.Paged do
   # Any other is caught after the data layer, where a query with no limit was not paginated: the preparation then
   # returns the whole list.
   defp unpaginated?(query) do
-    query.context[:ramal][:whole?] == true or query.context[:private][:internal?] == true or
-      (query.context[:query_for] in [:bulk_update, :bulk_destroy] and
-         query.context[:private][:bypass_max_page_size?] != true)
+    query.context[:ramal][:whole?] == true or Ramal.Ash.internal_read?(query) or
+      (Ramal.Ash.bulk_read_for(query) in [:bulk_update, :bulk_destroy] and
+         not Ramal.Ash.bypass_max_page_size?(query))
   end
 
   # A relationship load is read with `accessing_from`; a many-to-many or limited has_many load carries the source
   # records of a lateral join (`lib/ash/actions/read/relationships.ex`). Ash pages the second kind per source record, a
   # page of the first is cut from the rows it reads (and never reaches the data layer as a page).
-  defp lateral_load?(query),
-    do: match?(%{data_layer: %{lateral_join_source: {_, _}}}, query.context)
-
-  defp kind?(query, true), do: lateral_load?(query)
+  defp kind?(query, true), do: Ramal.Ash.lateral_load?(query)
 
   defp kind?(query, false),
-    do: not (Map.has_key?(query.context, :accessing_from) or lateral_load?(query))
+    do: not (Ramal.Ash.relationship_read?(query) or Ramal.Ash.lateral_load?(query))
 
   # `pagination_type/2` of `lib/ash/actions/read/read.ex`: a cursor means keyset, an offset means offset, otherwise the
   # first of the types the action allows.
@@ -104,7 +99,7 @@ defmodule Ramal.Preparation.Paged do
   # smallest.
   defp limit(query, page_size, pagination) do
     max_page_size =
-      if query.context[:private][:bypass_max_page_size?], do: nil, else: pagination.max_page_size
+      if Ramal.Ash.bypass_max_page_size?(query), do: nil, else: pagination.max_page_size
 
     [page_size, query.limit, max_page_size] |> Enum.filter(&is_integer/1) |> Enum.min()
   end
@@ -120,7 +115,7 @@ defmodule Ramal.Preparation.Paged do
   """
   @spec stable_sort(Ash.Query.t()) :: Ash.Query.t()
   def stable_sort(query) do
-    if Sort.sorting_on_identity?(query) do
+    if Ramal.Ash.sorting_on_identity?(query) do
       query
     else
       Ash.Query.sort(
@@ -154,7 +149,7 @@ defmodule Ramal.Preparation.Paged do
   @spec cut_by_source(Ash.Query.t(), plan, [struct]) :: {:ok, [struct]} | {:error, term}
   def cut_by_source(query, plan, rows) do
     rows
-    |> Enum.group_by(& &1.__lateral_join_source__)
+    |> Enum.group_by(&Ramal.Ash.lateral_tag/1)
     |> Enum.reduce_while({:ok, []}, fn {_source, group}, {:ok, acc} ->
       case cut(query, plan, group) do
         {:ok, page, _count} -> {:cont, {:ok, acc ++ page}}
@@ -185,7 +180,7 @@ defmodule Ramal.Preparation.Paged do
       {:ok, rows}
     else
       with {:ok, filter} <- Keyset.filter(query, cursor, query.sort, side) do
-        keep(query, rows, Ash.Query.do_filter(Ash.Query.new(query.resource), filter).filter)
+        keep(query, rows, Ramal.Ash.do_filter(Ash.Query.new(query.resource), filter).filter)
       end
     end
   end
@@ -195,7 +190,7 @@ defmodule Ramal.Preparation.Paged do
   # The same expression the database would have been given, judged by `Ash.Filter.Runtime` on the patched rows, in
   # their order.
   defp keep(query, rows, filter) do
-    with {:ok, matches} <- Runtime.filter_matches(query.domain, rows, filter) do
+    with {:ok, matches} <- Ramal.Ash.filter_matches(query.domain, rows, filter) do
       keys = MapSet.new(matches, &Resource.key(query.resource, &1))
       {:ok, Enum.filter(rows, &MapSet.member?(keys, Resource.key(query.resource, &1)))}
     end

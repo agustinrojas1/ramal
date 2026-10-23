@@ -20,10 +20,9 @@ defmodule Ramal.Preparation.Related do
   # references an aggregate over a changed resource is removed like any other. `aggregates/1` hands the aggregates of
   # the removed conjuncts to the preparation, which computes them over the branch before it evaluates the conjunct.
   #
-  # Confirmed against Ash 3.37 (`lib/ash/filter/filter.ex`): `Ash.Filter.list_refs/4` returns the refs of a filter with
-  # the path of an `exists(...)` prefixed to the refs inside it, and with the refs of an expression calculation when
-  # asked to expand calculations. A filter that names an aggregate holds an `Ash.Query.Aggregate` as the ref's
-  # attribute, and a sort on one holds it in place of the field name (`{%Ash.Query.Aggregate{}, :desc}`).
+  # What the refs of a filter hold (`Ramal.Ash.filter_refs/2`): a ref under an `exists(...)` carries that path as a
+  # prefix, and a sort on an aggregate holds an `Ash.Query.Aggregate` in place of the field name
+  # (`{%Ash.Query.Aggregate{}, :desc}`).
   #
   # Narrowing (ADR 0047). Taking a conjunct out of the data-layer query makes the database return every row the other
   # conjuncts allow. For a leaf that reaches one changed `belongs_to` or `has_one` of one hop the query can keep a
@@ -52,14 +51,10 @@ defmodule Ramal.Preparation.Related do
   # `exists`, a calculation, an aggregate, a path of more than one hop, a root attribute next to the related one, a
   # `many_to_many`/`has_many` path, or a relationship with its own filter, read action, manual definition or `through`
   # path (ADR 0046).
-  # Confirmed in `lib/ash/filter/filter.ex` (3.37): `Ash.Filter.map/2` visits a `Ref` through the function and stops
-  # on `{:halt, expression}`, which is how the leaf is rebuilt with the path taken off; `Ash.Filter.parse/2` takes the
-  # keyword form (`[paddock_id: [in: ids], or: [...], not: [...]]`) and returns hydrated expressions that can sit next
-  # to the ones of the query; `Ash.Filter.list_refs/5` lists the refs of a leaf; `Ash.Filter.Runtime.filter_matches/4`
-  # (`lib/ash/filter/runtime.ex`) keeps a record unless the filter gives `false` or `nil`, which is how an unknown counts
-  # as no match.
+  # The leaf is rebuilt with its path taken off by `Ramal.Ash.map_filter/2`, which stops on `{:halt, expression}`. The
+  # keyword form (`[paddock_id: [in: ids], or: [...], not: [...]]`) is parsed by `Ash.Filter.parse/2` into expressions
+  # that sit next to the ones of the query, and an unknown counts as no match in `Ramal.Ash.filter_matches/3`.
 
-  alias Ash.Filter.Runtime
   alias Ash.Query.{BooleanExpression, Not, Ref}
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
@@ -197,7 +192,7 @@ defmodule Ramal.Preparation.Related do
   # same one-hop path, and nothing else that Ash evaluates in a way the rewrite cannot reproduce on the related row
   # alone.
   defp single_hop(leaf, resource) do
-    with [%{relationship_path: [name]} | _] <- Ash.Filter.list_refs(leaf, false, false, false),
+    with [%{relationship_path: [name]} | _] <- Ramal.Ash.filter_refs(leaf, false),
          true <- pure_leaf?(leaf, name),
          %{type: type} = relationship when type in [:belongs_to, :has_one] <-
            Info.relationship(resource, name),
@@ -267,7 +262,7 @@ defmodule Ramal.Preparation.Related do
     records = for {_key, {_kind, record}} <- slice, do: record
 
     with {:ok, matches} <-
-           Runtime.filter_matches(
+           Ramal.Ash.filter_matches(
              context.domain,
              records,
              on_destination(leaf, destination)
@@ -279,7 +274,7 @@ defmodule Ramal.Preparation.Related do
   # A destroyed related row is what a LEFT JOIN finds when there is none: every attribute is `nil`.
   defp matches_blank?(leaf, destination, context) do
     with {:ok, matches} <-
-           Runtime.filter_matches(
+           Ramal.Ash.filter_matches(
              context.domain,
              [struct(destination)],
              on_destination(leaf, destination)
@@ -290,7 +285,7 @@ defmodule Ramal.Preparation.Related do
 
   defp on_destination(leaf, destination) do
     expression =
-      Ash.Filter.map(leaf, fn
+      Ramal.Ash.map_filter(leaf, fn
         %Ref{} = ref -> {:halt, %{ref | relationship_path: []}}
         other -> other
       end)
@@ -457,7 +452,7 @@ defmodule Ramal.Preparation.Related do
   end
 
   defp refs(nil), do: []
-  defp refs(expression), do: Ash.Filter.list_refs(expression, false, false, true)
+  defp refs(expression), do: Ramal.Ash.filter_refs(expression, true)
 
   defp sort_refs(resource, {%Ash.Query.Calculation{} = calculation, _direction}) do
     if Ash.Resource.Calculation.has_expression?(calculation.module) do
@@ -484,11 +479,7 @@ defmodule Ramal.Preparation.Related do
   defp path_of(%{relationship_path: path}), do: path
 
   defp expression_refs(expression, resource) do
-    case Ash.Filter.hydrate_refs(expression, %{
-           resource: resource,
-           relationship_path: [],
-           public?: false
-         }) do
+    case Ramal.Ash.hydrate_refs(expression, resource) do
       {:ok, hydrated} -> refs(hydrated)
       _error -> []
     end

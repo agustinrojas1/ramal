@@ -373,10 +373,10 @@ defmodule Ramal.Merge do
   defp filter_keys(query, resource, keys) do
     case Info.primary_key(resource) do
       [field] ->
-        Ash.Query.do_filter(query, [{field, [in: keys]}])
+        Ramal.Ash.do_filter(query, [{field, [in: keys]}])
 
       fields ->
-        Ash.Query.do_filter(query, or: Enum.map(keys, &Enum.zip(fields, Tuple.to_list(&1))))
+        Ramal.Ash.do_filter(query, or: Enum.map(keys, &Enum.zip(fields, Tuple.to_list(&1))))
     end
   end
 

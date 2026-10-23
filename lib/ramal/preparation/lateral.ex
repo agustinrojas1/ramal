@@ -40,7 +40,6 @@ defmodule Ramal.Preparation.Lateral do
 
   import Ash.Expr, only: [ref: 1]
 
-  alias Ash.Actions.Read.Relationships
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
   alias Ramal.Current
@@ -65,7 +64,7 @@ defmodule Ramal.Preparation.Lateral do
 
       query =
         query
-        |> update_in([Access.key(:context), :data_layer], &Map.delete(&1, :lateral_join_source))
+        |> Ramal.Ash.drop_lateral_source()
         |> Ash.Query.filter(^ref(destination_attribute) in ^keys)
 
       {:ok, query,
@@ -84,9 +83,9 @@ defmodule Ramal.Preparation.Lateral do
 
   # The relationship the query loads is not in the path (only its hops are); Ash tells the read which it is.
   defp parent_expr?(query) do
-    with %{source: source, name: name} <- query.context[:accessing_from],
+    with %{source: source, name: name} <- Ramal.Ash.accessing_from(query),
          %{} = relationship <- Info.relationship(source, name) do
-      Relationships.has_parent_expr?(relationship)
+      Ramal.Ash.has_parent_expr?(relationship)
     else
       _ -> false
     end

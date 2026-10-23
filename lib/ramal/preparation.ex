@@ -88,7 +88,6 @@ defmodule Ramal.Preparation do
   """
   use Ash.Resource.Preparation
 
-  alias Ash.Filter.Runtime
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
   alias Ramal.{Collation, Current, Overlay, Prefilter, Resource, Telemetry}
@@ -188,7 +187,7 @@ defmodule Ramal.Preparation do
   # tagged with their source, so the query keeps the join. The data layer never runs it: the page is the result.
   defp keep_lateral(rewritten, original, %{lateral_source: source}) do
     if Paged.lateral_plan(original) do
-      Ash.Query.set_context(rewritten, %{data_layer: %{lateral_join_source: source}})
+      Ramal.Ash.put_lateral_source(rewritten, source)
     else
       rewritten
     end
@@ -412,7 +411,7 @@ defmodule Ramal.Preparation do
     with {:ok, rows} <- read_whole_list(sorted, id),
          {:ok, page} <- Paged.cut_by_source(sorted, plan, rows) do
       query
-      |> Ash.Query.set_result(page)
+      |> Ramal.Ash.set_page(page)
       |> Ash.Query.set_context(%{ramal: %{paged?: true, whole: rows}})
       |> put_source_count(plan, rows)
     else
@@ -427,7 +426,7 @@ defmodule Ramal.Preparation do
     {sources, _path} = query.context.ramal.links.lateral_source
 
     case sources do
-      [_one] -> Ash.Query.set_context(query, %{full_count: length(rows)})
+      [_one] -> Ramal.Ash.put_full_count(query, length(rows))
       _many -> query
     end
   end
@@ -440,7 +439,7 @@ defmodule Ramal.Preparation do
     with {:ok, rows} <- read_whole_list(sorted, id),
          {:ok, page, count} <- Paged.cut(sorted, plan, rows) do
       query
-      |> Ash.Query.set_result(page)
+      |> Ramal.Ash.set_page(page)
       |> Ash.Query.set_context(%{ramal: %{paged?: true, whole: rows}})
       |> put_full_count(plan, count)
     else
@@ -450,37 +449,32 @@ defmodule Ramal.Preparation do
 
   # `fetch_count/5` takes a count set here before it queries the database.
   defp put_full_count(query, %{count?: true}, count),
-    do: Ash.Query.set_context(query, %{full_count: count})
+    do: Ramal.Ash.put_full_count(query, count)
 
   defp put_full_count(query, _plan, _count), do: query
 
   defp read_whole_list(query, id) do
     ramal = query.context.ramal
-    private = query.context[:private] || %{}
 
     # The checks run on the page, once, when this hook's list is the result (`after_data_layer/3`). A paged load is read
     # without its lateral join: the rows of all its sources are read together and tagged by `after_data_layer/3`.
+    whole =
+      query
+      |> Ash.Query.unset([:page, :limit, :offset])
+      |> Ramal.Ash.without_hooks()
+      |> Ramal.Ash.drop_lateral_source()
+
     whole = %{
-      Ash.Query.unset(query, [:page, :limit, :offset])
-      | context: update_in(query.context, [:ramal], &Map.delete(&1, :authorize_results)),
+      whole
+      | context: update_in(whole.context, [:ramal], &Map.delete(&1, :authorize_results)),
         load: [],
         calculations: ramal.calculations,
-        before_action: [],
-        after_action: [&after_data_layer(&1, &2, id)],
-        before_transaction: [],
-        after_transaction: [],
-        around_transaction: []
+        after_action: [&after_data_layer(&1, &2, id)]
     }
-
-    whole =
-      update_in(
-        whole.context[:data_layer],
-        &if(&1, do: Map.delete(&1, :lateral_join_source), else: &1)
-      )
 
     # The query's filter already holds what the policies added, and the rows are authorized when Ash reads the page.
     Resource.read_all(whole,
-      actor: private[:actor],
+      actor: Ramal.Ash.actor(query),
       tenant: query.tenant,
       authorize?: false,
       domain: query.domain
@@ -544,7 +538,7 @@ defmodule Ramal.Preparation do
 
     with {:ok, loaded} <- load_for_filter(untouched, removed, query),
          {:ok, loaded} <- load_aggregates(loaded, Related.aggregates(removed), query, id),
-         {:ok, matches} <- Runtime.filter_matches(query.domain, loaded, removed) do
+         {:ok, matches} <- Ramal.Ash.filter_matches(query.domain, loaded, removed) do
       keys = MapSet.new(matches, &Resource.key(query.resource, &1))
 
       {:ok,
@@ -612,7 +606,7 @@ defmodule Ramal.Preparation do
 
   defp filter_calculations(query) do
     for %{relationship_path: [], attribute: %Ash.Query.Calculation{} = calculation} <-
-          Ash.Filter.list_refs(full_filter(query), false, false, true),
+          Ramal.Ash.filter_refs(full_filter(query), true),
         into: %{},
         do: {calculation.name, calculation}
   end
@@ -626,15 +620,13 @@ defmodule Ramal.Preparation do
   # A many_to_many load (and a has_many load with a limit) is one SQL query whose rows each carry the source record they
   # belong to. Ash groups the rows by it (`lib/ash/actions/read/relationships.ex`) and drops a row without one, so an
   # overlay record that takes a base row's place has to keep that row's source.
-  defp carry_lateral_source(
-         %{__lateral_join_source__: source},
-         %{__lateral_join_source__: nil} = record
-       )
-       when source != nil do
-    %{record | __lateral_join_source__: source}
-  end
+  defp carry_lateral_source(row, record) do
+    source = Ramal.Ash.lateral_tag(row)
 
-  defp carry_lateral_source(_row, record), do: record
+    if source != nil and Ramal.Ash.lateral_tag(record) == nil,
+      do: Ramal.Ash.tag_lateral(record, source),
+      else: record
+  end
 
   # The keys of overlay records that satisfy the query's filter. Computed once for the whole slice, so a filter that
   # needs relationship data loads it in one batch.
@@ -651,7 +643,7 @@ defmodule Ramal.Preparation do
            load_aggregates(records, Related.aggregates(full_filter(query)), query, id),
          {:ok, records} <- load_for_filter(records, full_filter(query), query),
          {:ok, matches} <-
-           Runtime.filter_matches(query.domain, records, full_filter(query)) do
+           Ramal.Ash.filter_matches(query.domain, records, full_filter(query)) do
       {:ok, MapSet.new(matches, &Resource.key(query.resource, &1))}
     end
   end

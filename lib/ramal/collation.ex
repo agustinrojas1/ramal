@@ -42,7 +42,6 @@ defmodule Ramal.Collation do
   #     quoted name against the search path, and `unnest` of a text array with `dense_rank() OVER (ORDER BY ...)` is
   #     plain SQL.
 
-  alias Ash.Actions.Sort
   alias Ash.Resource.Info
   alias Ash.Type.Atom, as: AtomType
   alias Ash.Type.CiString
@@ -61,19 +60,19 @@ defmodule Ramal.Collation do
         }
 
   @doc """
-  Sorts `rows` by `sort` as `Ash.Actions.Sort.runtime_sort/3` does, except that a text key is ordered by the rank the
+  Sorts `rows` by `sort` as `Ash.Sort.runtime_sort/3` does, except that a text key is ordered by the rank the
   database gives its values. `opts` are the options of `runtime_sort/3` (`:resource` and `:domain` are needed,
   `:lazy?` and `:rename_calcs?` are passed on) and `:tenant`, which the catalog lookup of a schema-per-tenant resource
   needs.
   """
   @spec sort([struct], [{term, atom}], keyword) :: {:ok, [struct]} | {:error, Error.t()}
   def sort(rows, sort, opts) when length(rows) < 2 or sort in [nil, []],
-    do: {:ok, Sort.runtime_sort(rows, sort || [], runtime_opts(opts))}
+    do: {:ok, Ramal.Ash.runtime_sort(rows, sort || [], runtime_opts(opts))}
 
   def sort(rows, sort, opts) do
     with {:ok, plans} <- plan(Keyword.fetch!(opts, :resource), sort, opts[:tenant]) do
       if Enum.all?(plans, &(&1 == :runtime)) do
-        {:ok, Sort.runtime_sort(rows, sort, runtime_opts(opts))}
+        {:ok, Ramal.Ash.runtime_sort(rows, sort, runtime_opts(opts))}
       else
         sort |> Enum.zip(plans) |> steps() |> Enum.reverse() |> run_steps(rows, opts)
       end
@@ -202,11 +201,7 @@ defmodule Ramal.Collation do
     with true <- Ash.Resource.Calculation.has_expression?(module),
          expression = Ash.Resource.Calculation.expression(module, opts, context),
          {:ok, hydrated} <-
-           Ash.Filter.hydrate_refs(expression, %{
-             resource: resource,
-             relationship_path: [],
-             public?: false
-           }),
+           Ramal.Ash.hydrate_refs(expression, resource),
          %Ash.Query.Ref{attribute: %{name: name}, resource: column_resource} <- unwrap(hydrated),
          %{type: type} = attribute <- Info.attribute(column_resource, name),
          true <- text_type?(type) do
@@ -356,7 +351,7 @@ defmodule Ramal.Collation do
   end
 
   defp apply_step({:runtime, keys}, rows, opts),
-    do: {:ok, Sort.runtime_sort(rows, keys, runtime_opts(opts))}
+    do: {:ok, Ramal.Ash.runtime_sort(rows, keys, runtime_opts(opts))}
 
   defp apply_step({:text, key, direction, collation}, rows, opts) do
     with {:ok, loaded} <- load(rows, key, opts),
@@ -371,7 +366,7 @@ defmodule Ramal.Collation do
       {:ok, sorted}
     else
       # A value that is not text (a field the query did not select, say): leave the key to Ash.
-      :unsupported -> {:ok, Sort.runtime_sort(rows, [{key, direction}], runtime_opts(opts))}
+      :unsupported -> {:ok, Ramal.Ash.runtime_sort(rows, [{key, direction}], runtime_opts(opts))}
       {:error, _} = error -> error
     end
   end
@@ -387,7 +382,7 @@ defmodule Ramal.Collation do
       resource
       |> Ash.Query.select([])
       |> Ash.Query.load(key)
-      |> Ash.Query.set_context(%{private: %{internal?: true}})
+      |> Ramal.Ash.mark_internal()
 
     case opts[:domain] do
       nil ->

@@ -29,7 +29,6 @@ defmodule Ramal.Preparation.ManyToMany do
 
   import Ash.Expr, only: [ref: 1]
 
-  alias Ash.Actions.Read.Relationships
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
   alias Ramal.Current
@@ -47,7 +46,7 @@ defmodule Ramal.Preparation.ManyToMany do
   @spec rewrite(Ash.Query.t(), String.t()) ::
           {:ok, Ash.Query.t(), map} | :skip | {:error, term}
   def rewrite(query, id) do
-    case query.context[:data_layer][:lateral_join_source] do
+    case Ramal.Ash.lateral_source(query) do
       {records, [source_hop, through_hop]} = source when is_list(records) ->
         if join_pair?(source_hop, through_hop),
           do: many_to_many(query, id, source, source_hop, through_hop),
@@ -117,7 +116,7 @@ defmodule Ramal.Preparation.ManyToMany do
 
       query =
         query
-        |> drop_lateral_join()
+        |> Ramal.Ash.drop_lateral_source()
         |> Ash.Query.filter(^ref(destination_attribute) in ^values)
 
       {:ok, query,
@@ -129,7 +128,7 @@ defmodule Ramal.Preparation.ManyToMany do
   end
 
   defp parent_expr?(relationship),
-    do: Relationships.has_parent_expr?(relationship)
+    do: Ramal.Ash.has_parent_expr?(relationship)
 
   defp paging?(query),
     do: query.page not in [nil, false] or query.limit != nil or query.offset != nil
@@ -173,16 +172,12 @@ defmodule Ramal.Preparation.ManyToMany do
 
       query =
         query
-        |> drop_lateral_join()
+        |> Ramal.Ash.drop_lateral_source()
         |> Ash.Query.filter(^ref(dest_attr) in ^destination_values)
 
       {:ok, query,
        %{by_destination: links, attribute: dest_attr, lateral_source: keys.lateral_source}}
     end
-  end
-
-  defp drop_lateral_join(query) do
-    update_in(query.context[:data_layer], &Map.delete(&1, :lateral_join_source))
   end
 
   @doc """
@@ -193,9 +188,9 @@ defmodule Ramal.Preparation.ManyToMany do
     rows
     |> Enum.flat_map(fn row ->
       for source <- Map.get(links, Map.get(row, attribute), []),
-          do: %{row | __lateral_join_source__: source}
+          do: Ramal.Ash.tag_lateral(row, source)
     end)
-    |> Enum.group_by(& &1.__lateral_join_source__)
+    |> Enum.group_by(&Ramal.Ash.lateral_tag/1)
     |> Enum.flat_map(fn {_source, group} ->
       group |> Enum.drop(offset || 0) |> take(limit)
     end)
