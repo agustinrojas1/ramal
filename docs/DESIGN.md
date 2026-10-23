@@ -192,11 +192,17 @@ This is the section that decides correctness. In a read action's preparation, wh
    branch created and `:append` does not link a vet twice. `type: :append_and_remove` unrelates with `Ash.bulk_destroy/4`
    (`bulk_delete_unused_unrelate/8` in `lib/ash/actions/managed_relationships.ex`), which a branch runs record by record
    like any bulk action ([ADR 0036](adr/0036-bulk-actions-record-by-record.md)).
-8. **Text sort order:** once the overlay touches a resource the whole patched list is sorted in Elixir, and strings
-   compare as bytes (`Banana` before `apple`), while Postgres orders them by its collation. A sort on text, and
-   `Ramal.aggregate/4` with `:min` or `:max` on a string, can therefore differ between a branch and the base for
-   mixed-case or accented text. Other types and null placement match. No comparator reproduces a collation, so Ramal
-   does not guess one ([ADR 0024](adr/0024-text-sort-order.md)).
+8. **Text sort order:** once the overlay touches a resource the whole patched list is sorted in Elixir, where strings
+   compare as bytes, but Postgres orders text by the collation of the column (`apple` before `Banana` in `en_US.UTF-8`).
+   Ramal.Collation (internal, lib/ramal/collation.ex) closes the gap: for a sort on a text attribute of an AshPostgres resource it reads the
+   column's collation from `pg_attribute.attcollation` (cached in `:persistent_term`, not for a tenant schema), asks
+   Postgres in one query for the `dense_rank()` of the distinct values under that collation (`lower(v)` for `citext`),
+   and the in-memory sort orders by those ranks, so ties fall to the next sort key. The same ranks give `:min` and
+   `:max` of a string in `Ramal.aggregate/4` and in declared aggregates. A `C` or `POSIX` column skips the query, since
+   bytes are its order, and a resource on another data layer keeps byte order. The query is read-only. Two gaps stay:
+   a keyset cursor and a comparison filter (`name > "b"`) on text compare bytes
+   ([ADR 0045](adr/0045-text-sorted-by-the-databases-collation.md), which supersedes
+   [ADR 0024](adr/0024-text-sort-order.md)).
 9. **Filters and sorts through a relationship:** the data layer judges `paddock.name == "L07"` with a join against the
    base's paddocks, so a branch that renamed the paddock would leave its herds matched by the old name. When a filter
    or sort reaches a resource the branch has entries for (any hop of the path, and a many_to_many's join resource),
@@ -470,6 +476,8 @@ destination's herds (so a branch must see its own earlier moves for the validati
 in an `after_action`. `Paddock` declares aggregates over its herds (`head_count`, `herd_count`, `has_herds`, ...), and `first_herd_name`, a kind
 the preparation cannot compute, to document the unpatched-aggregate event with a test. One policy on `Herd` (only `%{role: :admin}` may move) to prove policies run inside a branch.
 
+`test/support/texts.ex` is a second domain, `Ramal.Test.Texts`, with `Tag`: one text column for each way Postgres orders text (the database default, `C`, ICU's `und-x-icu` and `citext`), an atom column and a self-reference, for the collation tests ([ADR 0045](adr/0045-text-sorted-by-the-databases-collation.md)).
+
 The domain mirrors the first real user of Ramal (an agricultural operations app) and stays in English.
 
 ## 11. Open questions
@@ -564,5 +572,6 @@ action (ADR 0016).
 | 32 | A captured write is held under its action's process until the action ends: merges and proposals wait, forks leave it out, other writers of the row get `:row_busy`, a dead writer is undone; a process that died without `terminate/2` is not reloaded from storage | The TLA+ model (`verification/tla`) found merges, forks and proposals taking writes of actions that then failed, overlay and log diverging, and a killed process reloaded behind its own writes. [ADR 0033](adr/0033-running-actions-hold-their-writes.md) |
 | 33 | The merge's transaction stores the branch as merged and refuses a branch stored so; a branch process whose merger died asks the storage before releasing the claim; Postgres never stores a merged row back as open | A merge whose process died after the commit, or whose node restarted before the persist, left the branch open and mergeable a second time (TLA+ model, #143). [ADR 0035](adr/0035-merged-status-in-the-merge-transaction.md) |
 | 34 | Inside a branch a bulk action runs each record through the captured single action; a bulk update or destroy of a query must allow `:stream`; a guard refuses an action the capture hook did not wrap | Ash runs changesets with an `around_action` hook singly, and the refusal also blocked `append_and_remove` and AshAi's update and destroy tools. [ADR 0036](adr/0036-bulk-actions-record-by-record.md) |
-| 35 | `first`, `list`, `uniq?` and `include_nil?` aggregates, and a calculation as the field of a `first`, `list` or `count`, are computed over the branch like the other kinds | The related rows already arrive filtered and sorted by the aggregate's own query, so the kinds are a reduction over them; only `custom`, which is SQL, cannot be. [ADR 0043](adr/0039-first-list-and-uniq-aggregates.md) |
-| 36 | A nested fork (`fork/2` with `nested: true`) merges into its parent by replaying its own entries in a scratch copy that the parent adopts if its version did not change; the parent persists first and remembers the fork; a fork the parent holds is merged however its own status was left | A fork that replayed its whole log into the database could not be merged without its parent. Replaying in a copy keeps the parent untouched when a replay fails, the version makes an adoption valid, and the model checked in `verification/tla/Nested.tla` found the fork that was still writable after its merger died. [ADR 0043](adr/0043-nested-branches-merge-into-their-parent.md) |
+| 35 | `first`, `list`, `uniq?` and `include_nil?` aggregates, and a calculation as the field of a `first`, `list` or `count`, are computed over the branch like the other kinds | The related rows already arrive filtered and sorted by the aggregate's own query, so the kinds are a reduction over them; only `custom`, which is SQL, cannot be. [ADR 0039](adr/0039-first-list-and-uniq-aggregates.md) |
+| 36 | A text sort, `:min` and `:max` inside a branch order by the rank Postgres gives the value under the column's collation, from one read-only query per sort key; `C`, `POSIX` and other data layers keep byte order | Strings compared as bytes in the branch and by `en_US.UTF-8` in the database, so the same read disagreed before and after the merge. No Elixir comparator reproduces a collation; asking the database does. [ADR 0045](adr/0045-text-sorted-by-the-databases-collation.md), supersedes [ADR 0024](adr/0024-text-sort-order.md) |
+| 37 | A nested fork (`fork/2` with `nested: true`) merges into its parent by replaying its own entries in a scratch copy that the parent adopts if its version did not change; the parent persists first and remembers the fork; a fork the parent holds is merged however its own status was left | A fork that replayed its whole log into the database could not be merged without its parent. Replaying in a copy keeps the parent untouched when a replay fails, the version makes an adoption valid, and the model checked in `verification/tla/Nested.tla` found the fork that was still writable after its merger died. [ADR 0043](adr/0043-nested-branches-merge-into-their-parent.md) |

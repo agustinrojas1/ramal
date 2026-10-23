@@ -83,6 +83,10 @@ test decides whether it happens.
 - **Upserts work** when the action has `upsert? true` or `upsert?: true` goes to `Ash.Changeset.for_create/4`: the row is
   looked up in the branch's view and updated or created. An `upsert_condition` is refused (`:upsert_unsupported`), and
   `upsert?: true` passed only to `Ash.create/2` acts as a plain create.
+- **Text sorts like the database.** A sort on a text column, and `:min` and `:max` of one, order by the column's collation
+  (`Banana` after `apple` under `en_US.UTF-8`), from one read-only query per sort key. A `C` column and a resource on
+  another data layer use byte order. A keyset cursor on a text sort and a comparison filter on text (`name > "b"`) still
+  compare bytes: page a text sort by offset.
 - **A branch works in one tenant**: `Ramal.branch(domain, tenant: tenant)`. A multitenant resource used with another tenant is refused, and so is any tenant in a branch that has none.
 - **A data layer that cannot roll back** (`Ash.DataLayer.Ets`) keeps the writes of a replay that failed halfway: the
   staleness check runs first, but a later `:merge_failed` lists `details.not_rolled_back`. Use Postgres where it matters.

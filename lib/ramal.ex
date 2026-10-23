@@ -457,8 +457,9 @@ defmodule Ramal do
   reads. Returns `{:ok, value}` or the error Ash returned. Raises `ArgumentError` for an unknown kind or a field that is
   not an attribute, in a branch or not.
 
-  `:min` and `:max` over strings compare bytes for the branch's rows, and the database compares by its collation for the
-  rest, so they can disagree on mixed-case text (ADR 0024).
+  `:min` and `:max` over strings of an AshPostgres resource compare by the collation of the column, for the branch's
+  rows as for the database's, so `"apple"` is the minimum of `"apple"` and `"Banana"` under `en_US.UTF-8`
+  (ADR 0045). The comparison is one read-only query for the values that need ordering.
 
   Confirmed against Ash 3.37 (`lib/ash.ex`): `Ash.count/2` takes no field, and the others take `(query, field, opts)`.
 
@@ -510,6 +511,9 @@ defmodule Ramal do
   defp in_branch(id, query, spec, opts) do
     with {:ok, affected?} <- Related.affected?(query, id),
          do: in_branch(affected?, id, query, spec, opts)
+  rescue
+    # `:min` and `:max` of a string ask the database for its collation (ADR 0045), which can fail like any query.
+    error in Ramal.Error -> {:error, error}
   end
 
   # A filter through a relationship the branch changed is judged by the base's rows in the database's part of the delta,
@@ -536,6 +540,7 @@ defmodule Ramal do
   # `Ash.first/3` takes the first row's value whatever it is, so `:first` keeps `nil`s here too.
   defp read_every_row(query, {kind, field, shape}, opts) do
     shape = if kind == :first, do: [include_nil?: true], else: shape
+    shape = [tenant: opts[:tenant] || query.tenant] ++ shape
 
     with {:ok, records} <- Resource.read_all(query, opts) do
       {:ok, Ramal.Aggregate.compute(kind, field, records, query.resource, shape)}

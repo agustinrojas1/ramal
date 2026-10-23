@@ -67,7 +67,13 @@ defmodule Ramal.Preparation.Aggregates do
 
   defp compute(rows, query, aggregate, touched?) do
     todo = if touched?, do: rows, else: Enum.filter(rows, &missing?(&1, aggregate))
+    do_compute(todo, rows, query, aggregate)
+  rescue
+    # `min` and `max` of a string ask the database for its collation (ADR 0045), which can fail like any query.
+    error in Ramal.Error -> {:error, error}
+  end
 
+  defp do_compute(todo, rows, query, aggregate) do
     with [_ | _] <- todo,
          {:ok, loaded} <- Ash.load(todo, load(query.resource, aggregate), opts(query, aggregate)) do
       values = Map.new(loaded, &{key(&1, query), value(&1, aggregate, query)})
@@ -131,7 +137,7 @@ defmodule Ramal.Preparation.Aggregates do
       end)
       |> counted(aggregate)
 
-    shape = [uniq?: aggregate.uniq?, include_nil?: aggregate.include_nil?]
+    shape = [uniq?: aggregate.uniq?, include_nil?: aggregate.include_nil?, tenant: query.tenant]
 
     case Aggregate.compute(aggregate.kind, aggregate.field, related, destination, shape) do
       nil -> aggregate.default_value

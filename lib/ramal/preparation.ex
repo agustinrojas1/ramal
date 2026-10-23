@@ -74,8 +74,10 @@ defmodule Ramal.Preparation do
       `lib/ash/actions/read/read.ex`), so a foreign key the branch changed is not seen and the load follows the
       database's. Use `Ramal.load/3` (ADR 0031), pass `reuse_values?: true`, which skips the reselect, or load through a
       read (`Ash.Query.load/2`), which goes through this preparation;
-    * a sort on text uses byte order once the overlay touches the resource, where Postgres uses its collation, so mixed-case
-      text can come out in another order than outside the branch (ADR 0024);
+    * a sort on text, once the overlay touches the resource, orders by the rank Postgres gives each value under the
+      column's collation, from one read-only query per sort key (lib/ramal/collation.ex, ADR 0045), so `apple` comes before
+      `Banana` as it does in the database. A resource on another data layer keeps byte order. A keyset cursor on text, and a
+      comparison filter (`name > "b"`) on it, still compare bytes;
     * a paged read of a resource the overlay touches reads every row the filter matches and pages the list in Elixir,
       so it costs what an unpaged read does, not one page (ADR 0030, and per source for a relationship load, ADR 0040).
 
@@ -86,11 +88,10 @@ defmodule Ramal.Preparation do
   """
   use Ash.Resource.Preparation
 
-  alias Ash.Actions.Sort
   alias Ash.Filter.Runtime
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
-  alias Ramal.{Current, Overlay, Prefilter, Resource, Telemetry}
+  alias Ramal.{Collation, Current, Overlay, Prefilter, Resource, Telemetry}
   alias Ramal.Preparation.{Aggregates, ManyToMany, Paged, Related}
 
   @impl true
@@ -677,10 +678,9 @@ defmodule Ramal.Preparation do
   defp apply_select(record, _query, _slice), do: record
 
   defp distinct(rows, %{context: %{ramal: %{distinct: %{fields: fields, sort: pick}}}} = query) do
-    {:ok,
-     rows
-     |> sort_by(pick, query)
-     |> Enum.uniq_by(fn row -> Enum.map(fields, &Map.get(row, &1)) end)}
+    with {:ok, sorted} <- sort_by(rows, pick, query) do
+      {:ok, Enum.uniq_by(sorted, fn row -> Enum.map(fields, &Map.get(row, &1)) end)}
+    end
   end
 
   # The query that `apply_to/3` runs has only the distinct fields and their pick order: the filter and the sort are
@@ -691,10 +691,16 @@ defmodule Ramal.Preparation do
 
   defp distinct(rows, _query), do: {:ok, rows}
 
-  defp sort_by(rows, pick, _query) when pick in [nil, []], do: rows
+  defp sort_by(rows, pick, _query) when pick in [nil, []], do: {:ok, rows}
 
+  # Text is ordered by the database's collation (`Ramal.Collation`, ADR 0045); everything else by Ash's runtime sort.
   defp sort_by(rows, pick, query),
-    do: Sort.runtime_sort(rows, pick, resource: query.resource, domain: query.domain)
+    do:
+      Collation.sort(rows, pick,
+        resource: query.resource,
+        domain: query.domain,
+        tenant: query.tenant
+      )
 
   # A sort through a relationship the branch changed is evaluated in memory first, with the relationship loaded through
   # the patched reads, as for a filter calculation (`load_in_memory/3`); the runtime sort then reuses those values
@@ -703,7 +709,7 @@ defmodule Ramal.Preparation do
     if memory_sort?(query) do
       memory_sort(rows, query, id)
     else
-      {:ok, Sort.runtime_sort(rows, sort, resource: query.resource, domain: query.domain)}
+      sort_by(rows, sort, query)
     end
   end
 
@@ -722,15 +728,15 @@ defmodule Ramal.Preparation do
 
     with {:ok, loaded} <- load_related(rows, query),
          {:ok, loaded} <- load_sort_calculations(loaded, calculations, query),
-         {:ok, loaded} <- load_aggregates(loaded, Related.aggregates(sort), query, id) do
-      sorted =
-        Sort.runtime_sort(loaded, sort,
-          resource: query.resource,
-          domain: query.domain,
-          lazy?: true,
-          rename_calcs?: false
-        )
-
+         {:ok, loaded} <- load_aggregates(loaded, Related.aggregates(sort), query, id),
+         {:ok, sorted} <-
+           Collation.sort(loaded, sort,
+             resource: query.resource,
+             domain: query.domain,
+             tenant: query.tenant,
+             lazy?: true,
+             rename_calcs?: false
+           ) do
       # The relationships and calculations loaded to sort are not part of what the caller asked for.
       by_key = Map.new(rows, &{Resource.key(query.resource, &1), &1})
       {:ok, Enum.map(sorted, &Map.fetch!(by_key, Resource.key(query.resource, &1)))}

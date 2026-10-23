@@ -306,8 +306,12 @@ Ramal is deliberately small, and it says what it does not do:
   memory on the rows the database returns for the rest, so keep attribute predicates next to it to narrow the read. A
   filter through one `belongs_to` or `has_one` is narrowed in the database too, except under `not`; `exists`, longer
   paths and `has_many` paths read every row the rest of the filter allows.
-- **Text sorts inside a branch use byte order,** not the database's collation, once the branch has changed that resource:
-  `Banana` sorts before `apple`. Numbers, dates and keys sort exactly.
+- **Text sorts inside a branch follow the database's collation.** Once the branch has changed a resource, its reads are
+  sorted in Elixir; for a text key Ramal asks Postgres in one read-only query how it orders the distinct values (the
+  column's collation, `lower` for `citext`), so `apple` comes before `Banana` as it does after the merge. `:min` and `:max`
+  of a string do the same. A `C` column, a resource on another data layer, and every key that is not text keep their own
+  order. Two things still compare bytes: a keyset cursor on a text sort (page it by offset) and a comparison filter on text
+  (`name > "b"`) for the branch's rows ([ADR 0045](docs/adr/0045-text-sorted-by-the-databases-collation.md)).
 - **Every resource of the domain is covered or opts out.** `Ramal.branch/2` refuses a domain with a resource that has
   write actions and neither uses `Ramal.Resource` nor sets `branchable? false`; a resource that opts out is written for
   real, from a branch too. Only the branch's domain is checked: a resource of another domain works in the branch if it uses `Ramal.Resource`, and is written for real if it does not. Build a changeset in the same `Ramal.run/2` that runs it. A query prepared outside a branch and read inside it is patched.
