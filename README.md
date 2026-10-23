@@ -274,7 +274,7 @@ Ramal is deliberately small, and it says what it does not do:
   `Banana` sorts before `apple`. Numbers, dates and keys sort exactly.
 - **Every resource of the domain is covered or opts out.** `Ramal.branch/2` refuses a domain with a resource that has
   write actions and neither uses `Ramal.Resource` nor sets `branchable? false`; a resource that opts out is written for
-  real, from a branch too. Build a changeset in the same `Ramal.run/2` that runs it. A query prepared outside a branch and read inside it is patched.
+  real, from a branch too. Only the branch's domain is checked: a resource of another domain works in the branch if it uses `Ramal.Resource`, and is written for real if it does not. Build a changeset in the same `Ramal.run/2` that runs it. A query prepared outside a branch and read inside it is patched.
 - **Bulk actions and upserts are refused** inside a branch, resources whose primary key the database generates cannot be
   created in one (use UUIDs), a branch works in one tenant (`Ramal.branch(domain, tenant: tenant)`), and notifications are dropped unless a resource opts in with `notify_in_branch? true`.
 - **Reads fetch candidate rows and patch them in memory.** That is cheap for the rows a session touches and wrong for an
