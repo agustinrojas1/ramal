@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- **Documented that a branch holds only the writes of create, update and destroy actions.** A generic action and the outside effects of a hook (an HTTP call, an email, an Oban job, a `Repo` write) run for real while a branch is open. SECURITY.md, `docs/limits.md` and `usage-rules.md` now say so and how to make a hook skip itself.
+
 ## [0.9.0] - 2026-10-23
 
 Ramal now checks what it assumes about Ash on the Ash you run, not only in its own CI. Run `mix ramal.doctor` after upgrading Ash. If an assumption ever breaks, Ramal refuses the branch work that depends on it instead of writing to your database. This release also fixes a crash on some `through` loads inside a branch. Upgrading from 0.8 needs no step beyond the version (and `ramal_live ~> 0.9.0`, which shares it).
