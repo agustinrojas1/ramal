@@ -219,6 +219,17 @@ defmodule Ramal.Resource do
   def key(resource, record), do: key_of(record, Ash.Resource.Info.primary_key(resource))
 
   @doc false
+  # `key/2` with the primary key looked up once. A read walks its rows several times by key, and the lookup is a Spark
+  # persisted-term fetch, so a function per read costs less than a lookup per row.
+  @spec key_fun(module) :: (map -> term)
+  def key_fun(resource) do
+    case Ash.Resource.Info.primary_key(resource) do
+      [field] -> &Map.fetch!(&1, field)
+      fields -> &key_of(&1, fields)
+    end
+  end
+
+  @doc false
   # Sets the primary key of a create changeset to `key` (a scalar, or a tuple for a composite key), over whatever
   # default it got.
   @spec force_key(Ash.Changeset.t(), term) :: Ash.Changeset.t()
