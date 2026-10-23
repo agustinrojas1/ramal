@@ -9,6 +9,10 @@ All notable changes to this project are documented here. The format follows [Kee
 - `Ramal.diff/1` is about a third faster for a branch with many changes: it no longer builds and deduplicates a list of attribute names for every updated row, and `Ramal.Resource.attributes/1` makes one pass over the attribute names. Same changes, same order.
 - `Ramal.diff/1` runs inside the branch process, so only the changes cross the process boundary and not the whole branch (overlay, log and base). The diff of a branch with 1,000 changes took about 2.8 ms instead of 5.4. The process is busy for the length of the diff, as it is for any other call.
 
+### Fixed
+
+- `ramal_live`: a UUID in a diff (the row key and the before and after cells) no longer wraps in the middle of a group in the narrow column. It keeps to one line, cut short with an ellipsis, and the whole id is the tooltip.
+
 ## [0.3.0] - 2026-10-23
 
 ### Added

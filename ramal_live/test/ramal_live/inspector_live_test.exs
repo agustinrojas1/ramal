@@ -70,6 +70,19 @@ defmodule RamalLive.InspectorLiveTest do
       assert has_element?(view, "#{column(branch)} .rl-before", "R1")
     end
 
+    test "a UUID in a diff keeps to one line and carries its whole value as the tooltip", %{
+      conn: conn
+    } do
+      branch = branch!("new herd", fn -> herd!("R9", 12) end)
+      [{{_resource, id}, _op}] = Enum.to_list(branch.overlay)
+
+      {:ok, view, _html} = live(conn, "/ramal")
+
+      assert has_element?(view, "#{column(branch)} code.rl-id[title='#{id}']", id)
+      assert has_element?(view, "#{column(branch)} td.rl-after.rl-id[title='#{id}']", id)
+      refute has_element?(view, "#{column(branch)} td.rl-after.rl-id", "R9")
+    end
+
     test "a branch with no writes says so", %{conn: conn} do
       branch = branch!("empty")
       {:ok, view, _html} = live(conn, "/ramal")

@@ -100,6 +100,9 @@ defmodule RamalLive.Style do
     .rl-rows th, .rl-rows td { text-align: left; font-weight: 400; padding: .15rem .5rem; vertical-align: top;
       overflow-wrap: anywhere; }
     .rl-rows th { color: var(--rl-muted); width: 28%; }
+    .rl-rows td.rl-id, .rl-change-head .rl-id { white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      overflow-wrap: normal; }
+    .rl-change-head .rl-id { flex: 1 1 0; min-width: 0; }
     .rl-before { background: var(--rl-del-bg); color: var(--rl-del); }
     .rl-after { background: var(--rl-add-bg); color: var(--rl-add); }
     .rl-before:empty, .rl-after:empty { background: none; }
