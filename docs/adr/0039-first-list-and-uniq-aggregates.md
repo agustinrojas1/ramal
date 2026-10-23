@@ -30,6 +30,6 @@ meant `first :newest_note, :notes, :title` inside a branch ignored a note the br
 
 - The plan also listed `limit` and `offset` in the aggregate's query. Ash refuses them (`lib/ash/query/aggregate.ex`,
   "Cannot set limit on aggregate query"), so there is nothing to patch.
-- The order of a `first` or `list` sorted on text is the order of the branch's comparison, which is byte order until
-  the text sort order work lands (ADR 0024).
+- The order of a `first` or `list` sorted on text is the order of the read that feeds it, which follows the database's
+  collation since ADR 0045 (it was byte order under ADR 0024).
 - The cost is as for the other kinds: a read of the related rows per recomputed row.

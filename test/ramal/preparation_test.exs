@@ -172,9 +172,11 @@ defmodule Ramal.PreparationTest do
       end)
     end
 
-    # Documents a limit (ADR 0024): the patched list is sorted in Elixir, where strings compare as bytes, while Postgres
-    # uses the collation of the database, so mixed-case text can sort differently outside the branch.
-    test "a text sort over a resource the branch touched uses byte order", %{branch: branch} do
+    # The patched list is sorted in Elixir, where strings compare as bytes, so the preparation orders text by the rank
+    # the database gives it (ADR 0045, which supersedes ADR 0024). The cases are in test/ramal/collation_test.exs.
+    test "a text sort over a resource the branch touched follows the database's order", %{
+      branch: branch
+    } do
       Enum.each(["apple", "Banana", "cherry", "Date"], fn name ->
         Ash.create!(Paddock, %{name: name, capacity_head: 1}, authorize?: false)
       end)
@@ -189,8 +191,15 @@ defmodule Ramal.PreparationTest do
           |> Enum.map(& &1.name)
         end)
 
+      %{rows: rows} =
+        TestRepo.query!(
+          "SELECT name FROM paddocks WHERE name IN ('apple', 'Banana', 'cherry', 'Date') ORDER BY name"
+        )
+
+      in_database = List.flatten(rows) ++ ["zzz"]
+
       assert Enum.filter(names, &(&1 in ["apple", "Banana", "cherry", "Date", "zzz"])) ==
-               ["Banana", "Date", "apple", "cherry", "zzz"]
+               in_database
     end
 
     test "a calculation loaded by the read action's own preparation is evaluated on the branch's rows",

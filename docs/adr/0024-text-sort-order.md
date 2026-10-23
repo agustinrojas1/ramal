@@ -1,6 +1,6 @@
 # 0024. A text sort inside a branch is byte order, and Ramal does not guess a collation
 
-Status: accepted, 2026-10-23. Amends [ADR 0004](0004-read-patching-hooks.md).
+Status: superseded by [ADR 0045](0045-text-sorted-by-the-databases-collation.md), 2026-10-23. Amended [ADR 0004](0004-read-patching-hooks.md).
 
 ## Context
 
