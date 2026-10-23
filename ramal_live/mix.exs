@@ -1,7 +1,7 @@
 defmodule RamalLive.MixProject do
   use Mix.Project
 
-  @version "0.4.2"
+  @version "0.4.3"
   @source_url "https://github.com/agustinrojas1/ramal"
 
   def project do
@@ -35,11 +35,12 @@ defmodule RamalLive.MixProject do
 
   # Ramal is used from the parent directory so that the inspector is always built against the code next to it. Ramal
   # itself never depends on this project. Hex only accepts Hex dependencies, so a release sets RAMAL_LIVE_HEX=1 to
-  # depend on the published ramal of the same minor version (`mix hex.build` fails on the path dependency otherwise).
+  # depend on the published ramal of the same version (`mix hex.build` fails on the path dependency otherwise). It is
+  # the same patch version because the inspector uses `Ramal.Change.redact/1`, added in 0.4.3.
   defp ramal_dep do
     if System.get_env("RAMAL_LIVE_HEX") == "1" do
-      %Version{major: major, minor: minor} = Version.parse!(@version)
-      {:ramal, "~> #{major}.#{minor}.0"}
+      %Version{major: major, minor: minor, patch: patch} = Version.parse!(@version)
+      {:ramal, "~> #{major}.#{minor}.#{patch}"}
     else
       {:ramal, path: ".."}
     end

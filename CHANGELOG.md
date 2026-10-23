@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-23
+
+The fixes from the external review of 0.4.2, four of them critical: a branch write reaching Postgres. Read **Upgrading from 0.4.2** first.
+
+### Upgrading from 0.4.2
+
+1. **`Ramal.branch/2` can now return `:unbranchable_resources`.** Every resource of the domain that has a create, update or destroy action must use `Ramal.Resource` or opt out with `ramal do branchable? false end` (a resource that opts out is written for real, from a branch too).
+2. **Build a changeset and run it in the same place.** One built outside `Ramal.run/2` and submitted inside, or the reverse, now fails with `:branch_mismatch`. Prepare queries inside `run/2` too.
+3. **Tasks started inside `Ramal.run/2` with `Task` are in the branch**, so `Ramal.current/0` returns it there. `ramal_live` needs `ramal ~> 0.4.3`.
+
 ### Added
 
 - `Ramal.Change.redact/1` returns a change with the values of `sensitive?` attributes replaced by `"[redacted]"`.
@@ -164,7 +174,8 @@ Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspec
 - A multitenant resource used with a tenant inside a branch is refused with `:multitenancy_unsupported` (`Ramal.Resource.ensure_untenanted/2`), instead of mixing tenants in one overlay or failing at merge.
 - Stored branches no longer hold the `sensitive?` attributes of an actor that is an Ash record (they are stored as `nil`); other actors are stored as before.
 
-[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/agustinrojas1/ramal/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/agustinrojas1/ramal/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/agustinrojas1/ramal/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/agustinrojas1/ramal/compare/v0.3.0...v0.4.0

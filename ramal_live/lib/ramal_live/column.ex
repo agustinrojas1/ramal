@@ -4,7 +4,6 @@ defmodule RamalLive.Column do
   # only place a branch and its diff are looked at, so the templates stay free of logic and this module is tested
   # without Phoenix.
 
-  alias Ash.Resource.Info
   alias Ramal.{Branch, Change}
 
   # A branch can hold thousands of changes; the page shows the first ones and says how many it left out.
@@ -164,6 +163,8 @@ defmodule RamalLive.Column do
   end
 
   defp change(%Change{} = change) do
+    change = Change.redact(change)
+
     %{
       kind: change.kind,
       resource: change.resource |> Module.split() |> List.last(),
@@ -174,34 +175,21 @@ defmodule RamalLive.Column do
         change.changes
         |> Enum.sort_by(fn {attribute, _} -> attribute end)
         |> Enum.map(fn {attribute, {before, after_value}} ->
-          show(change.resource, attribute, before, after_value)
+          show(attribute, before, after_value)
         end)
     }
   end
 
-  # An attribute marked `sensitive?` (a password hash, a token) is never printed: the row stays, so the reviewer sees
-  # that it changed, without its values. The diff is for people to review, and a page that shows secrets to everyone
-  # allowed to merge is a new place for them to leak from.
-  @redacted "[redacted]"
-
-  defp show(resource, attribute, before, after_value) do
-    {before, after_value} =
-      if sensitive?(resource, attribute),
-        do: {@redacted, @redacted},
-        else: {format_value(before), format_value(after_value)}
-
+  # `Change.redact/1` has already replaced the values of an attribute marked `sensitive?` (a password hash, a token):
+  # the row stays, so the reviewer sees that it changed, without its values.
+  defp show(attribute, before, after_value) do
     %{
       attribute: Atom.to_string(attribute),
-      before: before,
-      after: after_value,
+      before: format_value(before),
+      after: format_value(after_value),
       before_id?: id?(before),
       after_id?: id?(after_value)
     }
-  end
-
-  defp sensitive?(resource, attribute) do
-    Info.resource?(resource) and
-      match?(%{sensitive?: true}, Info.field(resource, attribute))
   end
 
   defp proposal(nil), do: nil
