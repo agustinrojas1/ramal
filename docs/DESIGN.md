@@ -1,6 +1,6 @@
 # Ramal design
 
-Status: describes Ramal 0.3. First written 2026-10-22. This document is the current state of the design; the history of
+Status: describes Ramal 0.4. First written 2026-10-22. This document is the current state of the design; the history of
 decisions lives in `docs/adr/`. Where this document and the code disagree, open an issue: one of them is wrong.
 
 Marks: **[confirm]** flagged an Ash behaviour the implementer had to verify against the locked version before relying
@@ -393,7 +393,7 @@ The domain mirrors the first real user of Ramal (an agricultural operations app)
 7. ~~Should `Ramal.Storage.Postgres` take a host callback for actors?~~ No: actors are stored as the term, with the
    attributes marked `sensitive?` dropped from resource records (ADR 0008, ADR 0010).
 
-## 12. Inspector (`ramal_live`, 0.3)
+## 12. Inspector (`ramal_live`, 0.4)
 
 A separate Mix project, `ramal_live/`, that depends on `ramal` by path. Core never depends on it. Public modules:
 
