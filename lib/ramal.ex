@@ -293,9 +293,7 @@ defmodule Ramal do
   """
   @spec diff(branch_or_id) :: {:ok, [Ramal.Change.t()]} | {:error, Error.t()}
   def diff(branch_or_id) do
-    with {:ok, branch} <- branch_or_id |> id_of() |> Server.get() do
-      Branch.diff(branch, attributes: &Resource.attributes/1)
-    end
+    branch_or_id |> id_of() |> Server.diff(attributes: &Resource.attributes/1)
   end
 
   @doc """

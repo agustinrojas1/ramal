@@ -136,6 +136,14 @@ defmodule Ramal.Branch.Server do
   def status(id), do: call(id, :status)
 
   @doc """
+  The changes of the branch (`Ramal.Branch.diff/2`), computed inside the process. Only the changes cross the process
+  boundary, not the overlay, the log and the base `get/1` copies, which is most of what a diff of a large branch cost.
+  Like `get/1` it answers whatever the status of the branch is, so a rejected or proposed branch can still be reviewed.
+  """
+  @spec diff(String.t(), keyword) :: {:ok, [Ramal.Change.t()]} | {:error, Error.t()}
+  def diff(id, opts), do: call(id, {:diff, opts})
+
+  @doc """
   The overlay slice of one resource, for read patching. Only that slice crosses the process boundary, not the whole
   overlay. Rejected unless the branch is open.
   """
@@ -280,6 +288,8 @@ defmodule Ramal.Branch.Server do
   def handle_call(:get, _from, state), do: reply(state, {:ok, state.branch})
 
   def handle_call(:status, _from, state), do: reply(state, {:ok, state.branch.status})
+
+  def handle_call({:diff, opts}, _from, state), do: reply(state, Branch.diff(state.branch, opts))
 
   def handle_call({:slice, resource}, _from, state) do
     if usable?(state) do
