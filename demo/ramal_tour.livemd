@@ -35,7 +35,7 @@ docker run -d --name ramal-demo-db -p 5436:5432 -e POSTGRES_USER=ramal -e POSTGR
 
 The first cell installs the dependencies. The first run compiles Ash, which takes a couple of minutes and a few GB of memory at its peak; it is cached afterwards. Compiler warnings about `Igniter` and `Owl` come from optional code paths of the Ash packages.
 
-It installs `ramal ~> 0.4.0` from Hex, the same package your app would use. If you opened the notebook from a checkout of the repository and that version is not on Hex, it falls back to the checkout. Set `RAMAL_TOUR_SOURCE=path` in the runtime's environment to use the checkout on purpose.
+It installs `ramal ~> 0.5.0` from Hex, the same package your app would use. If you opened the notebook from a checkout of the repository and that version is not on Hex, it falls back to the checkout. Set `RAMAL_TOUR_SOURCE=path` in the runtime's environment to use the checkout on purpose.
 
 ```elixir
 checkout = Path.expand("..", __DIR__)
@@ -65,7 +65,7 @@ source =
   if System.get_env("RAMAL_TOUR_SOURCE") == "path" and in_checkout? do
     {:ramal, path: checkout, override: true}
   else
-    {:ramal, "~> 0.4.0"}
+    {:ramal, "~> 0.5.0"}
   end
 
 try do
@@ -73,7 +73,7 @@ try do
 rescue
   error in Mix.Error ->
     if in_checkout? and elem(source, 1) != [path: checkout, override: true] do
-      IO.puts("ramal ~> 0.4.0 is not on Hex yet (#{Exception.message(error)}); using the checkout at #{checkout}")
+      IO.puts("ramal ~> 0.5.0 is not on Hex yet (#{Exception.message(error)}); using the checkout at #{checkout}")
       install.({:ramal, path: checkout, override: true})
     else
       reraise error, __STACKTRACE__

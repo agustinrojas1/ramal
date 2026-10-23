@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-23
+
+Branch reads now agree with the branch in more places: pagination, aggregates (loaded, filtered and sorted), prepared queries and module calculations. Read **Upgrading from 0.4** first.
+
+### Upgrading from 0.4
+
+1. **`ramal_live` needs `ramal ~> 0.5.0`**; the two packages share a version.
+2. **Reads that used to return the database's answer inside a branch now return the branch's**: a paginated read is cut from the patched list, an aggregate a read loads or filters or sorts on counts the branch's records, and a query prepared outside `Ramal.run/2` is patched when read inside it. Code that worked around the old answers (reading the page again, recomputing a count) can drop the workaround; tests that pinned the old numbers need the new ones.
+3. **`distinct` on a calculation in a query that selects some attributes** now returns rows carrying every attribute.
+
 ### Added
 
 - `examples/ash_ai`, a separate Mix project that CI runs against `ash_ai` 1.4.0: AshAi tools run in a branch through `AshAi.Tools.execute/4` and `AshAi.Mcp.Router`, end in a proposal, and the plug that takes the branch id from an MCP client checks the branch's owner. It also pins a finding: an AshAi `update` or `destroy` tool is a bulk action, which a branch refuses; `docs/agents.md` shows the generic action to use instead (#104).
@@ -192,7 +202,8 @@ Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspec
 - A multitenant resource used with a tenant inside a branch is refused with `:multitenancy_unsupported` (`Ramal.Resource.ensure_untenanted/2`), instead of mixing tenants in one overlay or failing at merge.
 - Stored branches no longer hold the `sensitive?` attributes of an actor that is an Ash record (they are stored as `nil`); other actors are stored as before.
 
-[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/agustinrojas1/ramal/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/agustinrojas1/ramal/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/agustinrojas1/ramal/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/agustinrojas1/ramal/compare/v0.4.0...v0.4.1
