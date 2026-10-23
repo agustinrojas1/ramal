@@ -15,6 +15,9 @@ defmodule Ramal.Storage do
   | `Ramal.Storage.ETS` | an ETS table owned by `Ramal.Supervisor` | until the supervisor stops |
   | `Ramal.Storage.Postgres` | the `ramal_branches` table | durable |
 
+  Only the Postgres backend serves a cluster of several nodes, because the nodes must share it. Both backends fence
+  writes by epoch, see `c:claim/2`.
+
   ## Example
 
       iex> Ramal.Storage.ETS in [Ramal.Storage.ETS, Ramal.Storage.Postgres]
@@ -65,7 +68,40 @@ defmodule Ramal.Storage do
   """
   @callback mark_merged(Branch.t(), config) :: :ok | {:error, Error.t()}
 
-  @optional_callbacks count: 3, mark_merged: 2
+  @doc """
+  Loads the branch for a process that is about to hold it, and fences every process that held it before.
+
+  Optional; `Ramal.Supervisor` with `cluster: true` needs it (ADR 0039). It increments the branch's epoch and returns the
+  stored branch with `epoch` set to the new value, in one atomic step, so the caller has the state as of that epoch and
+  no other. A missing branch is `{:error, %Ramal.Error{reason: :not_found}}`.
+
+  From then on `put/2` and `mark_merged/2` of a branch whose `epoch` is not `nil` are conditional on the stored epoch
+  still being that one: a write that finds another returns `{:error, %Ramal.Error{reason: :fenced}}` and changes nothing.
+  A branch with `epoch: nil` is written unconditionally, as it is without a cluster. The epoch is not part of the
+  branch's state, so `fetch/2` and `list/3` leave it `nil`.
+  """
+  @callback claim(id :: String.t(), config) :: {:ok, Branch.t()} | {:error, Error.t()}
+
+  @optional_callbacks count: 3, mark_merged: 2, claim: 2
+
+  @doc """
+  The error a fenced write returns: the branch was loaded by another process after the writer loaded it (`c:claim/2`).
+
+  ## Example
+
+      iex> error = Ramal.Storage.fenced("b1", 3)
+      iex> {error.reason, error.details}
+      {:fenced, %{id: "b1", epoch: 3}}
+  """
+  @spec fenced(String.t(), non_neg_integer) :: Error.t()
+  def fenced(id, epoch) do
+    Error.new(
+      :fenced,
+      "branch #{inspect(id)} was loaded by another process after this one loaded it (epoch #{epoch} is no longer " <>
+        "current), so this process may not write it any more; what it held since its last save is lost",
+      %{id: id, epoch: epoch}
+    )
+  end
 
   @doc """
   The error `c:mark_merged/2` returns for a branch the storage already holds as merged.

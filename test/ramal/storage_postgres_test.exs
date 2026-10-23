@@ -344,6 +344,101 @@ defmodule Ramal.Storage.PostgresTest do
     end
   end
 
+  describe "fencing by epoch" do
+    setup do
+      branch = branch()
+      :ok = Postgres.put(branch, @config)
+      {:ok, branch: branch}
+    end
+
+    test "each claim takes the next epoch and returns the stored branch with it", %{
+      branch: branch
+    } do
+      assert {:ok, %{epoch: 1} = claimed} = Postgres.claim(branch.id, @config)
+      assert %{claimed | epoch: nil} == branch
+      assert {:ok, %{epoch: 2}} = Postgres.claim(branch.id, @config)
+    end
+
+    test "a claim returns what was saved last, so a load cannot start from an older read", %{
+      branch: branch
+    } do
+      {:ok, held} = Postgres.claim(branch.id, @config)
+      :ok = Postgres.put(%{held | name: "saved by the holder"}, @config)
+
+      assert {:ok, %{name: "saved by the holder", epoch: 2}} = Postgres.claim(branch.id, @config)
+    end
+
+    test "the holder of the current epoch writes, and fetch leaves the epoch out", %{
+      branch: branch
+    } do
+      {:ok, held} = Postgres.claim(branch.id, @config)
+
+      assert Postgres.put(%{held | name: "renamed"}, @config) == :ok
+      assert {:ok, %{name: "renamed", epoch: nil}} = Postgres.fetch(branch.id, @config)
+    end
+
+    test "a write by the holder of an older epoch is refused and changes nothing", %{
+      branch: branch
+    } do
+      {:ok, old} = Postgres.claim(branch.id, @config)
+      {:ok, newer} = Postgres.claim(branch.id, @config)
+      :ok = Postgres.put(%{newer | name: "newer"}, @config)
+
+      assert {:error, %Error{reason: :fenced, details: %{epoch: 1}}} =
+               Postgres.put(%{old | name: "older"}, @config)
+
+      assert {:ok, %{name: "newer"}} = Postgres.fetch(branch.id, @config)
+    end
+
+    test "a write to a row that was deleted is refused and does not bring it back", %{
+      branch: branch
+    } do
+      {:ok, held} = Postgres.claim(branch.id, @config)
+      :ok = Postgres.delete(branch.id, @config)
+
+      assert {:error, %Error{reason: :fenced}} = Postgres.put(held, @config)
+      assert {:error, %Error{reason: :not_found}} = Postgres.fetch(branch.id, @config)
+    end
+
+    test "a merged row stays merged under a write of the current epoch, as without an epoch", %{
+      branch: branch
+    } do
+      {:ok, held} = Postgres.claim(branch.id, @config)
+      :ok = Postgres.put(%{branch | status: :merged}, @config)
+
+      assert Postgres.put(%{held | name: "open again"}, @config) == :ok
+      assert {:ok, %{status: :merged, name: "stored"}} = Postgres.fetch(branch.id, @config)
+    end
+
+    test "a write with no epoch is not fenced and leaves the epoch as it is", %{branch: branch} do
+      {:ok, _held} = Postgres.claim(branch.id, @config)
+
+      assert Postgres.put(%{branch | name: "plain"}, @config) == :ok
+      assert {:ok, %{epoch: 2}} = Postgres.claim(branch.id, @config)
+    end
+
+    test "a merge mark by the holder of an older epoch is refused and the row stays open", %{
+      branch: branch
+    } do
+      {:ok, old} = Postgres.claim(branch.id, @config)
+      {:ok, current} = Postgres.claim(branch.id, @config)
+
+      assert {:error, %Error{reason: :fenced}} = Postgres.mark_merged(old, @config)
+      assert {:ok, %{status: :open}} = Postgres.fetch(branch.id, @config)
+
+      assert Postgres.mark_merged(current, @config) == :ok
+      assert {:ok, %{status: :merged}} = Postgres.fetch(branch.id, @config)
+
+      assert {:error, %Error{reason: :not_open, details: %{status: :merged}}} =
+               Postgres.mark_merged(current, @config)
+    end
+
+    test "claiming an unknown id, or one that is not a UUID, is :not_found" do
+      assert {:error, %Error{reason: :not_found}} = Postgres.claim(Ash.UUID.generate(), @config)
+      assert {:error, %Error{reason: :not_found}} = Postgres.claim("nope", @config)
+    end
+  end
+
   # Starts another BEAM on the same compiled code, so nothing is loaded in it but what the fetch itself loads.
   defp fetch_in_new_vm(id) do
     script = """

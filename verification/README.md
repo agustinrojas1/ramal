@@ -1,16 +1,17 @@
 # Verification
 
-Two formal models of Ramal, and what they prove. Neither reads the Elixir code: each states the rules the code follows,
+Three formal models of Ramal, and what they prove. Neither reads the Elixir code: each states the rules the code follows,
 and tests tie the two together (see [How the models meet the code](#how-the-models-meet-the-code)).
 
 | | what | tool | checked by |
 |---|---|---|---|
-| [`tla/`](tla) | the life of branches across processes: writes, reads, fork, propose, approve, reject, discard, merge, idle unload, kills, restarts | TLA+, model-checked with TLC 1.8.0 | `check.sh tla` |
+| [`tla/Ramal.tla`](tla/Ramal.tla) | the life of branches across processes: writes, reads, fork, propose, approve, reject, discard, merge, idle unload, kills, restarts | TLA+, model-checked with TLC 1.8.0 | `check.sh tla` |
+| [`tla/Cluster.tla`](tla/Cluster.tla) | one branch in a cluster: `:global` names, the storage's epoch, splits, heals, a node crash | TLA+, TLC 1.8.0 | `check.sh tla` |
 | [`bend/`](bend) | the data rules: overlay entries, what a read in a branch sees, what a merge writes | Bend 2.0.38, also rechecked by its Lean-proved kernel (`--verdict`) | `check.sh bend` |
 
 ```sh
 verification/check.sh          # both
-verification/check.sh tla      # about 4 minutes on 4 cores
+verification/check.sh tla      # about 5 minutes on 4 cores
 verification/check.sh bend     # under a second
 ```
 
@@ -65,6 +66,35 @@ running marks are modelled as what they decide, not as processes. A node restart
 Ramal documents, so `NoLostWrite` asks only for the writes that survived it. The model is bounded: what TLC proves holds for the
 sizes in `MC.cfg`, and larger sizes are left out to keep the check to a few minutes.
 
+## TLA+: a branch in a cluster
+
+[`tla/Cluster.tla`](tla/Cluster.tla) is a second, small model (ADR 0039), kept apart because `Ramal.tla` is about what the
+processes of one node do and this is about nodes. It has one branch, three nodes that can each hold one process of it, a
+storage with a set of writes and an epoch, and `:global` as a view per node of who holds the branch. A step is a load (the
+storage's epoch goes up and the process has the state as of it), a write (acknowledged to a caller), an unload (a save,
+refused when the process is not on the storage's epoch), a split (each node keeps only its own process in its view), a heal
+(the process with the higher epoch keeps the name, `Ramal.Cluster.resolve/3`) or a node crash.
+
+**Properties** (all hold in [`Cluster.cfg`](tla/Cluster.cfg): 3 nodes, 3 writes, 5 loads, 2 splits, 1 crash; 1,130,831
+distinct states, about 12 seconds):
+
+| property | meaning |
+|---|---|
+| `NoLostUpdateUnreported` | a write a caller was told succeeded is in the storage, held by a live process, announced as lost by a process the storage fenced (`[:ramal, :branch, :fenced]`), or lost with a crashed node, which Ramal documents; it is never dropped without a trace |
+| `SingleWriter` | the storage's writes only change by a save of the process that holds its epoch |
+| `OneOwner` | while the nodes see each other, they agree on who holds the branch |
+
+| config | what TLC finds without the epoch guard |
+|---|---|
+| [`bug-unfenced.cfg`](tla/bug-unfenced.cfg) | after a split a node loads the branch from the storage, another saves a write, and the first saves its older copy over it: the write is gone and nobody was told (`NoLostUpdateUnreported`) |
+| [`bug-unfenced-writer.cfg`](tla/bug-unfenced-writer.cfg) | the same trace, seen as a save by a process that is not on the storage's epoch (`SingleWriter`) |
+
+**Abstractions.** A write is a number and the storage holds a set; there is one branch, at most one process per node, and
+a split cuts every node from every other. A node joining a cluster is a heal. `:global` is a view per node, updated
+atomically by a load and a heal; the delay between a connect and the exchange of names is the same as a longer split.
+Merges and the other lifecycle steps are not in this model: a merge is refused by the same epoch guard (`mark_merged/2`
+inside its transaction), which `test/ramal/cluster_test.exs` and the storage tests check.
+
 ## Bend: the data rules
 
 [`bend/model.bend`](bend/model.bend) writes the overlay of `Ramal.Overlay` (an entry per row, combined by the table in
@@ -107,6 +137,9 @@ the relationship and aggregate paths. Those are tested with StreamData propertie
   `Ramal.Overlay` on random logs, and that undoing the newest write of a row restores `Ramal.Branch` (the reason a second
   writer of the row is refused while the first action runs).
 - `test/ramal/running_actions_test.exs` drives each interleaving TLC found through the real processes.
+- `test/ramal/cluster_nodes_test.exs` starts real nodes with `:peer` against Postgres and runs the traces of
+  `Cluster.tla`: a split in which the node that held the branch is fenced, a heal in which the higher epoch keeps it, a
+  crash. `test/ramal/cluster_test.exs` and the storage tests check the fence on one node.
 - The TLA+ steps name the functions they model, so a change to one of those functions is a change to check against the
   model. The Verification workflow runs on changes to them.
 

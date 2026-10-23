@@ -13,6 +13,9 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     filter of `Ramal.list/2`; nothing writes it, and it is `NULL` for an unowned branch. A table made by 0.3.0 or
     earlier gets it from the second migration `mix ramal.gen.migration` writes; until then everything but the `owner:`
     filter works.
+    `epoch` (bigint, default 0) is the fencing token of a cluster (ADR 0039): `claim/2` increments it, and `put/2` and
+    `mark_merged/2` of a branch that carries an epoch write only while the row still has it. Nothing reads it
+    without `cluster: true`, so a table without the column works as before; `mix ramal.gen.migration` adds it.
     The branch process calls this module from its own process, so the repo's pool serves it like any other
     caller. The module exists only when Ecto SQL is a dependency of the host.
 
@@ -54,7 +57,37 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     WHERE #{@table}.status <> 'merged' OR EXCLUDED.status = 'merged'
     """
 
+    # The write of a process that holds an epoch. The row must exist, because the process claimed it, and carry that
+    # epoch. The WHERE keeps a merged row merged exactly as @upsert does.
+    @fenced_put """
+    UPDATE #{@table} SET domain = $2, name = $3, status = $4, state = $5, updated_at = now() AT TIME ZONE 'utc'
+    WHERE id = $1 AND epoch = $6 AND (status <> 'merged' OR $4 = 'merged')
+    RETURNING id
+    """
+
     @impl true
+    def put(%Branch{epoch: epoch} = branch, config) when is_integer(epoch) do
+      with {:ok, repo} <- repo(config),
+           {:ok, id} <- dump_id(branch.id),
+           {:ok, state} <- Codec.encode_state(branch),
+           {:ok, result} <-
+             query(repo, @fenced_put, [
+               id,
+               Atom.to_string(branch.domain),
+               branch.name,
+               Atom.to_string(branch.status),
+               state,
+               epoch
+             ]) do
+        case result.num_rows do
+          1 -> :ok
+          # No row updated: another process holds the branch now, the row is gone, or it is merged and this write is
+          # not. Only the first two are a refusal; the third is the merged guard, which leaves the row as it is.
+          0 -> fenced_or_guarded(repo, id, branch, epoch)
+        end
+      end
+    end
+
     def put(%Branch{} = branch, config) do
       with {:ok, repo} <- repo(config),
            {:ok, id} <- dump_id(branch.id),
@@ -84,9 +117,27 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     RETURNING id
     """
 
+    @fenced_mark_merged """
+    UPDATE #{@table} SET status = 'merged', state = $2, updated_at = now() AT TIME ZONE 'utc'
+    WHERE id = $1 AND epoch = $3 AND status <> 'merged'
+    RETURNING id
+    """
+
     # Run inside the merge's transaction on the same repo, the row rolls back with a failed merge and commits with a
     # successful one (ADR 0035).
     @impl true
+    def mark_merged(%Branch{epoch: epoch} = branch, config) when is_integer(epoch) do
+      with {:ok, repo} <- repo(config),
+           {:ok, id} <- dump_id(branch.id),
+           {:ok, state} <- Codec.encode_state(%{branch | status: :merged}),
+           {:ok, result} <- query(repo, @fenced_mark_merged, [id, state, epoch]) do
+        case result.num_rows do
+          1 -> :ok
+          0 -> refused_mark(repo, id, branch, epoch)
+        end
+      end
+    end
+
     def mark_merged(%Branch{} = branch, config) do
       with {:ok, repo} <- repo(config),
            {:ok, id} <- dump_id(branch.id),
@@ -105,6 +156,36 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
         end
       end
     end
+
+    # Bumps the epoch and reads the row in one statement, so the state returned is the state as of the epoch it names.
+    @claim """
+    UPDATE #{@table} SET epoch = epoch + 1 WHERE id = $1
+    RETURNING #{@columns}, epoch
+    """
+
+    @impl true
+    def claim(id, config) do
+      with {:ok, repo} <- repo(config),
+           {:ok, uuid} <- cast_id(id),
+           {:ok, result} <- query(repo, @claim, [uuid]) do
+        claimed(result.rows, id)
+      else
+        :not_a_uuid ->
+          {:error, Error.new(:not_found, "no branch with id #{inspect(id)}", %{id: id})}
+
+        error ->
+          error
+      end
+    end
+
+    defp claimed([row], _id) do
+      {epoch, row} = List.pop_at(row, -1)
+
+      with {:ok, branch} <- row |> row_to_map() |> decode(), do: {:ok, %{branch | epoch: epoch}}
+    end
+
+    defp claimed([], id),
+      do: {:error, Error.new(:not_found, "no branch with id #{inspect(id)}", %{id: id})}
 
     @impl true
     def fetch(id, config) do
@@ -186,6 +267,23 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
              ) do
         [[count]] = result.rows
         {:ok, count}
+      end
+    end
+
+    # A write that updated no row says why by looking at the row: the epoch it holds, and whether it is merged.
+    defp fenced_or_guarded(repo, id, branch, epoch) do
+      case query(repo, "SELECT epoch, status FROM #{@table} WHERE id = $1", [id]) do
+        {:ok, %{rows: [[^epoch, "merged"]]}} -> :ok
+        {:ok, _other} -> {:error, Ramal.Storage.fenced(branch.id, epoch)}
+        {:error, _} = error -> error
+      end
+    end
+
+    defp refused_mark(repo, id, branch, epoch) do
+      case query(repo, "SELECT epoch, status FROM #{@table} WHERE id = $1", [id]) do
+        {:ok, %{rows: [[^epoch, "merged"]]}} -> {:error, Ramal.Storage.already_merged(branch.id)}
+        {:ok, _other} -> {:error, Ramal.Storage.fenced(branch.id, epoch)}
+        {:error, _} = error -> error
       end
     end
 

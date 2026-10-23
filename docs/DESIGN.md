@@ -20,7 +20,7 @@ discard them. A branch must cost roughly what a process and a map cost, so thous
 - Branch-local indexes, or any promise about query plans.
 - Data-layer aggregates and calculations that Ramal cannot recompute over a branch (`first`, `list`, `custom`, `uniq?`, and aggregate queries with a limit keep the database's value, with a telemetry event; section 4.1 point 4 says what is recomputed).
 - Database-generated keys inside a branch, and nested branches.
-- Multi-node branches. A branch lives on one node; persistence makes it movable, not distributed.
+- Multi-node branches by default. A branch lives on one node; persistence makes it movable. `cluster: true` makes one process serve a branch for every node of a cluster that shares the Postgres storage (section 6, ADR 0039).
 - A UI. The inspector is a separate package (`ramal_live/`, section 12).
 
 ## 2. Concepts
@@ -54,6 +54,9 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
 
 - `Ramal.Supervisor` (a `DynamicSupervisor` plus a `Registry` keyed by branch id). The host adds it to its tree:
   `{Ramal.Supervisor, storage: Ramal.Storage.Postgres, repo: MyApp.Repo}`.
+- Ramal.Cluster (internal): with `cluster: true` the branch registry is `:global` instead of the `Registry`, and
+  this is its `:via` module and the resolver that decides which process keeps a name two nodes both registered
+  (section 6, ADR 0039).
 - Ramal.Branch.Server is a `GenServer` per open branch. State is the `%Ramal.Branch{}`. It owns the overlay and the
   log; every write inside the branch is a `GenServer.call` to it, every read asks it for the part of one resource's
   overlay that the read can use (ADR 0020). Reads of the overlay are frequent and small; if they become a bottleneck, the server publishes the
@@ -332,6 +335,13 @@ backend reads `:repo` from it). Two implementations:
   ADR 0021). `mix ramal.gen.migration` writes the migrations that are missing into the host's repo. Requires AshPostgres
   (or at least Ecto SQL); the module compiles only when it is present.
 
+A cluster (`Ramal.Supervisor` `cluster: true`, ADR 0039) names branch processes with `:global` (Ramal.Cluster, the `:via`
+module and the resolver that keeps the process with the higher epoch) and needs the optional `claim(id, config)`: it
+increments the branch's `epoch` and returns the stored branch carrying it. `put` and `mark_merged` of a branch that has an
+epoch are conditional on it and return `:fenced` otherwise; the process then emits `[:ramal, :branch, :fenced]` and stops.
+The epoch is the `Ramal.Branch` field `epoch` (`nil` without a cluster), the `epoch` column of `ramal_branches`, and is
+never part of `state`. `verification/tla/Cluster.tla` models it.
+
 Serialization is `Ramal.Storage.Codec`, a pure module any text-based backend can use. The branch columns hold `id`,
 `domain`, `name` and `status`; `state` holds the overlay (`resource`, `key`, `op`, `record`), the base (`resource`,
 `key`, `fingerprint`, `snapshot`), the log, the metadata and `inserted_at`. A record is `attrs` (each attribute dumped
@@ -526,3 +536,4 @@ action (ADR 0016).
 | 31 | A paginated read of a resource the overlay touches reads the whole patched list, cuts the page in Elixir and gives Ash the rows with `set_result` and the count with `full_count` | The database cannot page rows it does not have, and Ash fixes `more?` and `count` from the database before any hook after the data layer can speak. The cost is a read of every matching row per page. [ADR 0030](adr/0030-pages-cut-from-the-patched-list.md) |
 | 32 | A captured write is held under its action's process until the action ends: merges and proposals wait, forks leave it out, other writers of the row get `:row_busy`, a dead writer is undone; a process that died without `terminate/2` is not reloaded from storage | The TLA+ model (`verification/tla`) found merges, forks and proposals taking writes of actions that then failed, overlay and log diverging, and a killed process reloaded behind its own writes. [ADR 0033](adr/0033-running-actions-hold-their-writes.md) |
 | 33 | The merge's transaction stores the branch as merged and refuses a branch stored so; a branch process whose merger died asks the storage before releasing the claim; Postgres never stores a merged row back as open | A merge whose process died after the commit, or whose node restarted before the persist, left the branch open and mergeable a second time (TLA+ model, #143). [ADR 0035](adr/0035-merged-status-in-the-merge-transaction.md) |
+| 34 | With `cluster: true` branch processes are named with `:global`, every load takes the next epoch from the storage and every save is conditional on it; a refused process emits `:fenced` and stops; `:global` keeps the higher epoch when split nodes meet | Two nodes sharing Postgres could each hold a branch and the later save overwrote the earlier one's writes. The database, not the network, decides who may write. Marks and telemetry stay per node. [ADR 0039](adr/0039-branches-in-a-cluster.md) |

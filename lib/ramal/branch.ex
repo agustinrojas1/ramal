@@ -17,6 +17,8 @@ defmodule Ramal.Branch do
     interprets it: `Ramal.list/2` can filter by it (ADR 0018) and nothing else reads it
   * `tenant` - the one tenant the branch works in, `nil` unless given at `branch/2` (ADR 0034). A fork keeps it
   * `proposal` - `nil` until `Ramal.propose/2`; then `t:proposal/0`
+  * `epoch` - the fencing token of a branch held by a process of a cluster (ADR 0039): the storage's epoch for the branch
+    when the process loaded it, `nil` otherwise. Storage never writes it into `state`, and a fork starts without one
 
   Nothing here touches a process or storage, so it is tested with plain data.
 
@@ -89,7 +91,8 @@ defmodule Ramal.Branch do
           metadata: map,
           owner: term,
           tenant: term,
-          proposal: proposal | nil
+          proposal: proposal | nil,
+          epoch: non_neg_integer | nil
         }
 
   # `inspect/1` shows the branch's identity and nothing it holds. The log keeps the raw input of every captured action
@@ -110,7 +113,8 @@ defmodule Ramal.Branch do
     metadata: %{},
     owner: nil,
     tenant: nil,
-    proposal: nil
+    proposal: nil,
+    epoch: nil
   ]
 
   @doc """
@@ -454,7 +458,8 @@ defmodule Ramal.Branch do
         name: Keyword.get(opts, :name, parent.name),
         inserted_at: DateTime.utc_now(),
         metadata: metadata,
-        owner: Keyword.get(opts, :owner, parent.owner)
+        owner: Keyword.get(opts, :owner, parent.owner),
+        epoch: nil
     }
   end
 

@@ -95,8 +95,11 @@ Both hooks do nothing when no branch is active, and a test per hook proves it. T
 ## Formally verified
 
 Merging is the step that must never be wrong, so the rules behind it are checked by machine, not only by tests.
-[`verification/`](https://github.com/agustinrojas1/ramal/tree/main/verification) holds two models:
+[`verification/`](https://github.com/agustinrojas1/ramal/tree/main/verification) holds three models:
 
+- **A TLA+ model of a branch in a cluster**, checked over about a million states: three nodes sharing a database, network
+  splits and heals, a node crash. It proves that no write a caller was told succeeded is dropped without a trace, and that
+  only the process on the storage's epoch ever changes what the storage holds.
 - **A TLA+ model of the branch lifecycle**, checked with TLC over about 5.5 million states: writes, reads, fork, propose,
   approve, discard, merge, idle unload, killed processes and node restarts, interleaved the way the BEAM interleaves them.
   It proves that a merge commits at most once, that a merge never takes the write of an action that failed, and that what
@@ -144,7 +147,7 @@ children = [
 ]
 ```
 
-Run `mix ramal.gen.migration` for the `ramal_branches` table (run it again after upgrading from 0.3.0 for the owner column, then migrate). Without `storage:` branches live in ETS and are lost when
+Run `mix ramal.gen.migration` for the `ramal_branches` table (run it again after upgrading from 0.3.0 for the owner column, or before `cluster: true` for the epoch column, then migrate). Without `storage:` branches live in ETS and are lost when
 the supervisor stops, which is fine for development and tests.
 
 **3. Branch.**
@@ -285,7 +288,7 @@ and what is and is not tested.
 
 Ramal is deliberately small, and it says what it does not do:
 
-- **Not a database branch.** No schema changes inside a branch, no branch-local indexes, and a branch lives on one node. `Ramal.run/2` cannot be nested.
+- **Not a database branch.** No schema changes inside a branch and no branch-local indexes. `Ramal.run/2` cannot be nested.
 - **Aggregates loaded inside a branch are recomputed from the branch's rows,** which reads the related rows of each
   returned row where the database would sum them in one query. `first`, `list` and `custom` aggregates, `uniq?`, and
   an aggregate query with a limit keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
@@ -314,6 +317,10 @@ Ramal is deliberately small, and it says what it does not do:
 - **Merge is slower than a SQL statement,** because it replays each change through your action. That is the price of
   merging through your own rules.
 - **Writes since the last save are lost if the node crashes.** A branch is saved at the moments listed above, not on every write.
+- **A branch lives on one node unless you run a cluster** (`cluster: true`, Postgres storage). Then one process serves
+  it for every node and the storage refuses the saves of a process that lost the branch after a netsplit, so state is
+  never overwritten, but what that process held since its last save is lost and announced (`[:ramal, :branch, :fenced]`).
+  Telemetry, rate limits and the heap-kill marks stay per node. See `Ramal.Supervisor`.
 - **A few many-to-many cases stay unsupported:** `type: :append_and_remove` with a link to remove is refused, and a paged relationship load or a `through` path of several hops sees the base links.
 - **Authorization is yours.** Anyone who holds a branch id can act on it. Ramal records who decided and never checks.
 - **Pre-1.0.** The public API may change before 1.0; the changelog says when it does.

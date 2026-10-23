@@ -1,6 +1,6 @@
 name: Verification
 
-# The formal models under verification/: the TLA+ model of the branch lifecycle, checked with TLC, and the Bend proofs
+# The formal models under verification/: the TLA+ models of the branch lifecycle and of a branch in a cluster, checked with TLC, and the Bend proofs
 # of the overlay and merge rules. Runs when they or the code they model change.
 on:
   push:
@@ -13,6 +13,9 @@ on:
       - "lib/ramal/branch/server.ex"
       - "lib/ramal/capture.ex"
       - "lib/ramal/merge.ex"
+      - "lib/ramal/cluster.ex"
+      - "lib/ramal/storage.ex"
+      - "lib/ramal/storage/**"
       - ".github/workflows/verification.yml"
 
 jobs:
