@@ -89,8 +89,8 @@ defmodule Ramal do
          %{current: current, requested: id}
        )}
     else
-      with {:ok, branch} <- Server.get(id),
-           :ok <- ensure_open(branch) do
+      with {:ok, status} <- Server.status(id),
+           :ok <- ensure_open(id, status) do
         {:ok, collect_notifications(id, fun)}
       end
     end
@@ -267,7 +267,7 @@ defmodule Ramal do
   def fork(branch_or_id, opts \\ []) do
     with {:ok, config} <- Supervisor.config(),
          {:ok, parent} <- Server.get(id_of(branch_or_id)),
-         :ok <- ensure_open(parent),
+         :ok <- ensure_open(parent.id, parent.status),
          :ok <- Limits.check(parent.domain, :fork, config),
          fork = Branch.fork(parent, opts),
          :ok <- config.storage.put(fork, config.storage_config),
@@ -563,9 +563,9 @@ defmodule Ramal do
   defp id_of(%Branch{id: id}), do: id
   defp id_of(id) when is_binary(id), do: id
 
-  defp ensure_open(%Branch{status: :open}), do: :ok
+  defp ensure_open(_id, :open), do: :ok
 
-  defp ensure_open(%Branch{id: id, status: status}) do
+  defp ensure_open(id, status) do
     {:error,
      Error.new(:not_open, "branch #{inspect(id)} is #{status}, not open", %{
        id: id,

@@ -21,6 +21,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- `Ramal.run/2` asks the branch process for its status instead of fetching the whole branch, so a run no longer copies the overlay, log and base to the caller. It cost 1.6 ms at 1,000 overlay rows on every call, and a get-and-update in a branch with that overlay is 1.9 times faster (`bench/`, same run setup).
 - The READMEs of `ramal` and `ramal_live` are rewritten for a newcomer: what Ramal does, why, what to build with it, a quickstart, the limits, and what the inspector shows. All links and images are absolute so Hex renders them.
 - The READMEs show a screenshot of the inspector running the farm demo, and the `ramal_live` README an animation of the columns filling in (`assets/inspector.png`, `assets/inspector.gif`), instead of saying there is none.
 - The install snippets in the READMEs and the `RamalLive` module doc point at Hex (`{:ramal, "~> 0.2.0"}`, `{:ramal_live, "~> 0.2.0"}`), with Hex and HexDocs badges.
