@@ -71,13 +71,12 @@ test decides whether it happens.
 - **Merge refuses a stale branch.** If a row the branch read changed in the database, `merge/2` returns
   `{:error, %Ramal.Error{reason: :stale, details: %{rows: rows}}}` and writes nothing. Re-do the work in a new branch, or
   pass `on_stale: :ignore` when you know better. A fork shares its parent's base, so merging one makes its siblings stale.
-- **Bulk actions are refused** inside a branch (`:bulk_unsupported`). Loop over single-row actions instead.
+- **Bulk actions run record by record** inside a branch, each captured as its own action. A bulk update or destroy of a
+  query needs `strategy: [:atomic, :stream]`: the atomic strategies cannot run in a branch.
 - **Upserts work** when the action has `upsert? true` or `upsert?: true` goes to `Ash.Changeset.for_create/4`: the row is
   looked up in the branch's view and updated or created. An `upsert_condition` is refused (`:upsert_unsupported`), and
   `upsert?: true` passed only to `Ash.create/2` acts as a plain create.
 - **A branch works in one tenant**: `Ramal.branch(domain, tenant: tenant)`. A multitenant resource used with another tenant is refused, and so is any tenant in a branch that has none.
-- **`type: :append_and_remove` with a link to remove** in `manage_relationship` is refused as a bulk action. Use
-  `:append` and `:remove` in two calls.
 - **A data layer that cannot roll back** (`Ash.DataLayer.Ets`) keeps the writes of a replay that failed halfway: the
   staleness check runs first, but a later `:merge_failed` lists `details.not_rolled_back`. Use Postgres where it matters.
 - **Notifications are dropped** for writes in a branch unless the resource has `ramal do notify_in_branch? true end`. They
