@@ -48,7 +48,8 @@ defmodule Ramal.DocsTest do
              "Ramal.Storage.ETS",
              "Ramal.Storage.Postgres",
              "Ramal.Supervisor",
-             "Ramal.Telemetry"
+             "Ramal.Telemetry",
+             "Ramal.Tools"
            ]
   end
 

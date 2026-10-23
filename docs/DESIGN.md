@@ -191,6 +191,9 @@ This is the section that decides correctness. In a read action's preparation, wh
 
 @spec current() :: Ramal.Branch.t() | nil
 
+@spec context(branch | id) :: map
+# the Ash context that puts one read or write in the branch: `Ash.read!(Herd, context: Ramal.context(branch))` (ADR 0019)
+
 @spec fork(branch | id, keyword) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
 # the fork is a new branch with a copy of overlay, log and fingerprints; metadata.forked_from = parent id
 
@@ -222,6 +225,22 @@ This is the section that decides correctness. In a read action's preparation, wh
 `:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:upsert_unsupported`, `:branch_too_large`,
 `:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`, `:merge_failed`,
 `:multitenancy_unsupported`.
+
+### 5.1 Agent tools (ADR 0019)
+
+`Ramal.Tools` gives an LLM agent the branch calls as tools, with no dependency on an AI library:
+
+```elixir
+@spec definitions(keyword) :: [%{name: String.t(), description: String.t(), input_schema: map}]
+@spec call(String.t(), map, keyword) :: {:ok, map} | {:error, String.t()}
+# opts: domain (required), owner, proposed_by
+```
+
+The tools are `ramal_open_branch`, `ramal_list_branches`, `ramal_fork_branch`, `ramal_branch_diff`, `ramal_propose_branch`
+and `ramal_discard_branch`. `merge/2`, `approve/2` and `reject/2` are left out on purpose: an agent proposes, a person
+decides. The options belong to the host: a branch of another domain or owner is reported as not found, whatever id the
+model passes. The agent's own reads and writes are the host's tools, run in the branch with `run/2` or with
+`context: Ramal.context(id)`. The guide is `docs/agents.md`.
 
 ## 6. Persistence
 
@@ -413,3 +432,4 @@ action (ADR 0016).
 | 21 | The inspector is a separate project whose router macro expands to one `live` route in the host's own `live_session`; options travel as route metadata; a supervised broadcaster turns telemetry into PubSub messages naming a branch, and the page re-reads only that branch | A `live_session` of its own would need its own root layout, socket and JavaScript, which is an asset pipeline; telemetry is node-local, so a handler attached on first page view would miss events. [ADR 0015](adr/0015-inspector-mounting.md) |
 | 22 | `ramal_inspector` requires `:actor`; `Ramal.branch/2` and `Ramal.fork/2` can be limited per domain by `:max_active_branches` and `:branch_rate` of `Ramal.Supervisor`, both off by default | A page that acts for nobody lets anyone who reaches the route merge as no one, and an unlimited fork is a process and a row per call. The limits stay off so no host changes behaviour by upgrading. [ADR 0016](adr/0016-security-defaults.md) |
 | 23 | A branch has an optional `owner`, stored in the state JSON; `Ramal.list/2` takes `owner:` and `ramal_inspector` an `:owner` function, both off by default; an owner filters, it does not authorize | A host serving several users otherwise keeps its own id-to-user table to show each person their branches. A column would need a migration for hosts that do not scope. [ADR 0018](adr/0018-branch-owner.md) |
+| 24 | `Ramal.context/1` makes the shared context public; `Ramal.Tools` offers six branch tools as data and one `call/3`, without merge, approve or reject, scoped by host options; no dependency on `ash_ai` | Tool servers call Ash with `context:` and cannot use `run/2`; an agent proposes and a person decides; the roadmap rules out a dependency on an agent framework. [ADR 0019](adr/0019-agent-tools.md) |

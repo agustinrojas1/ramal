@@ -27,9 +27,12 @@ lib/ramal/merge.ex           staleness check and replay
 lib/ramal/merge/result.ex    the Result struct that merge returns
 lib/ramal/limits.ex          the optional per-domain limits on creating branches and forks
 lib/ramal/telemetry.ex       event names and helpers
+lib/ramal/tools.ex           the branch tools for an LLM agent: definitions and call/3, no merge or approve (ADR 0019)
 lib/mix/tasks/               ramal.install, ramal.gen.migration
 test/support/farm/           the test domain (Paddock, Herd, Move) and its repo
-docs/                        DESIGN.md, ROADMAP.md, ADRs under docs/adr/
+docs/                        DESIGN.md, ROADMAP.md, agents.md (the guide for AI agents), ADRs under docs/adr/
+usage-rules.md               rules for coding agents that use Ramal, in the `usage_rules` format (ships in the Hex package)
+usage-rules/skills/ramal/    the skill for those agents (ships in the Hex package)
 bench/                       a separate Mix project, never a dependency of the library
 ramal_live/                  a separate Mix project, the LiveView inspector; depends on ramal, never the other way round
 ```
