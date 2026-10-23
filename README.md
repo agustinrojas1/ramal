@@ -97,7 +97,7 @@ Both hooks do nothing when no branch is active, and a test per hook proves it. T
 Merging is the step that must never be wrong, so the rules behind it are checked by machine, not only by tests.
 [`verification/`](https://github.com/agustinrojas1/ramal/tree/main/verification) holds two models:
 
-- **A TLA+ model of the branch lifecycle**, checked with TLC over about 5.5 million states: writes, reads, fork, propose,
+- **A TLA+ model of the branch lifecycle**, checked with TLC over about 5.5 million states (and 2.6 million more for durable branches): writes, reads, fork, propose,
   approve, discard, merge, idle unload, killed processes and node restarts, interleaved the way the BEAM interleaves them.
   It proves that a merge commits at most once, that a merge never takes the write of an action that failed, and that what
   reads see is what the merge writes.
@@ -144,7 +144,7 @@ children = [
 ]
 ```
 
-Run `mix ramal.gen.migration` for the `ramal_branches` table (run it again after upgrading from 0.3.0 for the owner column, then migrate). Without `storage:` branches live in ETS and are lost when
+Run `mix ramal.gen.migration` for the `ramal_branches` table (run it again after upgrading for the columns and the table of the write log that are missing, then migrate). Without `storage:` branches live in ETS and are lost when
 the supervisor stops, which is fine for development and tests.
 
 **3. Branch.**
@@ -267,7 +267,7 @@ and what is and is not tested.
 
 - **Real actions inside a branch.** Validations, policies, hooks, defaults and managed relationships run as they do outside.
 - **Fork, diff, merge, discard** as ordinary function calls, plus **proposals** with a recorded proposer and decider.
-- **Persistent.** With `Ramal.Storage.Postgres` a branch is saved when it is created, proposed, discarded, unloaded or when the supervisor shuts down, so it survives restarts; idle branches unload from memory and come back on demand.
+- **Persistent.** With `Ramal.Storage.Postgres` a branch is saved when it is created, proposed, discarded, unloaded or when the supervisor shuts down, so it survives restarts; idle branches unload from memory and come back on demand. With `durable: true` the writes of every action that ended are stored before the action returns, so a crash of the node loses none of them.
 - **Staleness detection** at merge, with a choice of what to do about it.
 - **Exact aggregates** for a branch without scanning the table, and loaded, filtered and sorted aggregates that agree with the branch.
 - **Pages, prepared queries and module calculations** that see the branch.
@@ -313,7 +313,7 @@ Ramal is deliberately small, and it says what it does not do:
   analytics table: Ramal is meant for OLTP-sized working sets.
 - **Merge is slower than a SQL statement,** because it replays each change through your action. That is the price of
   merging through your own rules.
-- **Writes since the last save are lost if the node crashes.** A branch is saved at the moments listed above, not on every write.
+- **Writes since the last save are lost if the node crashes,** unless the branch is durable (`Ramal.branch(domain, durable: true)`, or `durable: true` on `Ramal.Supervisor`). A durable branch appends what each action wrote to a write log in the storage before the action returns; that is one storage write per action (1.1 to 1.7 ms with Postgres on the same host, [measured](https://github.com/agustinrojas1/ramal/blob/main/bench/README.md#durable-branches)), an action whose append fails fails with `:storage`, and the writes of an action that has not ended are never stored. On Postgres the action's own transaction holds a connection while the log is written over another, so the pool needs room for both (or give the storage a repo of its own), and the SQL sandbox, which shares one connection, cannot do it: test durable branches with the ETS storage. The fingerprints of rows the branch read and did not write since its last save are not in the log. A branch that is not durable is saved at the moments listed above, not on every write.
 - **A few many-to-many cases stay unsupported:** `type: :append_and_remove` with a link to remove is refused, and a `through` path of several hops sees the base rows of its intermediate resources.
 - **Authorization is yours.** Anyone who holds a branch id can act on it. Ramal records who decided and never checks.
 - **Pre-1.0.** The public API may change before 1.0; the changelog says when it does.

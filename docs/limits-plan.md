@@ -193,6 +193,9 @@ range.
 
 ## 4. Writes lost on a node crash (opt-in durability)
 
+**Done** in ADR 0048 (`durable: true`). Two things differ from the plan below: `append/4` and `writes_after/2` take the
+branch and not its id (the cluster epoch needs it), and a fork keeps its parent's flag.
+
 **Root cause.** The overlay and log live in the branch process. They are persisted on create, propose, reject, merge,
 discard, idle unload and supervisor shutdown (ADR 0003). A `kill -9` or node crash loses everything in between.
 
