@@ -68,6 +68,7 @@ Done; released in 0.3.0.
 - 0.1.0: Core.
 - 0.2.0: Proposals and hardening, the Inspector and the Benchmark.
 - 0.3.0: Agent tooling, branch owners, the faster read, merge, aggregate and codec paths ([ADR 0020](adr/0020-read-selects-overlay.md)), and the fixes listed in `CHANGELOG.md`.
+- 0.4.0: The `owner` column ([ADR 0021](adr/0021-owner-column.md)), the compact stored state ([ADR 0022](adr/0022-compact-state.md)), less memory per branch, faster fork and diff, the demo and Livebook tour, and fixes to calculations and the prefilter. Upgrade notes are in `CHANGELOG.md`.
 
 ## 1.0
 

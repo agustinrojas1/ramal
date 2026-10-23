@@ -6,7 +6,7 @@
 # Read demo/README.md first if you want to know what to expect. This file is meant to be read next to the output: every
 # chapter prints the line it starts on.
 #
-# Ramal comes from Hex (`~> 0.3.0`), the same package your app would install. If that version is not published yet and you run
+# Ramal comes from Hex (`~> 0.4.0`), the same package your app would install. If that version is not published yet and you run
 # this from a checkout, the checkout is used instead. Set RAMAL_DEMO_SOURCE=path to use the checkout on purpose. The database
 # is `ramal_demo` on the Postgres above; its three tables are dropped and recreated on every run, and nothing else is touched.
 
@@ -40,11 +40,11 @@ case System.get_env("RAMAL_DEMO_SOURCE", "hex") do
 
   "hex" ->
     try do
-      install.({:ramal, "~> 0.3.0"})
+      install.({:ramal, "~> 0.4.0"})
     rescue
       error in Mix.Error ->
         if in_checkout? do
-          IO.puts("ramal ~> 0.3.0 is not on Hex yet (#{Exception.message(error)}); using the checkout at #{checkout}")
+          IO.puts("ramal ~> 0.4.0 is not on Hex yet (#{Exception.message(error)}); using the checkout at #{checkout}")
           install.(from_checkout)
         else
           reraise error, __STACKTRACE__
