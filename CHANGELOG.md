@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - **Upserts work inside a branch.** An upsert action (`upsert? true`, or `upsert?: true` given to `Ash.Changeset.for_create/4`) looks its row up by the upsert identity in the branch's view: a row of the base or one the branch created is updated (with the action's `upsert_fields`, or the attributes the call set, and the update defaults), and with none found the row is created. The merge replays the entry as an upsert with the identity and fields it had, so a row that appeared in the base meanwhile is updated rather than duplicated. An `upsert_condition` is still refused with `:upsert_unsupported`, and `upsert?: true` passed only to `Ash.create/2` at call time still acts as a create. ADR 0038.
 
+### Fixed
+
+- A merge can replay a top-level update or destroy of a row that a hook created in the same branch (the `Move` an action's `after_action` hook creates, then updated by key). The replay gives the hook's creates the keys they had in the branch. Log entries carry a `root` that groups an action with the writes of its hooks. ADR 0039.
+- A merge sets the attributes a caller changed on a changeset after `for_create` or `for_update` (`Ash.Changeset.change_attribute/3`), which were not in the action's input and so were lost. They are recorded with the entry as `forced`. What the action's own hooks set is not recorded, so a hook that stamps the time still stamps the merge's time. ADR 0039.
+
 ### Changed
 
 - Docs: `bench/README.md` and the README's benchmark figures come from a rerun of the full benchmark and `bench.memory` on 0.6.1, with the noise between two runs stated; the raw samples are in `bench/results/published/`.

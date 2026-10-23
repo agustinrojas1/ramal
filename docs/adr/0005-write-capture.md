@@ -31,7 +31,7 @@ Design section 4.2 planned to capture writes in `around_action`, to fall back fr
 - **Nested writes:** an action called from a hook of a captured action is logged with `nested?: true`; replaying the
   outer action runs the hook again, so merge skips nested entries.
 - **Log entry:** `{action_type, resource, action_name, params, actor, [key:, tenant:, nested?:], at}` with
-  `changeset.params`; changes made with `change_attribute/3` outside the action's inputs are not replayed.
+  `changeset.params`; changes made with `change_attribute/3` outside the action's inputs are not replayed (changed by [ADR 0039](0039-replay-keeps-hook-keys-and-caller-attributes.md): they are recorded as `forced`).
 - **Errors:** `Ramal.Error` implements `Splode.Error` (class `:invalid`), because Ash turns any other exception added
   to a changeset into a string and the `reason` is lost. `Ramal.Error.find/1` extracts it from an Ash error. `:splode`
   is declared as a dependency; it was already in the tree through Ash.
