@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `first` and `list` aggregates, `uniq?` on `count` and `list`, and `include_nil?` are now computed over the branch when a read loads them, instead of keeping the database's value. The field of a `first`, `list` or `count` can be a calculation. Only `custom` aggregates, join filters and custom read actions still emit `[:ramal, :read, :unpatched_aggregate]`. `Ramal.aggregate/4` takes `:first` and `:list` (with `uniq?:` and `include_nil?:`), and `Ramal.Aggregate.compute/5` takes the same options ([ADR 0037](docs/adr/0037-first-list-and-uniq-aggregates.md)).
+
 ## [0.6.1] - 2026-10-23
 
 Documentation only: the README, the design document and the other guides on Hex and HexDocs now describe 0.6. No code changes.

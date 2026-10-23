@@ -20,7 +20,7 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :limit, :reached]` | `branch/2` or `fork/2` was refused by a limit of `Ramal.Supervisor` (metadata: `domain`, `operation`, `limit`) |
   | `[:ramal, :merge, :start \| :stop \| :exception]` | a span around `Ramal.merge/2`; `stop` adds `result` (`:ok` or `:error`) and `replayed`, or `reason` |
   | `[:ramal, :read, :patch]` | a read inside a branch was patched with the overlay (measurements: `base_rows`, `overlay_rows`, `result_rows`, `duration`) |
-  | `[:ramal, :read, :unpatched_aggregate]` | a read inside a branch selected an aggregate Ramal cannot compute over the overlay (`first`, `list`, `custom`, ...), so it has the database's value |
+  | `[:ramal, :read, :unpatched_aggregate]` | a read inside a branch selected an aggregate Ramal cannot compute over the overlay (`custom`, a join filter, a custom read action, ...), so it has the database's value |
   | `[:ramal, :write, :capture]` | a create, update or destroy inside a branch was put in the overlay instead of the data layer (metadata: `action_type`, `resource`, `action`, `nested?`) |
 
   ## Example

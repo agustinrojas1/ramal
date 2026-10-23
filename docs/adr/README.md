@@ -39,3 +39,4 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0033](0033-running-actions-hold-their-writes.md) | A running action's writes are its own until it ends | accepted |
 | [0034](0034-one-tenant-per-branch.md) | One tenant per branch | accepted |
 | [0035](0035-merged-status-in-the-merge-transaction.md) | The merge's transaction stores the merged status | accepted |
+| [0037](0037-first-list-and-uniq-aggregates.md) | `first`, `list` and `uniq?` aggregates are computed over the branch | accepted |

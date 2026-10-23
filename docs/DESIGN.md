@@ -18,7 +18,7 @@ discard them. A branch must cost roughly what a process and a map cost, so thous
 
 - Schema changes inside a branch.
 - Branch-local indexes, or any promise about query plans.
-- Data-layer aggregates and calculations that Ramal cannot recompute over a branch (`first`, `list`, `custom`, `uniq?`, and aggregate queries with a limit keep the database's value, with a telemetry event; section 4.1 point 4 says what is recomputed).
+- Data-layer aggregates and calculations that Ramal cannot recompute over a branch (`custom` aggregates, join filters and custom read actions keep the database's value, with a telemetry event; section 4.1 point 4 says what is recomputed).
 - Bulk actions, upserts and database-generated keys inside a branch, and nested branches.
 - Multi-node branches. A branch lives on one node; persistence makes it movable, not distributed.
 - A UI. The inspector is a separate package (`ramal_live/`, section 12).
@@ -144,11 +144,13 @@ This is the section that decides correctness. In a read action's preparation, wh
    (ADR 0031): inside a branch it puts the branch's attribute values on each record that has an overlay entry and loads
    with `reuse_values?: true`. A load inside a read (`Ash.Query.load/2`) is patched too; the test in
    `preparation_test.exs` pins the plain call, `Ramal.load/3` and both.
-4. **Aggregates and calculations:** an aggregate a read loads (`count`, `exists`, `sum`, `min`, `max`, `avg`, declared on the
+4. **Aggregates and calculations:** an aggregate a read loads (`count`, `exists`, `sum`, `min`, `max`, `avg`, `first`, `list`, declared on the
    resource or added to the query) is computed again after the patch from the related records read through the branch, for
    every row when the branch changed a resource on its path and for the rows the overlay supplied otherwise (ADR 0029).
-   `first`, `list` and `custom` aggregates, `uniq?`, a join filter, a custom read action, a field that is not an attribute
-   and an aggregate query with a limit, offset or distinct keep the database's value and emit
+   `first` and `list` take the field of the first and of every related row in the aggregate's sort, `uniq?` deduplicates a
+   `list` and counts distinct values in a `count`, `include_nil?` is honoured, and the field may be a calculation (ADR 0037).
+   `custom` aggregates, a join filter, a custom read action, a calculation field on `sum`, `min`, `max` or `avg`, and
+   a field that is neither keep the database's value and emit
    `[:ramal, :read, :unpatched_aggregate]`, so a host can detect it in tests. A filter or sort on an aggregate is judged on the branch's
    numbers (ADR 0032): the conjunct is taken out of the data-layer query when the branch changed a resource on the
    aggregate's path, as for a relationship (section 9), and the aggregates the filter or sort names are computed over the
@@ -277,7 +279,7 @@ This is the section that decides correctness. In a read action's preparation, wh
 # opts: decided_by, reason
 
 @spec aggregate(query | resource, kind, field | nil, keyword) :: {:ok, term} | {:error, Ash.Error.t()}
-# kind: :count | :exists | :sum | :min | :max | :avg, computed in Elixir over the rows a read returns in the branch
+# kind: :count | :exists | :sum | :min | :max | :avg | :first | :list, computed in Elixir over the rows a read returns in the branch
 
 @spec load(record | [record], load, keyword) :: {:ok, record | [record]} | {:error, Ash.Error.t()}
 # Ash.load/3 that follows the branch's foreign keys (ADR 0031)
@@ -520,3 +522,4 @@ action (ADR 0016).
 | 31 | A paginated read of a resource the overlay touches reads the whole patched list, cuts the page in Elixir and gives Ash the rows with `set_result` and the count with `full_count` | The database cannot page rows it does not have, and Ash fixes `more?` and `count` from the database before any hook after the data layer can speak. The cost is a read of every matching row per page. [ADR 0030](adr/0030-pages-cut-from-the-patched-list.md) |
 | 32 | A captured write is held under its action's process until the action ends: merges and proposals wait, forks leave it out, other writers of the row get `:row_busy`, a dead writer is undone; a process that died without `terminate/2` is not reloaded from storage | The TLA+ model (`verification/tla`) found merges, forks and proposals taking writes of actions that then failed, overlay and log diverging, and a killed process reloaded behind its own writes. [ADR 0033](adr/0033-running-actions-hold-their-writes.md) |
 | 33 | The merge's transaction stores the branch as merged and refuses a branch stored so; a branch process whose merger died asks the storage before releasing the claim; Postgres never stores a merged row back as open | A merge whose process died after the commit, or whose node restarted before the persist, left the branch open and mergeable a second time (TLA+ model, #143). [ADR 0035](adr/0035-merged-status-in-the-merge-transaction.md) |
+| 34 | `first`, `list`, `uniq?` and `include_nil?` aggregates, and a calculation as the field of a `first`, `list` or `count`, are computed over the branch like the other kinds | The related rows already arrive filtered and sorted by the aggregate's own query, so the kinds are a reduction over them; only `custom`, which is SQL, cannot be. [ADR 0037](adr/0037-first-list-and-uniq-aggregates.md) |
