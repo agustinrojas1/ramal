@@ -28,6 +28,14 @@
 (* stored snapshot with the log applied. Compact is the snapshot that      *)
 (* covers the log. DurableOnWrite appends on every write instead, which    *)
 (* TLC shows persists writes of actions that have not ended.               *)
+(*                                                                         *)
+(* An action makes up to MaxWrites writes (a bulk action, the hooks of an  *)
+(* action that write other rows, ADR 0036): they are held, taken back,     *)
+(* stored and replayed together, as the frame of Ramal.Capture and the     *)
+(* undos of Server.hold/3 do. A write inside an action can be taken back   *)
+(* on its own (Retract: a nested action failed and its caller went on).   *)
+(* Branch.undo/2 takes writes back newest first; FixUndoOrder off takes    *)
+(* them oldest first, which TLC shows corrupts the overlay.               *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -35,7 +43,8 @@ CONSTANTS
     Clients,        \* the processes that call Ramal
     Keys,           \* base rows
     Root, Fork,     \* a branch and the one fork the model lets it have
-    MaxActs,        \* actions (each makes one captured write)
+    MaxActs,        \* actions
+    MaxWrites,      \* captured writes one action makes (1: an action is one write)
     MaxExternal,    \* writes to the base from outside any branch
     MaxKills,       \* branch processes killed by max_heap_size
     FixPending,     \* the branch process knows which writes are of actions still running
@@ -44,7 +53,8 @@ CONSTANTS
     NodeCrashes,    \* the node restarts: every process and ETS table is lost, storage stays
     MergerCrashes,  \* the process running a merge dies after the commit, before finish_merge
     Durable,        \* branches are durable: the write log is appended when an action ends (ADR 0048)
-    DurableOnWrite  \* the bug: append on every write, so the log holds writes of actions that have not ended
+    DurableOnWrite, \* the bug: append on every write, so the log holds writes of actions that have not ended
+    FixUndoOrder    \* Branch.undo/2 takes writes back newest first, so a row written twice goes back to before both
 
 ASSUME Durable => FixPending   \* the log appends what the process knows the running actions hold
 
@@ -54,8 +64,8 @@ Branches == {Root, Fork}
 Acts == 1..MaxActs
 Failed == {"failed", "crashed"}
 
-Writes == [act : Acts, key : Keys, branch : Branches, setFp : BOOLEAN, prev : 0..MaxActs]
-NoWrite == [act |-> 1, key |-> CHOOSE k \in Keys : TRUE, branch |-> Root, setFp |-> FALSE, prev |-> 0]
+\* n numbers the writes of one action, so two writes of the same row by one action are different writes.
+Writes == [act : Acts, key : Keys, branch : Branches, setFp : BOOLEAN, prev : 0..MaxActs, n : 1..MaxWrites]
 
 VARIABLES
     db,          \* key -> version of the base row
@@ -89,26 +99,31 @@ EmptyOv == [k \in Keys |-> 0]
 Absent == [status |-> "absent", log |-> <<>>, fp |-> EmptyFp, ov |-> EmptyOv]
 DeadProc == [alive |-> FALSE, status |-> "absent", log |-> <<>>, fp |-> EmptyFp, ov |-> EmptyOv,
              claim |-> None, pending |-> {}]
-IdlePc == [op |-> "idle", b |-> Root, w |-> NoWrite, stage |-> "none", snap |-> <<>>, held |-> Absent,
+IdlePc == [op |-> "idle", b |-> Root, act |-> 0, ws |-> <<>>, stage |-> "none", snap |-> <<>>, held |-> Absent,
            ignore |-> FALSE, committed |-> FALSE, result |-> "none"]
 
 Stored(p) == [status |-> p.status, log |-> p.log, fp |-> p.fp, ov |-> p.ov]
 Loaded(s) == [alive |-> TRUE, status |-> s.status, log |-> s.log, fp |-> s.fp, ov |-> s.ov,
               claim |-> None, pending |-> {}]
 
-\* A delta is what Server.commit/1 appends for the action that ended: its write, and the fingerprint the branch holds
-\* for the row then (Branch.delta/2 takes the overlay entry and the base row of every row the action wrote).
-RECURSIVE ApplyWal(_, _)
-ApplyWal(p, ds) ==
-    IF ds = <<>> THEN p
-    ELSE LET d == Head(ds)
-         IN ApplyWal([p EXCEPT !.log = Append(@, d.w),
-                               !.ov = [@ EXCEPT ![d.w.key] = d.w.act],
-                               !.fp = IF @[d.w.key] = NoFp THEN [@ EXCEPT ![d.w.key] = d.fp] ELSE @],
-                     Tail(ds))
-DeltaWrites(b) == {wal[b][i].w : i \in DOMAIN wal[b]}
+\* A delta is what Server.commit/1 appends for the action that ended: its writes in order, and the fingerprint the branch
+\* holds for each row then (Branch.delta/2 takes the overlay entry and the base row of every row the action wrote).
+\* The part of a branch's fingerprints a delta carries: those of the rows its writes touched.
+FpOf(fp, ws) == [k \in {w.key : w \in LogSet(ws)} |-> fp[k]]
 
-\* Storage.fetch/2 and Storage.writes_after/2, applied in order (Branch.apply_delta/2).
+RECURSIVE ApplyWrites(_, _, _)
+ApplyWrites(p, ws, fp) ==
+    IF ws = <<>> THEN p
+    ELSE LET w == Head(ws)
+         IN ApplyWrites([p EXCEPT !.log = Append(@, w),
+                                  !.ov = [@ EXCEPT ![w.key] = w.act],
+                                  !.fp = IF @[w.key] = NoFp THEN [@ EXCEPT ![w.key] = fp[w.key]] ELSE @],
+                        Tail(ws), fp)
+RECURSIVE ApplyWal(_, _)
+ApplyWal(p, ds) == IF ds = <<>> THEN p ELSE ApplyWal(ApplyWrites(p, Head(ds).ws, Head(ds).fp), Tail(ds))
+DeltaWrites(b) == UNION {LogSet(wal[b][i].ws) : i \in DOMAIN wal[b]}
+
+\* Storage.fetch/2 and Storage.writes_after/2, applied in order (Branch.apply_delta/3).
 Recovered(b) == IF Durable THEN ApplyWal(Loaded(store[b]), wal[b]) ELSE Loaded(store[b])
 Cleared(b) == [wal EXCEPT ![b] = <<>>]   \* Storage.put/2 of a snapshot deletes the deltas it covers
 
@@ -117,8 +132,13 @@ Undo(p, w) == [p EXCEPT !.log = Without(@, w),
                         !.ov = [@ EXCEPT ![w.key] = w.prev],
                         !.fp = IF w.setFp THEN [@ EXCEPT ![w.key] = NoFp] ELSE @,
                         !.pending = @ \ {w}]
-RECURSIVE UndoAll(_, _)
-UndoAll(p, ws) == IF ws = {} THEN p ELSE LET w == CHOOSE x \in ws : TRUE IN UndoAll(Undo(p, w), ws \ {w})
+\* Branch.undo/2 takes back the writes it is given in order, and the process holds them newest first (Server.hold/3), so a
+\* row an action wrote twice goes back to the entry from before both. Without FixUndoOrder they go back oldest first.
+RECURSIVE UndoSeq(_, _)
+UndoSeq(p, s) == IF s = <<>> THEN p ELSE UndoSeq(Undo(p, Head(s)), Tail(s))
+Rev(s) == [i \in 1..Len(s) |-> s[Len(s) + 1 - i]]
+UndoAll(p, ws) == LET oldestFirst == SelectSeq(p.log, LAMBDA x : x \in ws)
+                  IN UndoSeq(p, IF FixUndoOrder THEN Rev(oldestFirst) ELSE oldestFirst)
 
 \* Server.usable?/1: open and not claimed by a merge.
 Usable(b) == proc[b].alive /\ proc[b].status = "open" /\ proc[b].claim = None
@@ -190,7 +210,7 @@ Down(b) ==
     /\ FixPending /\ proc[b].alive
     /\ \E w \in proc[b].pending :
          /\ actState[w.act] = "crashed"
-         /\ proc' = [proc EXCEPT ![b] = Undo(@, w)]
+         /\ proc' = [proc EXCEPT ![b] = UndoAll(@, {x \in proc[b].pending : x.act = w.act})]
     /\ UNCHANGED <<db, store, marker, tooLarge, watcherDue, pc, actState, nextAct, externals, kills,
                    crashes, committed, replayed, forkCopy, acked, wal>>
 
@@ -229,57 +249,91 @@ Read(c, b, k) ==
     /\ UNCHANGED <<db, store, marker, tooLarge, watcherDue, pc, actState, nextAct, externals, kills,
                    crashes, committed, replayed, forkCopy, acked, wal>>
 
-\* Ramal.Capture.write/3: an action's before_action hook puts its write in the branch (Server.write/2).
+\* Ramal.Capture.write/4: an action's before_action hook puts its write in the branch (Server.capture/3).
 \* With FixPending the process refuses a write to a row another running action wrote, as a row lock would.
-Locked(b, k) == FixPending /\ \E w \in proc[b].pending : w.key = k
+Locked(b, k, a) == FixPending /\ \E w \in proc[b].pending : w.key = k /\ w.act # a
+Written(b, k, a, n) == [act |-> a, key |-> k, branch |-> b, setFp |-> proc[b].fp[k] = NoFp, prev |-> proc[b].ov[k], n |-> n]
+WithWrite(b, w) == [proc EXCEPT ![b].log = Append(@, w),
+                                ![b].ov = [@ EXCEPT ![w.key] = w.act],
+                                ![b].fp = IF w.setFp THEN [@ EXCEPT ![w.key] = db[w.key]] ELSE @,
+                                ![b].pending = IF FixPending THEN @ \union {w} ELSE @]
 Write(c, b, k) ==
-    /\ pc[c].op = "idle" /\ nextAct < MaxActs /\ Usable(b) /\ ~Locked(b, k)
+    /\ pc[c].op = "idle" /\ nextAct < MaxActs /\ Usable(b) /\ ~Locked(b, k, nextAct + 1)
     /\ LET a == nextAct + 1
-           w == [act |-> a, key |-> k, branch |-> b, setFp |-> proc[b].fp[k] = NoFp, prev |-> proc[b].ov[k]]
+           w == Written(b, k, a, 1)
        IN /\ nextAct' = a
           /\ actState' = [actState EXCEPT ![a] = "running"]
-          /\ proc' = [proc EXCEPT ![b].log = Append(@, w),
-                                  ![b].ov = [@ EXCEPT ![k] = a],
-                                  ![b].fp = IF w.setFp THEN [@ EXCEPT ![k] = db[k]] ELSE @,
-                                  ![b].pending = IF FixPending THEN @ \union {w} ELSE @]
-          /\ pc' = [pc EXCEPT ![c] = [IdlePc EXCEPT !.op = "act", !.b = b, !.w = w]]
+          /\ proc' = WithWrite(b, w)
+          /\ pc' = [pc EXCEPT ![c] = [IdlePc EXCEPT !.op = "act", !.b = b, !.act = a, !.ws = <<w>>]]
           \* The bug: persisting on the write puts a write the action may still take back into the log.
           /\ wal' = IF Durable /\ DurableOnWrite
-                      THEN [wal EXCEPT ![b] = Append(@, [w |-> w, fp |-> IF w.setFp THEN db[k] ELSE proc[b].fp[k]])]
+                      THEN [wal EXCEPT ![b] = Append(@, [ws |-> <<w>>,
+                                                        fp |-> FpOf(WithWrite(b, w)[b].fp, <<w>>)])]
                       ELSE wal
     /\ UNCHANGED Others
+
+\* The running action writes another row, in its own hook or in the next record of a bulk action (ADR 0036). The frame
+\* of Ramal.Capture holds the undos of all the action's writes under the calling process, which one `hold/3` per write
+\* adds to; a row another running action holds is refused (:row_busy), one this action holds is not.
+WriteMore(c, k) ==
+    LET b == pc[c].b
+        a == pc[c].act
+    IN /\ pc[c].op = "act" /\ Len(pc[c].ws) < MaxWrites /\ Usable(b) /\ ~Locked(b, k, a)
+       /\ LET w == Written(b, k, a, Len(pc[c].ws) + 1)
+          IN /\ proc' = WithWrite(b, w)
+             /\ pc' = [pc EXCEPT ![c].ws = Append(@, w)]
+             /\ wal' = IF Durable /\ DurableOnWrite
+                         THEN [wal EXCEPT ![b] = Append(@, [ws |-> <<w>>,
+                                                           fp |-> FpOf(WithWrite(b, w)[b].fp, <<w>>)])]
+                         ELSE wal
+       /\ UNCHANGED <<db, store, marker, tooLarge, watcherDue, actState, nextAct, externals, kills, crashes,
+                      committed, replayed, forkCopy, acked>>
+
+\* An action nested in the running one (a hook's action, a record of a bulk action) fails and the outer action goes on:
+\* Capture.rollback/3 takes back the writes after its mark (Server.undo/2) and the frame keeps the earlier ones. The model
+\* takes back one write at a time, the newest first, which any such suffix is a run of.
+Retract(c) ==
+    LET b == pc[c].b
+        ws == pc[c].ws
+    IN /\ MaxWrites > 1 /\ FixPending
+       /\ pc[c].op = "act" /\ ws # <<>> /\ proc[b].alive /\ ws[Len(ws)] \in proc[b].pending
+       /\ proc' = [proc EXCEPT ![b] = Undo(@, ws[Len(ws)])]
+       /\ pc' = [pc EXCEPT ![c].ws = SubSeq(@, 1, Len(@) - 1)]
+       /\ UNCHANGED <<db, store, marker, tooLarge, watcherDue, actState, nextAct, externals, kills, crashes,
+                      committed, replayed, forkCopy, acked, wal>>
 
 \* The rest of the action (its after_action hooks) succeeds. With FixPending the caller tells the process.
 \* A durable branch is told with a call, Server.commit/1, which appends the action's delta to the write log before the
 \* action returns. A commit the storage refuses, or that finds the process gone, fails the action instead (Fail below,
-\* which undoes the write): the action is acknowledged only once its delta is stored.
+\* which undoes the writes): the action is acknowledged only once its delta is stored. The delta holds all the writes of
+\* the outermost action, in one append (Branch.delta/2); an action whose writes were all taken back appends nothing.
 Succeed(c) ==
     LET b == pc[c].b
-        w == pc[c].w
+        ws == pc[c].ws
     IN /\ pc[c].op = "act"
-       /\ Durable => (proc[b].alive /\ w \in proc[b].pending)
-       /\ actState' = [actState EXCEPT ![w.act] = "ok"]
+       /\ Durable => (ws # <<>> => (proc[b].alive /\ LogSet(ws) \subseteq proc[b].pending))
+       /\ actState' = [actState EXCEPT ![pc[c].act] = "ok"]
        /\ proc' = IF FixPending /\ proc[b].alive
-                    THEN [proc EXCEPT ![b].pending = @ \ {w}]
+                    THEN [proc EXCEPT ![b].pending = @ \ LogSet(ws)]
                     ELSE proc
-       /\ wal' = IF Durable /\ ~DurableOnWrite
-                   THEN [wal EXCEPT ![b] = Append(@, [w |-> w, fp |-> proc[b].fp[w.key]])]
+       /\ wal' = IF Durable /\ ~DurableOnWrite /\ ws # <<>>
+                   THEN [wal EXCEPT ![b] = Append(@, [ws |-> ws, fp |-> FpOf(proc[b].fp, ws)])]
                    ELSE wal
        /\ pc' = [pc EXCEPT ![c] = IdlePc]
-       /\ acked' = acked \union {w}
+       /\ acked' = acked \union LogSet(ws)
        /\ UNCHANGED <<db, store, marker, tooLarge, watcherDue, nextAct, externals, kills, crashes,
                       committed, replayed, forkCopy>>
 
-\* The action fails after its write: Capture.rollback/3 sends the undo. Without FixPending it goes through
-\* Server.update/2, which refuses it unless the branch is usable; the error is ignored.
+\* The action fails after its writes: Capture.rollback/3 sends the undo of the writes it still holds. Without FixPending
+\* it goes through Server.update/2, which refuses it unless the branch is usable; the error is ignored.
 Fail(c) ==
     LET b == pc[c].b
-        w == pc[c].w
+        ws == pc[c].ws
+        held == IF FixPending THEN LogSet(ws) \cap proc[b].pending
+                ELSE IF Usable(b) THEN LogSet(ws) \cap LogSet(proc[b].log) ELSE {}
     IN /\ pc[c].op = "act" /\ proc[b].alive
-       /\ actState' = [actState EXCEPT ![w.act] = "failed"]
-       /\ proc' = IF (FixPending /\ w \in proc[b].pending) \/ (~FixPending /\ Usable(b) /\ w \in LogSet(proc[b].log))
-                    THEN [proc EXCEPT ![b] = Undo(@, w)]
-                    ELSE proc
+       /\ actState' = [actState EXCEPT ![pc[c].act] = "failed"]
+       /\ proc' = [proc EXCEPT ![b] = UndoAll(@, held)]
        /\ pc' = [pc EXCEPT ![c] = IdlePc]
        /\ UNCHANGED <<db, store, marker, tooLarge, watcherDue, nextAct, externals, kills, crashes,
                       committed, replayed, forkCopy, acked, wal>>
@@ -287,7 +341,7 @@ Fail(c) ==
 \* The process running the action dies (a killed task, a crashed LiveView) before the action ends.
 Crash(c) ==
     /\ pc[c].op = "act"
-    /\ actState' = [actState EXCEPT ![pc[c].w.act] = "crashed"]
+    /\ actState' = [actState EXCEPT ![pc[c].act] = "crashed"]
     /\ pc' = [pc EXCEPT ![c] = IdlePc]
     /\ UNCHANGED <<db, store, proc, marker, tooLarge, watcherDue, nextAct, externals, kills, crashes,
                    committed, replayed, forkCopy, acked, wal>>
@@ -432,12 +486,13 @@ Next ==
     \/ NodeCrash
     \/ \E k \in Keys : External(k)
     \/ \E c \in Clients :
-         \/ Succeed(c) \/ Fail(c) \/ Crash(c) \/ ForkIt(c)
+         \/ Succeed(c) \/ Fail(c) \/ Crash(c) \/ Retract(c) \/ ForkIt(c)
          \/ Commit(c) \/ MarkRefused(c) \/ Abort(c) \/ Finish(c) \/ Forget(c) \/ MergerDies(c)
          \/ \E b \in Branches :
               \/ Propose(c, b) \/ Claim(c, b, "open") \/ Claim(c, b, "proposed")
               \/ Close(c, b, {"proposed"}, "rejected") \/ Close(c, b, {"open", "proposed"}, "discarded")
               \/ \E k \in Keys : Read(c, b, k) \/ Write(c, b, k)
+         \/ \E k \in Keys : WriteMore(c, k)
 
 Spec == Init /\ [][Next]_vars
 
@@ -497,6 +552,13 @@ RecoveredMatchesLog ==
 NoHeldPersisted ==
     Durable => \A b \in Branches : /\ (\A w \in DeltaWrites(b) : actState[w.act] = "ok")
                                     /\ (\A w \in LogSet(store[b].log) : actState[w.act] # "running")
+
+\* An action's writes go together: a fork, a merge and a stored branch (the snapshot with the write log applied) hold all the
+\* writes of an action that succeeded or none of them (ADR 0048: one delta per outermost action).
+Whole(S) == \A w1, w2 \in acked : (w1.act = w2.act /\ w1 \in S) => w2 \in S
+NoTornAction ==
+    /\ Whole(forkCopy)
+    /\ \A b \in Branches : Whole(replayed[b]) /\ Whole(LogSet(Recovered(b).log))
 
 \* A branch whose merge committed is never claimed again.
 NoClaimAfterCommit ==

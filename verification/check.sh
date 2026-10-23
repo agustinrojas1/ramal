@@ -34,6 +34,14 @@ echo "== TLC: MC-durable.cfg (durable branches, every property holds)"
 $tlc -config MC-durable.cfg MCRamal.tla > tlc.out 2>&1 || { tail -60 tlc.out; exit 1; }
 grep -E "^[0-9,]+ states generated|No error has been found" tlc.out
 
+echo "== TLC: MC-multi.cfg (actions that write several rows, one row, with the lifecycle; every property holds)"
+$tlc -config MC-multi.cfg MCRamal.tla > tlc.out 2>&1 || { tail -60 tlc.out; exit 1; }
+grep -E "^[0-9,]+ states generated|No error has been found" tlc.out
+
+echo "== TLC: MC-multi-rows.cfg (actions that write two rows, durable, no lifecycle; every property holds)"
+$tlc -config MC-multi-rows.cfg MCRamal.tla > tlc.out 2>&1 || { tail -60 tlc.out; exit 1; }
+grep -E "^[0-9,]+ states generated|No error has been found" tlc.out
+
 expect() {
   config=$1
   property=$2
@@ -53,6 +61,8 @@ expect bug-marker.cfg OneMerger
 expect bug-mark-node-crash.cfg NoClaimAfterCommit
 expect bug-mark-merger-crash.cfg NoClaimAfterCommit
 expect bug-durable-held.cfg NoHeldPersisted
+expect bug-undo-order.cfg OverlayMatchesLog
+expect bug-torn.cfg NoTornAction
 
 echo "== TLC: MCNested.cfg (a nested fork merging into its parent; every property holds)"
 $tlc -config MCNested.cfg MCNested.tla > tlc.out 2>&1 || { tail -60 tlc.out; exit 1; }
