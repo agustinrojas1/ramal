@@ -233,6 +233,143 @@ defmodule Ramal.BranchTest do
     end
   end
 
+  describe "a nested fork" do
+    defp entry(type, key),
+      do: {type, MyApp.Herd, type, %{}, nil, [key: key], ~U[2026-01-01 00:00:00Z]}
+
+    test "records what it held for a row the first time it wrote it, and keeps it" do
+      parent = %{
+        Branch.new(MyApp.Farm)
+        | overlay: %{{MyApp.Herd, 1} => {:updated, %{id: 1, head: 5}}}
+      }
+
+      child = Branch.fork(parent, nested: true)
+
+      {child, _} =
+        Branch.put_write(
+          child,
+          :updated,
+          {MyApp.Herd, 1},
+          %{id: 1, head: 6},
+          nil,
+          entry(:update, 1)
+        )
+
+      {child, _} =
+        Branch.put_write(
+          child,
+          :updated,
+          {MyApp.Herd, 1},
+          %{id: 1, head: 7},
+          nil,
+          entry(:update, 1)
+        )
+
+      {child, _} =
+        Branch.put_write(child, :created, {MyApp.Herd, 2}, %{id: 2}, nil, entry(:create, 2))
+
+      assert child.parent_seen == %{
+               {MyApp.Herd, 1} => :erlang.phash2({:updated, %{id: 1, head: 5}}),
+               {MyApp.Herd, 2} => :base
+             }
+    end
+
+    test "undo takes back what the write recorded, but not what a read had" do
+      child = Branch.fork(Branch.new(MyApp.Farm), nested: true)
+      child = Branch.see(child, [{MyApp.Herd, 1}])
+
+      {child, undo1} =
+        Branch.put_write(
+          child,
+          :updated,
+          {MyApp.Herd, 1},
+          %{id: 1},
+          %{fingerprint: 1, snapshot: %{id: 1}},
+          entry(:update, 1)
+        )
+
+      {child, undo2} =
+        Branch.put_write(child, :created, {MyApp.Herd, 2}, %{id: 2}, nil, entry(:create, 2))
+
+      assert Branch.undo(child, [undo2, undo1]).parent_seen == %{{MyApp.Herd, 1} => :base}
+    end
+
+    test "a branch with no parent records nothing" do
+      branch = Branch.see(Branch.new(MyApp.Farm), [{MyApp.Herd, 1}])
+
+      {branch, _} =
+        Branch.put_write(branch, :created, {MyApp.Herd, 2}, %{id: 2}, nil, entry(:create, 2))
+
+      assert branch.parent_seen == %{}
+    end
+
+    test "stale_against/2 names the rows the parent holds differently now" do
+      parent = Branch.new(MyApp.Farm)
+
+      child =
+        Branch.see(Branch.fork(parent, nested: true), [
+          {MyApp.Herd, 1},
+          {MyApp.Herd, 2},
+          {MyApp.Herd, 3}
+        ])
+
+      parent = %{
+        parent
+        | overlay: %{{MyApp.Herd, 1} => {:updated, %{id: 1}}, {MyApp.Herd, 2} => :deleted}
+      }
+
+      assert Branch.stale_against(child, parent) == [
+               %{resource: MyApp.Herd, key: 1, reason: :changed},
+               %{resource: MyApp.Herd, key: 2, reason: :deleted}
+             ]
+    end
+
+    test "own_entries/1 leaves out the entries inherited from the parent" do
+      parent = Branch.new(MyApp.Farm)
+
+      {parent, _} =
+        Branch.put_write(parent, :created, {MyApp.Herd, 1}, %{id: 1}, nil, entry(:create, 1))
+
+      child = Branch.fork(parent, nested: true)
+
+      {child, _} =
+        Branch.put_write(child, :created, {MyApp.Herd, 2}, %{id: 2}, nil, entry(:create, 2))
+
+      assert [{{:create, MyApp.Herd, :create, %{}, nil, [key: 2], _}, 1}] =
+               Branch.own_entries(child)
+    end
+
+    test "adopt/3 keeps the earliest fingerprint of a row the parent had not seen" do
+      parent = Branch.new(MyApp.Farm)
+      child = Branch.fork(parent, nested: true)
+      child = %{child | base: %{{MyApp.Herd, 1} => %{fingerprint: 10, snapshot: %{id: 1}}}}
+      scratch = Branch.scratch(parent)
+      scratch = %{scratch | base: %{{MyApp.Herd, 1} => %{fingerprint: 20, snapshot: nil}}}
+
+      assert Branch.adopt(parent, scratch, child).base == %{
+               {MyApp.Herd, 1} => %{fingerprint: 10, snapshot: %{id: 1}}
+             }
+    end
+
+    test "adopt/3 keeps the parent's own fingerprint of a row it had seen" do
+      parent = %{
+        Branch.new(MyApp.Farm)
+        | base: %{{MyApp.Herd, 1} => %{fingerprint: 5, snapshot: nil}}
+      }
+
+      child = %{
+        Branch.fork(parent, nested: true)
+        | base: %{{MyApp.Herd, 1} => %{fingerprint: 10, snapshot: nil}}
+      }
+
+      scratch = Branch.scratch(parent)
+
+      assert Branch.adopt(parent, scratch, child).base == %{
+               {MyApp.Herd, 1} => %{fingerprint: 5, snapshot: nil}
+             }
+    end
+  end
+
   describe "put_fingerprints/2" do
     test "keeps the first fingerprint of a row" do
       branch = Branch.put_fingerprints(Branch.new(MyApp.Farm), %{{A, 1} => 1, {A, 2} => 2})

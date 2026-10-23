@@ -4,7 +4,8 @@ defmodule Ramal.Storage.Codec do
   in a `jsonb` column).
 
   `encode_state/1` covers what the table has no column for: overlay, base (fingerprints and snapshots), log, metadata,
-  the owner, the proposal and the count of placeholder keys. `decode_state/2` takes that map and the columns and gives the branch back, equal to the one encoded.
+  the owner, the proposal, the count of placeholder keys and, for nested forks, the parent link, what the fork saw of the parent and the forks that
+  merged into the branch (ADR 0043). `decode_state/2` takes that map and the columns and gives the branch back, equal to the one encoded.
 
   How values are written, confirmed against Ash 3.37 (`lib/ash/type/type.ex`):
 
@@ -50,8 +51,10 @@ defmodule Ramal.Storage.Codec do
   alias Ash.Resource.Info
   alias Ramal.{Branch, Error}
 
-  @version 2
-  @readable_versions [1, 2]
+  # 3 adds `parent`, `parent_seen` and `merged_children` (ADR 0043); a branch with none of them is still written as 2,
+  # so a state an older Ramal can read stays readable by it.
+  @version 3
+  @readable_versions [1, 2, 3]
   @statuses %{
     "open" => :open,
     "proposed" => :proposed,
@@ -81,18 +84,21 @@ defmodule Ramal.Storage.Codec do
   @spec encode_state(Branch.t()) :: {:ok, map} | {:error, Error.t()}
   def encode_state(%Branch{} = branch) do
     {:ok,
-     dedupe_extras(%{
-       "version" => @version,
-       "overlay" => Enum.map(branch.overlay, &overlay_entry/1),
-       "base" => Enum.map(branch.base, &base_entry(&1, branch.overlay)),
-       "log" => Enum.map(branch.log, &log_entry/1),
-       "metadata" => term(branch.metadata, ["metadata"]),
-       "owner" => term(branch.owner, ["owner"]),
-       "tenant" => term(branch.tenant, ["tenant"]),
-       "inserted_at" => term(branch.inserted_at, ["inserted_at"]),
-       "proposal" => proposal(branch.proposal),
-       "next_placeholder" => branch.next_placeholder
-     })}
+     dedupe_extras(
+       %{
+         "version" => state_version(branch),
+         "overlay" => Enum.map(branch.overlay, &overlay_entry/1),
+         "base" => Enum.map(branch.base, &base_entry(&1, branch.overlay)),
+         "log" => Enum.map(branch.log, &log_entry/1),
+         "metadata" => term(branch.metadata, ["metadata"]),
+         "owner" => term(branch.owner, ["owner"]),
+         "tenant" => term(branch.tenant, ["tenant"]),
+         "inserted_at" => term(branch.inserted_at, ["inserted_at"]),
+         "proposal" => proposal(branch.proposal),
+         "next_placeholder" => branch.next_placeholder
+       }
+       |> Map.merge(nested(branch))
+     )}
   catch
     {:codec, message, path} ->
       {:error,
@@ -151,7 +157,8 @@ defmodule Ramal.Storage.Codec do
        log: Enum.map(state["log"], &decode_log_entry/1),
        proposal: decode_proposal(state["proposal"]),
        next_placeholder: state["next_placeholder"] || 0
-     }}
+     }
+     |> decode_nested(state)}
   rescue
     # The state came out of a database column that anything with write access to it can change. A shape this module
     # never writes is an error for the caller to handle, not a crash of the branch process that asked. Only the kind of
@@ -286,6 +293,27 @@ defmodule Ramal.Storage.Codec do
   defp expand_parts(leaf, _table), do: leaf
 
   # -- encode -------------------------------------------------------------------------------------------------------
+
+  defp state_version(%Branch{parent: nil, merged_children: []}), do: 2
+  defp state_version(_nested), do: @version
+
+  defp nested(%Branch{parent: nil, merged_children: []}), do: %{}
+
+  defp nested(branch) do
+    %{
+      "parent" =>
+        branch.parent && %{"id" => branch.parent.id, "log_length" => branch.parent.log_length},
+      "parent_seen" =>
+        for {{resource, key}, view} <- branch.parent_seen do
+          %{
+            "resource" => Atom.to_string(resource),
+            "key" => term(key, [{:resource, resource}, "parent_seen"]),
+            "view" => if(view == :base, do: nil, else: view)
+          }
+        end,
+      "merged_children" => branch.merged_children
+    }
+  end
 
   # A proposal is written field by field, with string keys, so that reading it back never needs an atom that only this
   # module mentions. Actors lose their sensitive attributes like the actors in the log (ADR 0010).
@@ -578,6 +606,33 @@ defmodule Ramal.Storage.Codec do
   end
 
   defp decode_snapshot(resource, stored, _entry), do: decode_record(resource, stored)
+
+  defp decode_nested(branch, %{"parent_seen" => seen} = state) when is_list(seen) do
+    parent =
+      case state["parent"] do
+        %{"id" => id, "log_length" => length} when is_binary(id) and is_integer(length) ->
+          %{id: id, log_length: length}
+
+        nil ->
+          nil
+      end
+
+    %{
+      branch
+      | parent: parent,
+        parent_seen: Map.new(seen, &decode_seen/1),
+        merged_children: Enum.map(state["merged_children"] || [], &ensure_binary!/1)
+    }
+  end
+
+  defp decode_nested(branch, _state), do: branch
+
+  defp decode_seen(%{"resource" => resource, "key" => key, "view" => view}) do
+    {{module!(resource), unterm(key)}, if(is_integer(view), do: view, else: :base)}
+  end
+
+  defp ensure_binary!(id) when is_binary(id), do: id
+  defp ensure_binary!(_other), do: throw({:codec, "a merged fork id is not a string"})
 
   defp decode_proposal(nil), do: nil
 

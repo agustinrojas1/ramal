@@ -51,6 +51,48 @@ defmodule Ramal.Storage.CodecTest do
            ]
   end
 
+  test "a nested fork comes back with its parent, what it saw and the forks merged into it", %{
+    herds: herds
+  } do
+    {:ok, parent} = Ramal.branch(Farm)
+    {:ok, child} = Ramal.fork(parent, nested: true)
+
+    Ramal.run!(child, fn ->
+      Ash.read!(Herd, authorize?: false)
+      Ash.update!(herds.r7, %{head: 31}, authorize?: false)
+    end)
+
+    {:ok, stored} = Ramal.get(child.id)
+    stored = %{stored | merged_children: ["b1", "b2"]}
+    assert map_size(stored.parent_seen) == 3
+    assert {:ok, loaded} = round_trip(stored)
+    assert loaded == stored
+    assert loaded.parent == %{id: parent.id, log_length: 0}
+  end
+
+  test "a nested fork keeps its placeholder count with its parent link and writes state version 3" do
+    {:ok, key, branch} = Branch.placeholder(Branch.new(Farm), Ash.Type.Integer)
+    child = Branch.fork(branch, nested: true)
+    child = %{child | merged_children: ["b1"]}
+
+    {:ok, state} = Codec.encode_state(child)
+    assert state["version"] == 3
+    assert state["next_placeholder"] == 1
+    assert key < 0
+    assert {:ok, loaded} = round_trip(child)
+    assert loaded == child
+    assert loaded.next_placeholder == 1
+  end
+
+  test "a branch that is no nested fork is written as state version 2" do
+    {:ok, state} = Codec.encode_state(Branch.new(Farm))
+    assert state["version"] == 2
+    refute Map.has_key?(state, "parent_seen")
+
+    {:ok, state} = Codec.encode_state(Branch.fork(Branch.new(Farm), nested: true))
+    assert state["version"] == 3
+  end
+
   test "a branch with writes of every kind comes back equal", %{herds: herds, paddocks: paddocks} do
     {:ok, branch} = Ramal.branch(Farm, name: "mixed", metadata: %{ticket: 42, tags: ["a", :b]})
 
@@ -474,9 +516,9 @@ defmodule Ramal.Storage.CodecTest do
       branch = Branch.new(Farm)
 
       assert {:error, %Error{reason: :storage, message: message}} =
-               Codec.decode_state(columns(branch), %{"version" => 3})
+               Codec.decode_state(columns(branch), %{"version" => 99})
 
-      assert message =~ "version 3"
+      assert message =~ "version 99"
     end
 
     test "refuses a module that is not on the code path" do

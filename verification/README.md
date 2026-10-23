@@ -5,7 +5,7 @@ and tests tie the two together (see [How the models meet the code](#how-the-mode
 
 | | what | tool | checked by |
 |---|---|---|---|
-| [`tla/`](tla) | the life of branches across processes: writes, reads, fork, propose, approve, reject, discard, merge, idle unload, kills, restarts | TLA+, model-checked with TLC 1.8.0 | `check.sh tla` |
+| [`tla/`](tla) | the life of branches across processes: writes, reads, fork, propose, approve, reject, discard, merge, idle unload, kills, restarts; and a nested fork merging into its parent | TLA+, model-checked with TLC 1.8.0 | `check.sh tla` |
 | [`bend/`](bend) | the data rules: overlay entries, what a read in a branch sees, what a merge writes | Bend 2.0.38, also rechecked by its Lean-proved kernel (`--verdict`) | `check.sh bend` |
 
 ```sh
@@ -65,6 +65,32 @@ running marks are modelled as what they decide, not as processes. A node restart
 Ramal documents, so `NoLostWrite` asks only for the writes that survived it. The model is bounded: what TLC proves holds for the
 sizes in `MC.cfg`, and larger sizes are left out to keep the check to a few minutes.
 
+## TLA+: a nested fork merging into its parent
+
+[`tla/Nested.tla`](tla/Nested.tla) models the second kind of merge (ADR 0043): a fork made with `nested: true` is claimed,
+the parent is copied with its version (`Server.merge_source/1`), the fork's own writes are replayed in the copy, and the
+parent takes the copy in one call if its version is unchanged and remembers the fork (`Server.adopt/4`). A write is the
+action that made it and who wrote it; the replay may fail, the storage may refuse the parent's persist, and the process
+running the merge may die at any step or the node restart. [`MCNested.cfg`](tla/MCNested.cfg) holds with two callers and
+five writes (a few thousand states):
+
+| property | meaning |
+|---|---|
+| `NoDoubleNestedMerge` | no write is in the parent's log twice, however many merges of the fork were tried or died |
+| `ParentGetsChildWritesOnce` | once the fork is merged, every write of it that was reported as done is in the parent, once |
+| `NoLostParentWrite` | a write to the parent that was reported as done is never lost to a merge of the fork |
+| `MergedStaysMerged` | a merged fork is never changed again |
+
+| config | what TLC finds without the guard |
+|---|---|
+| [`bug-adopt-unversioned.cfg`](tla/bug-adopt-unversioned.cfg) | the parent takes a copy of itself that is not current: a write made since the copy is lost |
+| [`bug-no-merged-children.cfg`](tla/bug-no-merged-children.cfg) | the parent does not remember the forks it took: a fork whose merger died after the adoption is merged again, and the parent holds its work twice |
+| [`bug-no-reconcile.cfg`](tla/bug-no-reconcile.cfg) | a fork its parent holds stays open when its merger dies: it takes writes the parent never gets. The model found this one; the fix is `Server.adopted?/2` |
+
+The staleness of a fork against its parent is the rule of the first model's fingerprints and is taken as `on_stale:
+:ignore` here. The copy and the parent are one process each, and `adopt/4` is atomic and persists before it answers, as
+the code does.
+
 ## Bend: the data rules
 
 [`bend/model.bend`](bend/model.bend) writes the overlay of `Ramal.Overlay` (an entry per row, combined by the table in
@@ -77,6 +103,7 @@ apply to, the branch capturing a log of actions, and the merge replaying it on a
 | `branch_reads_replay` | **read(branch) = base ⊕ overlay**: for any log, a read of a row in the branch returns the row the log's actions produce when run on the base |
 | `merge_shows_branch` | **the merge writes what the branch showed**: for every row the branch touched and the base did not change since (what the staleness check establishes), the merged row is the one a read in the branch returned |
 | `merge_keeps_others` | **a merge loses no edit made outside it**: every row the branch did not touch is, after the merge, what the base holds now |
+| `branch_reads_run` | **a nested merge shows what the fork did to what the parent showed**: replaying a log from any honest entry, as the replay in the parent's copy does, reads as the actions run on what the parent showed; `branch_reads_replay` is the case of no entry |
 | `capture_honest`, `branch_honest` | an entry never lies about the base: `:created` only for a row the base lacks, `:updated` and `:deleted` only for one it has, after any log |
 | `capture_reads` | one captured action changes what reads see exactly as the action changes the row |
 | `replay_local`, `capture_local` | a row of the merged table, and a row's overlay entry, depend only on that row and the log's actions on it |

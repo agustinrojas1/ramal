@@ -12,7 +12,7 @@ defmodule Ramal.Error do
   |---|---|
   | `:not_found` | no branch with that id, in memory or in storage |
   | `:not_open` | the branch is not in the status the call needs: open for `run/2`, `fork/2`, `merge/2` and `propose/2`, proposed for `approve/2` and `reject/2` |
-  | `:stale` | the base moved under rows the branch read (`details.rows`) |
+  | `:stale` | the base moved under rows the branch read (`details.rows`); for a nested fork, the parent branch did (`details.rows`), or changed again while the fork was being merged (`details.rows` is empty) |
   | `:merge_failed` | a replayed action failed; `details` has `index`, `type`, `resource`, `action` and the Ash `error` |
   | `:database_generated_key` | a branch cannot create a row whose primary key the database generates and that has no placeholder type (not a single integer or UUID `generated? true` key) |
   | `:bulk_unsupported` | an action inside a branch that the capture hook did not wrap, refused before it could reach the data layer |
@@ -26,6 +26,8 @@ defmodule Ramal.Error do
   | `:branch_mismatch` | a changeset or query was built under one branch (or none) and run under another (`details.built`, `current`) |
   | `:task_in_action` | a captured write from a task that a hook of another captured action started |
   | `:unbranchable_resources` | the domain has resources that neither use `Ramal.Resource` nor opt out of it (`details.resources`) |
+  | `:parent_not_open` | a nested fork cannot merge because its parent branch is not open (merged, discarded, proposed or being merged); discard the fork (`details.parent`, `status`) |
+  | `:no_parent` | `Ramal.diff/2` with `against: :parent` of a branch that is not a nested fork |
   | `:nested_branch` | `Ramal.run/2` was called inside another `Ramal.run/2`, or `Ramal.merge/2` inside one |
   | `:row_busy` | a write to a row that another process's action wrote in the branch and has not ended (`details.resource`, `key`); retry once it has |
   | `:missing_snapshot` | an overlay entry that needs the base row as first seen has none recorded |
@@ -61,6 +63,8 @@ defmodule Ramal.Error do
           | :branch_mismatch
           | :task_in_action
           | :unbranchable_resources
+          | :parent_not_open
+          | :no_parent
           | :nested_branch
           | :missing_snapshot
           | :row_busy

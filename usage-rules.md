@@ -60,9 +60,12 @@ test decides whether it happens.
 
 ## Gotchas
 
-- **Branches do not nest.** `run/2` inside `run/2` returns `{:error, %Ramal.Error{reason: :nested_branch}}`. A `Task`
-  started inside the function is in the branch too (`Task.async`, `Task.async_stream`, `Task.Supervisor`, and the tasks Ash
-  starts). A process started any other way (`spawn`, a message to a GenServer) is not: call `run/2` inside it.
+- **`run/2` does not nest.** `run/2` inside `run/2` returns `{:error, %Ramal.Error{reason: :nested_branch}}`. For a branch
+  of a branch, fork with `Ramal.fork(branch, nested: true)` and run each on its own; merging the fork replays what it
+  wrote into its parent (`:stale` if the parent changed a row the fork read, `:parent_not_open` if the parent was merged or
+  discarded, so discard the fork then). A `Task` started inside the function is in the branch too (`Task.async`,
+  `Task.async_stream`, `Task.Supervisor`, and the tasks Ash starts). A process started any other way (`spawn`, a
+  message to a GenServer) is not: call `run/2` inside it.
 - **Build and run a changeset in the same place.** A changeset or form built outside `run/2` and submitted inside it, or
   the other way round, fails with `:branch_mismatch`. A query prepared outside `run/2` and read
   inside it is patched.

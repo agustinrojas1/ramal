@@ -8,10 +8,11 @@ defmodule Ramal.Telemetry do
   | event | when |
   |---|---|
   | `[:ramal, :branch, :create]` | a branch was created |
-  | `[:ramal, :branch, :fork]` | a branch was forked from another (extra metadata: `parent_id`) |
+  | `[:ramal, :branch, :fork]` | a branch was forked from another (extra metadata: `parent_id`, and `nested: true` for a fork that merges into its parent) |
   | `[:ramal, :branch, :load]` | a branch process started from storage, or right after creation |
   | `[:ramal, :branch, :unload]` | a branch process stopped after persisting (`reason`: `:idle` or `:shutdown`) |
   | `[:ramal, :branch, :persist_failed]` | storage refused the write of a branch (`reason`: `:idle`, `:shutdown` or `:merged`, `error`): an idle branch stays loaded and tries again; so does a merge whose commit succeeded but whose `:merged` status could not be stored (`Ramal.Merge.Result` `persist_failed`); on a shutdown its last persisted state is what remains |
+  | `[:ramal, :branch, :adopt]` | a branch took the work of a nested fork that merged into it (extra metadata: `child_id`; ADR 0043) |
   | `[:ramal, :branch, :discard]` | a branch was discarded |
   | `[:ramal, :branch, :propose]` | a branch was proposed for a decision |
   | `[:ramal, :branch, :approve]` | a proposed branch was approved and merged (after the `[:ramal, :merge]` span) |
@@ -45,6 +46,7 @@ defmodule Ramal.Telemetry do
     for step <- [
           :create,
           :fork,
+          :adopt,
           :load,
           :unload,
           :persist_failed,
