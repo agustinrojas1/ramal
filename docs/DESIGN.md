@@ -119,8 +119,9 @@ This is the section that decides correctness. In a read action's preparation, wh
      keeps the first row of each group in the order of `distinct_sort` (or `sort`), as `DISTINCT ON` does. A calculation
      is evaluated in memory on the patched rows with `Ash.Query.apply_to/3` (documented in Ash 3.37; it loads the
      calculation with `reuse_values?: true`, so a row the branch changed is judged by its new values), which needs every
-     attribute the calculation reads, so a query that selects only some attributes keeps the data layer's distinct, as
-     does a distinct on an aggregate;
+     attribute the calculation reads, so a query that selects only some attributes is widened to all of them (the
+     result carries the extra attributes, as a distinct on an attribute already adds that attribute). A distinct on an
+     aggregate keeps the data layer's;
    - trim overlay records to the query's `select`, since an overlay record is a whole struct and a base row carries
      only the selected attributes (the primary key is always kept);
    - record a fingerprint (section 7) for every base row the data layer returned, before patching (ADR 0006); a read

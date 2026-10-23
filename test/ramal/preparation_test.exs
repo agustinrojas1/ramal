@@ -566,12 +566,11 @@ defmodule Ramal.PreparationTest do
       assert names(herds) == ["R7", "R9"]
     end
 
-    # Documents a limit: evaluating the calculation in memory needs every attribute it reads, so a query that selects
-    # some of them keeps the data layer's distinct, which does not see the branch.
-    test "distinct on a calculation in a query that selects some attributes is the database's", %{
-      branch: branch,
-      herds: h
-    } do
+    test "distinct on a calculation in a query that selects some attributes judges the branch's rows",
+         %{
+           branch: branch,
+           herds: h
+         } do
       put(branch, :updated, %{h.r7 | head: 5})
 
       herds =
@@ -584,8 +583,8 @@ defmodule Ramal.PreparationTest do
           |> Ash.read!(authorize?: false)
         end)
 
-      # The database picked R7 for "large" and R9 for "small", and the branch's R7 replaced its base row.
-      assert names(herds) == ["R7", "R9"]
+      # R7 shrank to "small" and R8 is the only "large" herd: the database would have picked R7 for "large".
+      assert names(herds) == ["R7", "R8"]
     end
 
     test "Ash.load on records read outside the branch is patched, lazily or not", %{
