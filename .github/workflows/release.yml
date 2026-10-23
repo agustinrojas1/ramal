@@ -1,0 +1,121 @@
+name: Release
+
+# Every push to main checks whether the version in mix.exs has been released. A version with no tag gets a tag and a
+# GitHub release made from its CHANGELOG section, then both packages are published to Hex (ramal first, since ramal_live
+# depends on it). Each step looks at what already exists, so a run that failed half way is finished by running the
+# workflow again (Actions > Release > Run workflow), and a push that does not bump the version does nothing.
+#
+# The Hex steps need a repository secret named HEX_API_KEY (a Hex API key with write access to both packages). Without
+# it the tag and the release are still made and the publish steps are skipped with a warning.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Read the version
+        id: version
+        run: |
+          version=$(sed -n 's/^  @version "\(.*\)"$/\1/p' mix.exs)
+          live_version=$(sed -n 's/^  @version "\(.*\)"$/\1/p' ramal_live/mix.exs)
+          if [ -z "$version" ] || [ "$version" != "$live_version" ]; then
+            echo "::error::mix.exs says '$version' and ramal_live/mix.exs says '$live_version'; the packages share one version."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version in mix.exs: $version"
+
+      - name: Tag and GitHub release
+        id: release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            echo "v$VERSION already has a GitHub release."
+            exit 0
+          fi
+          # The text between this version's heading and the next one.
+          awk -v heading="## [$VERSION]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no section '## [$VERSION]'. Add it before releasing."
+            exit 1
+          fi
+          # Creates the tag on this commit if it does not exist yet.
+          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --notes-file notes.md
+
+      - name: Check for the Hex key
+        id: hex
+        run: |
+          if [ -z "$HEX_API_KEY" ]; then
+            echo "::warning::The HEX_API_KEY secret is not set, so nothing is published to Hex. Add it and run this workflow again."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: erlef/setup-beam@v1
+        if: steps.hex.outputs.enabled == 'true'
+        with:
+          otp-version: "28.5"
+          elixir-version: "1.19.6"
+
+      - name: Publish ramal
+        if: steps.hex.outputs.enabled == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          status=$(curl -s -o /dev/null -w '%{http_code}' "https://hex.pm/api/packages/ramal/releases/$VERSION")
+          if [ "$status" = "200" ]; then
+            echo "ramal $VERSION is already on Hex."
+            exit 0
+          fi
+          mix deps.get
+          mix hex.build
+          mix hex.publish --yes
+
+      - name: Publish ramal_live
+        if: steps.hex.outputs.enabled == 'true'
+        working-directory: ramal_live
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          RAMAL_LIVE_HEX: "1"
+        run: |
+          status=$(curl -s -o /dev/null -w '%{http_code}' "https://hex.pm/api/packages/ramal_live/releases/$VERSION")
+          if [ "$status" = "200" ]; then
+            echo "ramal_live $VERSION is already on Hex."
+            exit 0
+          fi
+          # ramal_live depends on the Hex package ramal; its mirror can take a moment to list a new release.
+          for attempt in $(seq 1 30); do
+            if mix deps.get; then break; fi
+            if [ "$attempt" = "30" ]; then
+              echo "::error::ramal $VERSION did not become resolvable on Hex."
+              exit 1
+            fi
+            echo "ramal $VERSION is not resolvable yet; retrying in 20 s."
+            sleep 20
+          done
+          mix hex.build
+          mix hex.publish --yes
