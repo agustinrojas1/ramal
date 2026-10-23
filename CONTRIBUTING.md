@@ -32,7 +32,7 @@ A maintainer with a Hex account does this; CI has no Hex key.
 3. Check `mix hex.build` and `mix docs`, read the file list and dependencies `hex.build` prints, then `mix hex.publish`. The package ships `lib`,
    `mix.exs`, the README, the license, the changelog and the logo; nothing under `priv/` or `test/`.
 4. Publish `ramal_live` after `ramal`, since it depends on it: Hex refuses a path dependency, so run it with `RAMAL_LIVE_HEX=1` (`RAMAL_LIVE_HEX=1 mix deps.get`, `mix hex.build`, `mix hex.publish`, all inside `ramal_live/`). Do not commit the `mix.lock` change that makes.
-5. Replace "Not on Hex yet" in the README install section, and in `ramal_live/README.md` and `RamalLive`'s module doc.
+5. Only after both packages are on Hex, and as a separate docs PR, make the install snippets point at the new version: `{:ramal, "~> X.Y.0"}` in the README install section, and `{:ramal, ...}` and `{:ramal_live, ...}` in `ramal_live/README.md` and `RamalLive`'s module doc. Do this after publishing, never before, so the docs on `main` never tell people to install a version that does not exist. 0.2.0 is done.
 
 ## Code of conduct
 

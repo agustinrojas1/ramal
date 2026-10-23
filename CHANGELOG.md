@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- The install snippets in the READMEs and the `RamalLive` module doc point at Hex (`{:ramal, "~> 0.2.0"}`, `{:ramal_live, "~> 0.2.0"}`), with Hex and HexDocs badges.
+
 ## [0.2.0] - 2026-10-23
 
 Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspector, a benchmark, and a security pass. No breaking change to the public API of 0.1.0: a branch stored by 0.1.0 loads unchanged, and the public functions of 0.1.0 behave as before.
