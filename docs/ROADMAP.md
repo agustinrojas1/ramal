@@ -81,7 +81,7 @@ Done; released in 0.6.0.
 
 ## 0.7 Remaining limits
 
-[limits-plan.md](limits-plan.md) gives the root cause and a design for each remaining limit, in the order they are
+[limits-plan.md](https://github.com/agustinrojas1/ramal/blob/main/docs/limits-plan.md) gives the root cause and a design for each remaining limit, in the order they are
 being implemented: bulk actions, `authorize_results`, upserts, paged and multi-hop relationship loads, aggregates,
 merge replay keys, database-generated keys, text collation, durable branches, relationship filter push-down, nested
 branches, an optional authorizer, and clusters.

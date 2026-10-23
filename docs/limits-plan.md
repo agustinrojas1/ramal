@@ -59,8 +59,15 @@ earlier analysis in #43 looked only at `run_batch/8`, which these changesets nev
 A bulk update or destroy of a query must allow `strategy: [:atomic, :stream]`, because the atomic strategies cannot run
 in a branch. AshAi and `manage_relationship` already pass `:stream`. `mix ci` passed with 587 tests.
 
-**To do.** Re-apply on main (`git am limits/0036-bulk.patch`), run `mix ci` and `examples/ash_ai` `mix ci`, then open
-the PR. #43 can be closed by it.
+**To do.**
+
+1. Re-apply on main (`git am limits/0036-bulk.patch`).
+2. Fix the one CI failure #153 had. Tests passed, but `mix docs --warnings-as-errors` rejects the backticked hidden
+   functions in ADR 0036 (`Ash.Actions.Helpers.split_and_run_simple/7`, `Ash.Actions.Create.run/4`). Write them as
+   source paths instead, for example `split_and_run_simple/7` in `lib/ash/actions/helpers.ex`, without the module
+   prefix.
+3. Run `mix ci`, `mix docs --warnings-as-errors` and `examples/ash_ai` `mix ci`.
+4. Open the PR. #43 can be closed by it.
 
 ---
 
