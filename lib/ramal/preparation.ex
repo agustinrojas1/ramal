@@ -44,8 +44,10 @@ defmodule Ramal.Preparation do
     * an expression calculation is evaluated in memory on the records the branch created or changed, and for a filter
       on one (`load_calculations/3`, `matching_keys/2`), and so is a calculation with its own module that has an
       expression (the data layer computes those too); a calculation with only `calculate/3` runs in Elixir on the
-      patched rows already. Aggregates are not computed over the overlay, and reading one emits
-      `[:ramal, :read, :unpatched_aggregate]`. `Ramal.aggregate/4` is the exact alternative for the common kinds;
+      patched rows already;
+    * an aggregate the read loads is recomputed from the branch's rows after the patch (lib/ramal/preparation/aggregates.ex,
+      ADR 0029). The kinds and shapes it cannot do keep the database's value and emit `[:ramal, :read, :unpatched_aggregate]`.
+      A filter or sort on an aggregate is judged on the base rows;
     * overlay records are added without running the action's `authorize_results` checks, though the query's filter,
       including any policy filter, is applied to them;
     * `Ash.load/3` onto a record the branch changed reselects the relationship's source attribute (for example
@@ -70,7 +72,7 @@ defmodule Ramal.Preparation do
   alias Ash.Resource.Info
   alias Ramal.Branch.Server
   alias Ramal.{Current, Overlay, Prefilter, Resource, Telemetry}
-  alias Ramal.Preparation.{ManyToMany, Related}
+  alias Ramal.Preparation.{Aggregates, ManyToMany, Related}
 
   @impl true
   def prepare(query, _opts, _context) do
@@ -266,7 +268,8 @@ defmodule Ramal.Preparation do
     # Rows are tagged with their source records after the patch, and paged per source, not as one list.
     {patch_limit, patch_offset} = if links, do: {nil, nil}, else: {limit, offset}
 
-    with {:ok, patched} <- patch_rows(query, results, overlay?, patch_limit, patch_offset, id) do
+    with {:ok, patched} <- patch_rows(query, results, overlay?, patch_limit, patch_offset, id),
+         {:ok, patched} <- Aggregates.apply(patched, query, id) do
       if links do
         {:ok, ManyToMany.expand(patched, links, offset, limit)}
       else
@@ -558,17 +561,8 @@ defmodule Ramal.Preparation do
   defp take(rows, limit), do: Enum.take(rows, limit)
 
   defp warn_unpatched_aggregates(query, id) do
-    if selects_aggregate?(query) do
+    if Aggregates.unsupported(query) != [] do
       Telemetry.read(:unpatched_aggregate, %{count: 1}, %{branch_id: id, resource: query.resource})
     end
-  end
-
-  defp selects_aggregate?(query) do
-    map_size(query.aggregates) > 0 or
-      Enum.any?(List.wrap(query.load), fn
-        name when is_atom(name) -> Info.aggregate(query.resource, name) != nil
-        {name, _} when is_atom(name) -> Info.aggregate(query.resource, name) != nil
-        _ -> false
-      end)
   end
 end

@@ -4,10 +4,15 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- Aggregates a read loads inside a branch (declared on the resource, or added with `Ash.Query.aggregate/4`) now see the branch: `count`, `exists`, `sum`, `min`, `max` and `avg` are computed from the related records the branch sees, for every row when the branch changed a resource on the aggregate's path. `[:ramal, :read, :unpatched_aggregate]` is emitted only for the aggregates this cannot do (`first`, `list`, `custom`, `uniq?`, a limit in the aggregate's query) ([ADR 0028](docs/adr/0029-declared-aggregates-in-branches.md), #102).
+
 ### Fixed
 
 - **A calculation with its own module and an `expression/2` is now evaluated on the rows a branch created or changed** (it came back `Ash.NotLoaded`, and a filter or sort on it judged the database's values). Calculations with only `calculate/3` already ran on the patched rows.
 - **A query prepared outside `Ramal.run/2` and read inside it is now patched with the branch** (it read base data before). The preparation adds a `before_transaction` hook to every query; it installs the read hooks only when a branch is current when the query runs, so an atomic bulk update of a prepared query outside a branch still runs in the database. ADR 0028.
+- An aggregate declared on a resource no longer comes back as `Ash.NotLoaded` on a row the branch created or changed (#115).
 
 ## [0.4.3] - 2026-10-23
 

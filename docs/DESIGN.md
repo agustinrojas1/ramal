@@ -136,12 +136,15 @@ This is the section that decides correctness. In a read action's preparation, wh
    layer, and that read runs no hooks (`reselect_and_load/6` in Ash 3.37), so a foreign key the branch changed is not
    seen and the load follows the database's. `reuse_values?: true` skips the reselect and a load inside a read
    (`Ash.Query.load/2`) is patched; the test in `preparation_test.exs` pins both.
-4. **Aggregates and calculations:** data-layer aggregates (`count`, `sum`, `exists`) and calculations with
-   expressions are computed on the base and do not see the overlay. 0.1 documents this and emits a
-   `[:ramal, :read, :unpatched_aggregate]` telemetry event when a query inside a branch selects one, so a host can
-   detect it in tests. `Ramal.aggregate/4` (ADR 0011, ADR 0013) gives the exact answer for the common kinds: the database
-   aggregates the rows the overlay does not touch and the branch reads only the ones it does; aggregates and
-   calculations declared on resources stay unpatched.
+4. **Aggregates and calculations:** an aggregate a read loads (`count`, `exists`, `sum`, `min`, `max`, `avg`, declared on the
+   resource or added to the query) is computed again after the patch from the related records read through the branch, for
+   every row when the branch changed a resource on its path and for the rows the overlay supplied otherwise (ADR 0029).
+   `first`, `list` and `custom` aggregates, `uniq?`, a join filter, a custom read action, a field that is not an attribute
+   and an aggregate query with a limit, offset or distinct keep the database's value and emit
+   `[:ramal, :read, :unpatched_aggregate]`, so a host can detect it in tests. A filter or sort on an aggregate is judged by the
+   data layer on the base rows. Expression calculations are evaluated in memory on the rows the branch created or changed.
+   `Ramal.aggregate/4` (ADR 0011, ADR 0013) gives one total over a query: the database aggregates the rows the overlay does
+   not touch and the branch reads only the ones it does.
 5. **Pagination:** Ash adds a page's limit and offset after the `before_action` hooks, so a paginated read is paged
    by the database and patched afterwards. Deleted rows shorten a page, rows created in the branch can be missing
    from or misplaced across pages, and `count` is the database's. 0.1 documents this. Patching the whole list and
@@ -394,8 +397,8 @@ timestamps and, except the join resource, UUID primary keys:
 
 Actions: `Herd.move(to_paddock_id)` with a validation "destination capacity not exceeded" that reads the
 destination's herds (so a branch must see its own earlier moves for the validation to be right), creating a `Move`
-in an `after_action`. `Paddock` has an aggregate `head_count` (sum of herds' head) to document the unpatched-aggregate
-behaviour with a test. One policy on `Herd` (only `%{role: :admin}` may move) to prove policies run inside a branch.
+in an `after_action`. `Paddock` declares aggregates over its herds (`head_count`, `herd_count`, `has_herds`, ...), and `first_herd_name`, a kind
+the preparation cannot compute, to document the unpatched-aggregate event with a test. One policy on `Herd` (only `%{role: :admin}` may move) to prove policies run inside a branch.
 
 The domain mirrors the first real user of Ramal (an agricultural operations app) and stays in English.
 
@@ -486,3 +489,4 @@ action (ADR 0016).
 | 27 | A filter or sort through a relationship whose resource the branch changed is taken out of the data-layer query and evaluated in Elixir; `Ramal.aggregate/4` leaves the delta for it | The data layer joined the base's rows, so a renamed paddock left its herds matched by the old name. The cost is a broader base read. [ADR 0025](adr/0025-relationship-filters-in-elixir.md) |
 | 28 | Hooks check the branch again when the action runs; tasks started with `Task` inherit the branch through `$callers` | The branch was decided once, at build time, and lived in one process, so a changeset built elsewhere, a bulk task and a host task wrote for real. Ash 3.37 has no ambient context to set. [ADR 0023](adr/0026-branch-checked-at-execution.md) |
 | 29 | `Ramal.branch/2` refuses a domain with a resource that has write actions and neither uses `Ramal.Resource` nor opts out | A write to such a resource reached the database from inside a branch with no signal. [ADR 0024](adr/0027-domain-coverage.md) |
+| 30 | An aggregate a read loads is recomputed after the patch from the related records read through the branch; kinds and shapes it cannot do keep the database's value and emit the unpatched event | The database's aggregate never saw the overlay, and a row the branch changed came back with `Ash.NotLoaded`. The cost is a read of the related rows per recomputed row. [ADR 0028](adr/0029-declared-aggregates-in-branches.md) |

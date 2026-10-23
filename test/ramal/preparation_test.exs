@@ -635,7 +635,8 @@ defmodule Ramal.PreparationTest do
       assert by_default.paddock_id == p.l18.id
     end
 
-    test "reading an aggregate emits the unpatched_aggregate event", %{branch: branch} do
+    test "reading an aggregate the preparation cannot compute emits the unpatched_aggregate event",
+         %{branch: branch} do
       test = self()
 
       :telemetry.attach(
@@ -648,7 +649,7 @@ defmodule Ramal.PreparationTest do
       on_exit(fn -> :telemetry.detach("unpatched-#{inspect(test)}") end)
 
       inside(branch, fn ->
-        Paddock |> Ash.Query.load(:head_count) |> Ash.read!(authorize?: false)
+        Paddock |> Ash.Query.load(:first_herd_name) |> Ash.read!(authorize?: false)
       end)
 
       assert_receive {:unpatched, %{branch_id: id, resource: Paddock}} when id == branch.id

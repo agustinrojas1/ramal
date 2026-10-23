@@ -259,8 +259,11 @@ and what is and is not tested.
 Ramal is deliberately small, and it says what it does not do:
 
 - **Not a database branch.** No schema changes inside a branch, no branch-local indexes, and a branch lives on one node.
-- **Aggregates and calculations declared on a resource and computed in the database do not see the overlay.** Use
-  `Ramal.aggregate/4`. Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a test can notice when this happens.
+- **Aggregates loaded inside a branch are recomputed from the branch's rows,** which reads the related rows of each
+  returned row where the database would sum them in one query. `first`, `list` and `custom` aggregates, `uniq?`, and
+  an aggregate query with a limit keep the database's value, and Ramal emits `[:ramal, :read, :unpatched_aggregate]` so a
+  test can notice. A filter or sort on an aggregate is judged on the base rows. For one total over a large table,
+  `Ramal.aggregate/4` is cheaper.
 - **A filter or sort through a relationship the branch changed reads more.** Ramal checks that part of the filter in
   memory on the rows the database returns for the rest, so keep attribute predicates next to it to narrow the read.
 - **Text sorts inside a branch use byte order,** not the database's collation, once the branch has changed that resource:

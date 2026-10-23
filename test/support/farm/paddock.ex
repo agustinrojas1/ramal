@@ -28,7 +28,15 @@ defmodule Ramal.Test.Farm.Paddock do
   end
 
   aggregates do
-    # Computed by the database, so a branch does not see its own moves in it. A test documents that.
+    # Computed by the database; inside a branch the preparation recomputes them from the patched rows (ADR 0029).
     sum(:head_count, :herds, :head, default: 0, public?: true)
+    count(:herd_count, :herds, public?: true)
+    count(:big_herd_count, :herds, public?: true, filter: expr(head > 20))
+    exists(:has_herds, :herds, public?: true)
+    max(:biggest_head, :herds, :head, public?: true)
+    avg(:average_head, :herds, :head, public?: true)
+
+    # A kind the preparation cannot compute over a branch: it keeps the database's value and emits the event.
+    first(:first_herd_name, :herds, :name, public?: true)
   end
 end
