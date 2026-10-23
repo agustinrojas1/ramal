@@ -505,7 +505,8 @@ defmodule Ramal.Overlay do
   end
 
   defp template(%{__struct__: module}) when is_atom(module) do
-    if function_exported?(module, :__struct__, 0), do: module.__struct__()
+    if Code.ensure_loaded?(module) and function_exported?(module, :__struct__, 0),
+      do: module.__struct__()
   end
 
   defp template(_value), do: nil
