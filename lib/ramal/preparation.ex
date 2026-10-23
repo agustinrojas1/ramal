@@ -711,7 +711,7 @@ defmodule Ramal.Preparation do
           do: {calculation.name, calculation}
 
     with {:ok, loaded} <- load_related(rows, query),
-         {:ok, loaded} <- load_in_memory(loaded, calculations, query),
+         {:ok, loaded} <- load_sort_calculations(loaded, calculations, query),
          {:ok, loaded} <- load_aggregates(loaded, Related.aggregates(sort), query, id) do
       sorted =
         Sort.runtime_sort(loaded, sort,
@@ -725,6 +725,84 @@ defmodule Ramal.Preparation do
       by_key = Map.new(rows, &{Resource.key(query.resource, &1), &1})
       {:ok, Enum.map(sorted, &Map.fetch!(by_key, Resource.key(query.resource, &1)))}
     end
+  end
+
+  # A sort calculation that only reads attributes, along to-one relationships, is evaluated here from the relationships
+  # loaded onto the rows, a nil relationship giving nil as in SQL. `Ash.load/3` cannot do it: it evaluates an
+  # expression calculation in memory only when every record has each path loaded (`Ash.Resource.loaded?/3` with
+  # `strict?: true`, deps/ash/lib/ash/actions/read/calculations.ex, `try_evaluate/5`), a record whose relationship is
+  # nil fails that check, and Ash then asks the data layer for the whole batch, which keeps the base's value on every
+  # row. Any other calculation (an aggregate or another calculation in it, a to-many path, an expression Ash.Expr
+  # cannot evaluate) still goes through `Ash.load/3`.
+  defp load_sort_calculations(records, calculations, query) do
+    {records, rest} =
+      calculations
+      |> Map.filter(fn {_name, calculation} -> data_layer_calculation?(calculation) end)
+      |> Enum.reduce({records, %{}}, fn {name, calculation}, {records, rest} ->
+        case evaluate_calculation(records, calculation, query) do
+          {:ok, records} -> {records, rest}
+          :error -> {records, Map.put(rest, name, calculation)}
+        end
+      end)
+
+    load_in_memory(records, rest, query)
+  end
+
+  defp evaluate_calculation(records, calculation, query) do
+    with {:ok, paths} <- Related.plain_paths(query.resource, calculation),
+         {:ok, records} <- load_paths(records, paths, query),
+         {:ok, values} <- evaluate_all(records, calculation, query) do
+      {:ok, attach_values(records, calculation, values)}
+    else
+      _error -> :error
+    end
+  end
+
+  defp load_paths(records, [], _query), do: {:ok, records}
+
+  defp load_paths(records, paths, query) do
+    Ash.load(records, Enum.map(paths, &Related.nested_load/1),
+      domain: query.domain,
+      tenant: query.tenant,
+      authorize?: false,
+      reuse_values?: true,
+      context: Map.take(query.context, [:shared])
+    )
+  end
+
+  defp evaluate_all(records, calculation, query) do
+    context = calculation.context
+
+    expression =
+      calculation.module
+      |> Ash.Resource.Calculation.expression(calculation.opts, context)
+      |> Ash.Expr.fill_template(
+        actor: context.actor,
+        tenant: context.tenant,
+        args: context.arguments,
+        context: context.source_context
+      )
+
+    Enum.reduce_while(records, {:ok, []}, fn record, {:ok, values} ->
+      case Ash.Expr.eval(expression, record: record, resource: query.resource) do
+        {:ok, %Ash.NotLoaded{}} -> {:halt, :error}
+        {:ok, value} -> {:cont, {:ok, [value | values]}}
+        _error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      :error -> :error
+    end
+  end
+
+  defp attach_values(records, %{load: load}, values) when not is_nil(load),
+    do: Enum.zip_with(records, values, &Map.put(&1, load, &2))
+
+  defp attach_values(records, %{name: name}, values) do
+    Enum.zip_with(records, values, fn record, value ->
+      %{record | calculations: Map.put(record.calculations, name, value)}
+    end)
   end
 
   defp load_related(rows, %{context: %{ramal: %{related: %{paths: [_ | _] = paths}}}} = query) do
