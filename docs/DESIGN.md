@@ -75,8 +75,9 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
 - "Current branch" is process-local. `Ramal.run(branch, fun)` stores the branch id in the process dictionary
   (Ramal.Current) for the duration of `fun`, restoring the previous state afterwards even when `fun` raises. The
   first hook that runs also copies the id into the query's or changeset's Ash `shared` context, because Ash runs some
-  loads in tasks that do not inherit the process dictionary. Tasks the host spawns inside `fun` do not inherit the
-  branch; `Ramal.run/2` inside the task propagates it explicitly. Resolved in ADR 0002.
+  loads in tasks that do not inherit the process dictionary. Tasks started with `Task` (and the ones Ash starts) are in
+  the branch of the process that started them, through `$callers` (ADR 0026); a process started any other way is not,
+  and `Ramal.run/2` inside it propagates the branch explicitly. Resolved in ADR 0002 and ADR 0026.
 
 ## 4. Interception: the Spark extension
 
@@ -197,6 +198,14 @@ This is the section that decides correctness. In a read action's preparation, wh
   no attribute is logged too, with the row left as it was and out of `diff/1`, because its hooks and managed
   relationships can write other rows and only the outer action can replay them (ADR 0014).
 - A failing action takes back its own writes and those of the actions its hooks ran.
+- **The branch is checked again when the action runs** (ADR 0026). A changeset built outside `Ramal.run/2` and run
+  inside it, or built inside and run after it, or built under one branch and run under another, fails with
+  `:branch_mismatch` instead of writing to the wrong place. A captured write from a task that a hook of another captured
+  action started fails with `:task_in_action`. A query prepared outside a branch and read inside it is not patched
+  (Ash refuses an atomic bulk update of a query with a hook, so none can be installed); prepare queries inside.
+- **Every resource of the domain is covered or opted out** (ADR 0027): `Ramal.branch/2` refuses a domain with a
+  resource that has write actions and neither uses `Ramal.Resource` nor sets `branchable? false` (`:unbranchable_resources`).
+  A resource that opts out is written for real.
 - **Notifications** are dropped by default. `Ramal.run/2` runs the function inside `Ash.transaction([], ...,
   return_notifications?: true)` and sends only the notifications of resources with `notify_in_branch? true`. A write
   made with `context: Ramal.context(branch)` cannot be held back that way, so its notifiers fire; `Ramal.in_branch?/1`
@@ -474,3 +483,5 @@ action (ADR 0016).
 | 25 | A read asks the branch process for the overlay entries it can use, not the whole slice; Ramal.Prefilter rules out overlay records with plain comparisons before the runtime filter, and `Ramal.run/2` asks for the status alone | Copying the overlay to the caller and filtering every overlay record with `Ash.Filter.Runtime` made the cost of a read, and of a get-and-update, grow with the overlay (measured in `bench/`). [ADR 0020](adr/0020-read-selects-overlay.md) |
 | 26 | The owner of a stored branch is a column Postgres generates from `state -> 'owner'`, with a partial hash index; `mix ramal.gen.migration` writes the migration that is missing, so 0.3.0 tables upgrade in place | A hot `owner:` filter scanned and parsed every `state` of the domain. A generated column needs no backfill, cannot disagree with `state`, and an old node writing the table during a deploy keeps it correct. A hash index because the owner is any term and a btree entry has a size limit. [ADR 0021](adr/0021-owner-column.md) |
 | 27 | A filter or sort through a relationship whose resource the branch changed is taken out of the data-layer query and evaluated in Elixir; `Ramal.aggregate/4` leaves the delta for it | The data layer joined the base's rows, so a renamed paddock left its herds matched by the old name. The cost is a broader base read. [ADR 0025](adr/0025-relationship-filters-in-elixir.md) |
+| 28 | Hooks check the branch again when the action runs; tasks started with `Task` inherit the branch through `$callers` | The branch was decided once, at build time, and lived in one process, so a changeset built elsewhere, a bulk task and a host task wrote for real. Ash 3.37 has no ambient context to set. [ADR 0023](adr/0026-branch-checked-at-execution.md) |
+| 29 | `Ramal.branch/2` refuses a domain with a resource that has write actions and neither uses `Ramal.Resource` nor opts out | A write to such a resource reached the database from inside a branch with no signal. [ADR 0024](adr/0027-domain-coverage.md) |

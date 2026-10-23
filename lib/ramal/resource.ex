@@ -117,6 +117,35 @@ defmodule Ramal.Resource do
   end
 
   @doc """
+  The resources of `domain` that a branch would not cover: they do not use `Ramal.Resource` and they have a create,
+  update or destroy action, so a write to one inside a branch would reach the database.
+
+  A resource that uses the extension with `branchable? false` is not listed: that is the explicit opt-out, and writes to
+  it are real. `Ramal.branch/2` refuses a domain that has any of these (ADR 0027).
+
+  ## Example
+
+      iex> Ramal.Resource.uncovered(Ramal.Test.Farm)
+      []
+      iex> Ramal.Resource.uncovered(Ramal.Test.Uncovered)
+      [Ramal.Test.Uncovered.Note]
+  """
+  @spec uncovered(module) :: [module]
+  def uncovered(domain) when is_atom(domain) do
+    if Code.ensure_loaded?(domain) and function_exported?(domain, :spark_is, 0) and
+         domain.spark_is() == Ash.Domain do
+      domain
+      |> Ash.Domain.Info.resources()
+      |> Enum.reject(&extended?/1)
+      |> Enum.filter(fn resource ->
+        Enum.any?(Ash.Resource.Info.actions(resource), &(&1.type in [:create, :update, :destroy]))
+      end)
+    else
+      []
+    end
+  end
+
+  @doc """
   Refuses a tenant: `{:error, %Ramal.Error{reason: :multitenancy_unsupported}}` when `resource` uses multitenancy and
   `tenant` is set, `:ok` otherwise.
 

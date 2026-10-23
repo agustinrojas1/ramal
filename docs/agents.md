@@ -7,7 +7,7 @@ An agent that changes real data is risky; an agent that changes a **branch** is 
 3. It looks at the result (`diff`, `aggregate`), forks to try a variation, and discards what it will not keep.
 4. It **proposes** the best branch. A person (or a stricter program) reads the diff and approves or rejects.
 
-Nothing reaches the database before step 4's approval, and an agent that holds only the tools below cannot approve.
+Nothing reaches the database before step 4's approval, for every resource that uses `Ramal.Resource`, and an agent that holds only the tools below cannot approve. A resource that opted out with `branchable? false` is written for real (`Ramal.branch/2` refuses a domain with a resource that neither uses the extension nor opts out), and an agent whose tools run in processes other than a `Task` must call `Ramal.run/2` in them.
 
 This guide has three parts: [teaching a coding agent how to use Ramal](#teach-a-coding-agent), [giving a running agent the
 branch tools](#give-an-agent-the-branch-tools), and [wiring a branch into an MCP server](#run-an-mcp-servers-tools-in-a-branch).

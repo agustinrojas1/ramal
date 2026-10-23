@@ -59,7 +59,13 @@ test decides whether it happens.
 ## Gotchas
 
 - **Branches do not nest.** `run/2` inside `run/2` returns `{:error, %Ramal.Error{reason: :nested_branch}}`. A `Task`
-  started inside the function does not see the branch; call `run/2` again inside it.
+  started inside the function is in the branch too (`Task.async`, `Task.async_stream`, `Task.Supervisor`, and the tasks Ash
+  starts). A process started any other way (`spawn`, a message to a GenServer) is not: call `run/2` inside it.
+- **Build and run a changeset in the same place.** A changeset or form built outside `run/2` and submitted inside it, or
+  the other way round, fails with `:branch_mismatch`. Prepare queries inside `run/2` too: one prepared outside is not
+  patched.
+- **Every resource of the domain must use `Ramal.Resource` or opt out** with `ramal do branchable? false end`, or
+  `Ramal.branch/2` returns `:unbranchable_resources`. A resource that opts out is written for real, from a branch too.
 - **Merge refuses a stale branch.** If a row the branch read changed in the database, `merge/2` returns
   `{:error, %Ramal.Error{reason: :stale, details: %{rows: rows}}}` and writes nothing. Re-do the work in a new branch, or
   pass `on_stale: :ignore` when you know better. A fork shares its parent's base, so merging one makes its siblings stale.

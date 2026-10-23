@@ -49,11 +49,32 @@ defmodule Ramal.Capture do
 
   @impl true
   def change(changeset, _opts, _context) do
-    case Current.resolve(changeset.context) do
-      nil -> changeset
-      id -> capture(changeset, id)
+    case Current.bind(changeset.context) do
+      :none ->
+        guard(changeset)
+
+      {:ok, id, origin} ->
+        capture(changeset, id, origin)
+
+      {:conflict, process, carried} ->
+        Ash.Changeset.add_error(changeset, Current.conflict(what(changeset), process, carried))
     end
   end
+
+  # The branch is decided here, when the changeset is built, so a changeset built outside a branch and run inside one
+  # would write to the database. The hook costs one process dictionary read when no branch is current (ADR 0026).
+  defp guard(changeset) do
+    Ash.Changeset.before_action(changeset, fn changeset ->
+      case Current.verify(nil, nil, what(changeset)) do
+        :ok -> changeset
+        {:error, error} -> Ash.Changeset.add_error(changeset, error)
+      end
+    end)
+  end
+
+  defp what(changeset),
+    do:
+      "the #{changeset.action.name} #{changeset.action_type} changeset of #{inspect(changeset.resource)}"
 
   @impl true
   def atomic(changeset, _opts, _context) do
@@ -67,7 +88,7 @@ defmodule Ramal.Capture do
     end
   end
 
-  defp capture(changeset, id) do
+  defp capture(changeset, id, origin) do
     cond do
       Enum.any?(@bulk_markers, &Map.has_key?(changeset.context, &1)) ->
         Ash.Changeset.add_error(changeset, bulk_error(changeset))
@@ -76,16 +97,16 @@ defmodule Ramal.Capture do
         Ash.Changeset.add_error(changeset, upsert_error(changeset))
 
       true ->
-        install(changeset, id)
+        install(changeset, id, origin)
     end
   end
 
-  defp install(changeset, id) do
+  defp install(changeset, id, origin) do
     case Resource.ensure_untenanted(changeset.resource, changeset.tenant) do
       :ok ->
         changeset
         |> Ash.Changeset.set_context(Current.shared_context(id))
-        |> Ash.Changeset.around_action(&around(&1, &2, id))
+        |> Ash.Changeset.around_action(&around(&1, &2, id, origin))
 
       {:error, error} ->
         Ash.Changeset.add_error(changeset, error)
@@ -93,7 +114,32 @@ defmodule Ramal.Capture do
   end
 
   # The frame counts how deeply captured actions nest in this process and keeps the undo records of their writes.
-  defp around(changeset, callback, id) do
+  defp around(changeset, callback, id, origin) do
+    with :ok <- Current.verify(id, origin, what(changeset)),
+         :ok <- ensure_not_in_task(changeset) do
+      run_captured(changeset, callback, id)
+    end
+  end
+
+  # A task started by a hook of a captured action runs while that action is open in its parent. Its write would be
+  # logged on its own, and replaying the outer action runs the hook, and so the task, a second time (ADR 0026).
+  defp ensure_not_in_task(changeset) do
+    case {Process.get(@frame), Current.inherited(@frame)} do
+      {nil, %{depth: depth}} when depth > 0 ->
+        {:error,
+         Error.new(
+           :task_in_action,
+           "#{what(changeset)} runs in a task started inside another captured action; replaying that action would run " <>
+             "the task again, so write from the hook itself, not from a task it starts",
+           %{resource: changeset.resource, action: changeset.action.name}
+         )}
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp run_captured(changeset, callback, id) do
     frame = Process.get(@frame, %{depth: 0, undos: []})
     nested? = frame.depth > 0
     mark = length(frame.undos)

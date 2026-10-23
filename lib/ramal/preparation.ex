@@ -70,22 +70,28 @@ defmodule Ramal.Preparation do
 
   @impl true
   def prepare(query, _opts, _context) do
-    case Current.resolve(query.context) do
-      nil ->
+    case Current.bind(query.context) do
+      # No hook can go here: Ash refuses an atomic bulk update or destroy of a query that has one
+      # (`lib/ash/actions/update/bulk.ex`, 3.37), so a query prepared outside a branch and read inside one is not
+      # caught (ADR 0026).
+      :none ->
         query
 
-      id ->
+      {:ok, id, origin} ->
         case Resource.ensure_untenanted(query.resource, query.tenant) do
           :ok ->
             query
             |> Ash.Query.set_context(Current.shared_context(id))
             |> Ash.Query.before_transaction(&record_calculations/1)
-            |> Ash.Query.before_action(&before_data_layer(&1, id))
+            |> Ash.Query.before_action(&before_data_layer(&1, id, origin))
             |> Ash.Query.after_action(&after_data_layer(&1, &2, id))
 
           {:error, error} ->
             Ash.Query.add_error(query, error)
         end
+
+      {:conflict, process, carried} ->
+        Ash.Query.add_error(query, Current.conflict(what(query), process, carried))
     end
   end
 
@@ -97,9 +103,18 @@ defmodule Ramal.Preparation do
   defp record_calculations(query),
     do: Ash.Query.set_context(query, %{ramal: %{calculations: query.calculations}})
 
+  defp what(query), do: "the #{query.action.name} query of #{inspect(query.resource)}"
+
   # Without overlay entries for this resource nothing changes, so the query keeps its limit and offset and Postgres
   # does the paging. Stripping them is only needed when the overlay may add or remove rows.
-  defp before_data_layer(query, id) do
+  defp before_data_layer(query, id, origin) do
+    case Current.verify(id, origin, what(query)) do
+      :ok -> rewrite(query, id)
+      {:error, error} -> Ash.Query.add_error(query, error)
+    end
+  end
+
+  defp rewrite(query, id) do
     warn_unpatched_aggregates(query, id)
 
     case ManyToMany.rewrite(query, id) do

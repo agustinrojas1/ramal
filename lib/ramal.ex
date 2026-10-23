@@ -39,7 +39,8 @@ defmodule Ramal do
 
   Returns `{:error, %Ramal.Error{reason: :not_started}}` when `Ramal.Supervisor` is not running, and
   `:no_branchable_resources` when no resource of the domain uses `Ramal.Resource` (or all of them opted out), since
-  such a branch could never change what a read returns, and `:limit_reached` when the supervisor's
+  such a branch could never change what a read returns, `:unbranchable_resources` when a resource of the domain has write
+  actions and neither uses `Ramal.Resource` nor opts out with `branchable? false` (ADR 0027), and `:limit_reached` when the supervisor's
   `:max_active_branches` or `:branch_rate` is reached (both off by default, see `Ramal.Supervisor`).
 
   ## Example
@@ -82,7 +83,7 @@ defmodule Ramal do
   def run(branch_or_id, fun) when is_function(fun, 0) do
     id = id_of(branch_or_id)
 
-    if current = Current.id() do
+    if current = Current.own_id() do
       {:error,
        Error.new(
          :nested_branch,
@@ -564,17 +565,33 @@ defmodule Ramal do
   end
 
   defp ensure_branchable(domain) do
-    if Resource.branchable_resources(domain) == [] do
-      {:error,
-       Error.new(
-         :no_branchable_resources,
-         "#{inspect(domain)} has no resource with `extensions: [Ramal.Resource]` that is branchable; " <>
-           "add the extension to the resources a branch should cover",
-         %{domain: domain}
-       )}
-    else
-      :ok
+    case Resource.branchable_resources(domain) do
+      [] ->
+        {:error,
+         Error.new(
+           :no_branchable_resources,
+           "#{inspect(domain)} has no resource with `extensions: [Ramal.Resource]` that is branchable; " <>
+             "add the extension to the resources a branch should cover",
+           %{domain: domain}
+         )}
+
+      _branchable ->
+        case Resource.uncovered(domain) do
+          [] -> :ok
+          resources -> {:error, uncovered_error(domain, resources)}
+        end
     end
+  end
+
+  # A write to a resource without the hooks reaches the database from inside a branch, with no error (ADR 0027).
+  defp uncovered_error(domain, resources) do
+    Error.new(
+      :unbranchable_resources,
+      "#{inspect(domain)} has resources a branch would not cover: #{Enum.map_join(resources, ", ", &inspect/1)}. A write " <>
+        "to one inside a branch would reach the database. Add `extensions: [Ramal.Resource]` to each, or opt out " <>
+        "explicitly with `ramal do branchable? false end` (writes to it are then real)",
+      %{domain: domain, resources: resources}
+    )
   end
 
   defp id_of(%Branch{id: id}), do: id
