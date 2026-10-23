@@ -36,6 +36,14 @@ defmodule RamalLive.Router do
       reaches the route merge every branch with the actors the writes were captured with, and leaves the decision with no
       decider (ADR 0016). A router that leaves it out does not compile, and a route mounted without it (with `live`)
       raises when the page opens.
+    * `:owner` - `{module, function}`. Optional, off by default. Called as `module.function(actor)` with what `:actor`
+      returned, and returning the owner of that actor: the term the host passes as `owner:` to `Ramal.branch/2`. When
+      given, the page shows only the branches whose owner is that term (`Ramal.list/2` with `owner:`), forks create
+      branches owned by it, and every other branch is neither listed, nor refreshed when it changes, nor acted on. When
+      the actor is `nil`, or the function returns `nil`, the page shows nothing and refuses every action, because `nil`
+      would match the branches that have no owner. Without the option the page shows every branch of the domain, as
+      before. This is for giving each user their own board; it does not stop code that holds a branch id from using it
+      (ADR 0018). Mounts that differ in `:owner` still share the authorization of their `live_session`.
     * `:debounce` - milliseconds to wait, after a branch changes, before the page reads it again. A branch that writes
       in a loop causes one read per window instead of one per write. `0` reads at once. Default: `50`.
 
@@ -44,7 +52,7 @@ defmodule RamalLive.Router do
       ramal_inspector "/ramal", domain: MyApp.Farm, pubsub: MyApp.PubSub, actor: {MyAppWeb.Inspector, :actor}
   """
 
-  @options [:domain, :pubsub, :actor, :debounce]
+  @options [:domain, :pubsub, :actor, :owner, :debounce]
   @default_debounce 50
 
   @doc """
@@ -76,6 +84,7 @@ defmodule RamalLive.Router do
           domain: module,
           pubsub: module,
           actor: {module, atom},
+          owner: {module, atom} | nil,
           debounce: non_neg_integer
         }
   def __config__!(opts) when is_list(opts) do
@@ -92,6 +101,7 @@ defmodule RamalLive.Router do
       domain: atom!(opts, :domain),
       pubsub: atom!(opts, :pubsub),
       actor: actor!(Keyword.fetch(opts, :actor)),
+      owner: owner!(Keyword.get(opts, :owner)),
       debounce: debounce!(Keyword.get(opts, :debounce, @default_debounce))
     }
   end
@@ -128,6 +138,14 @@ defmodule RamalLive.Router do
             "module.function(socket) and uses what it returns as the actor of a merge or a decision, " <>
             "or refuses to act when it returns nil. Without it, anyone who reaches the route would merge " <>
             "every branch of the domain as nobody in particular. See SECURITY.md"
+  end
+
+  defp owner!(nil), do: nil
+  defp owner!({module, function} = mf) when is_atom(module) and is_atom(function), do: mf
+
+  defp owner!(other) do
+    raise ArgumentError,
+          "ramal_inspector: :owner must be {module, function} or left out, got: #{inspect(other)}"
   end
 
   defp debounce!(ms) when is_integer(ms) and ms >= 0, do: ms

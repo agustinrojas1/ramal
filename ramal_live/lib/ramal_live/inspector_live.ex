@@ -17,6 +17,7 @@ defmodule RamalLive.InspectorLive do
   @tick :timer.seconds(30)
 
   @anonymous "Nothing was done: the :actor function of this inspector returned nil, so nobody is signed in to act."
+  @nobody "Nothing is shown: the :actor or :owner function of this inspector returned nil, so there is no owner whose branches to list."
 
   # `phx-value-action` arrives as a string. A closed lookup, never `String.to_atom/1`, since it is client input.
   @actions %{
@@ -33,6 +34,7 @@ defmodule RamalLive.InspectorLive do
      assign(socket,
        page_title: "Ramal",
        config: nil,
+       scope: :all,
        columns: [],
        confirming: nil,
        banner: nil,
@@ -57,7 +59,7 @@ defmodule RamalLive.InspectorLive do
 
     case Phoenix.Router.route_info(socket.router, "GET", path || "/", host) do
       %{ramal_inspector: config} ->
-        ensure_actor!(config)
+        config |> ensure_actor!() |> ensure_owner!()
 
       _other ->
         raise ArgumentError,
@@ -85,6 +87,18 @@ defmodule RamalLive.InspectorLive do
           "ramal_inspector: the route has no :actor option. Pass actor: {module, function} to ramal_inspector/2"
   end
 
+  defp ensure_owner!(%{owner: nil} = config), do: config
+
+  defp ensure_owner!(%{owner: {module, function}} = config) do
+    if Code.ensure_loaded?(module) and function_exported?(module, function, 1) do
+      config
+    else
+      raise ArgumentError,
+            "ramal_inspector: the :owner option is #{inspect(module)}.#{function}/1, which does not exist. " <>
+              "Define it: it receives the actor and returns the owner of its branches"
+    end
+  end
+
   defp start(socket, config) do
     # Subscribe before reading, so that a change between the read and the subscription is not lost.
     if connected?(socket) do
@@ -92,18 +106,43 @@ defmodule RamalLive.InspectorLive do
       Process.send_after(self(), :tick, @tick)
     end
 
-    socket
-    |> assign(config: config, live?: Broadcaster.attached?(config.pubsub))
-    |> load_all()
+    socket = assign(socket, config: config, live?: Broadcaster.attached?(config.pubsub))
+
+    socket |> assign(scope: scope(socket)) |> load_all()
   end
+
+  # Whose branches the page shows: all of them (no `:owner` option), those of one owner, or none, because the actor or
+  # the owner is `nil` and `nil` would match the branches that have no owner.
+  defp scope(%{assigns: %{config: %{owner: nil}}}), do: :all
+
+  defp scope(%{assigns: %{config: %{owner: {module, function}}}} = socket) do
+    with {:ok, actor} <- actor(socket),
+         owner when not is_nil(owner) <- apply(module, function, [actor]) do
+      {:owner, owner}
+    else
+      _nobody -> :nobody
+    end
+  end
+
+  defp list_filters(:all), do: []
+  defp list_filters({:owner, owner}), do: [owner: owner]
+
+  defp visible?(:all, _branch), do: true
+  defp visible?({:owner, owner}, branch), do: branch.owner == owner
+  defp visible?(:nobody, _branch), do: false
 
   # -- reading --------------------------------------------------------------------------------------------------------
 
+  defp load_all(%{assigns: %{scope: :nobody}} = socket) do
+    assign(socket, columns: [], banner: {:error, @nobody})
+  end
+
   defp load_all(socket) do
     domain = socket.assigns.config.domain
+    filters = list_filters(socket.assigns.scope)
 
-    with {:ok, open} <- Ramal.list(domain, status: :open),
-         {:ok, proposed} <- Ramal.list(domain, status: :proposed) do
+    with {:ok, open} <- Ramal.list(domain, [status: :open] ++ filters),
+         {:ok, proposed} <- Ramal.list(domain, [status: :proposed] ++ filters) do
       columns =
         (open ++ proposed)
         |> Enum.flat_map(&read_listed(socket, &1.id))
@@ -117,7 +156,7 @@ defmodule RamalLive.InspectorLive do
   end
 
   defp read_listed(socket, id) do
-    case load_column(socket.assigns.config.domain, id) do
+    case load_column(socket, id) do
       {:ok, column} -> [keep_ui_state(socket, column)]
       :gone -> []
     end
@@ -125,9 +164,10 @@ defmodule RamalLive.InspectorLive do
 
   # Every read of a branch is announced, so a host (and the tests) can see what the page costs and that a change to
   # one branch reads that branch only.
-  defp load_column(domain, id) do
+  defp load_column(socket, id) do
+    domain = socket.assigns.config.domain
     started = System.monotonic_time()
-    column = read_column(id)
+    column = read_column(id, socket.assigns.scope)
 
     :telemetry.execute(
       [:ramal_live, :column, :read],
@@ -138,22 +178,28 @@ defmodule RamalLive.InspectorLive do
     column
   end
 
-  defp read_column(id) do
+  # A branch announced on the topic is read only when it is in the page's scope: the topic carries every branch of the
+  # domain, so without this a scoped page would show other owners' branches the moment they change.
+  defp read_column(id, scope) do
     case Ramal.get(id) do
       {:ok, %{status: status} = branch} when status in [:open, :proposed] ->
-        case Ramal.diff(id) do
-          {:ok, changes} -> {:ok, Column.build(branch, changes)}
-          {:error, error} -> {:ok, Column.build_unreadable(branch, Exception.message(error))}
-        end
+        if visible?(scope, branch), do: build_column(branch), else: :gone
 
       _gone_or_finished ->
         :gone
     end
   end
 
+  defp build_column(branch) do
+    case Ramal.diff(branch.id) do
+      {:ok, changes} -> {:ok, Column.build(branch, changes)}
+      {:error, error} -> {:ok, Column.build_unreadable(branch, Exception.message(error))}
+    end
+  end
+
   # Re-reads one branch: the only place a telemetry event or an action costs a diff, and only for the branch it names.
   defp refresh(socket, id) do
-    case load_column(socket.assigns.config.domain, id) do
+    case load_column(socket, id) do
       {:ok, column} -> put_column(socket, keep_ui_state(socket, column))
       :gone -> drop_column(socket, id)
     end
@@ -221,7 +267,10 @@ defmodule RamalLive.InspectorLive do
   # -- events ---------------------------------------------------------------------------------------------------------
 
   @impl true
-  def handle_event("reload", _params, socket), do: {:noreply, load_all(socket)}
+  def handle_event("reload", _params, socket) do
+    {:noreply, socket |> assign(scope: scope(socket)) |> load_all()}
+  end
+
   def handle_event("dismiss", _params, socket), do: {:noreply, assign(socket, banner: nil)}
   def handle_event("cancel", _params, socket), do: {:noreply, assign(socket, confirming: nil)}
 
@@ -270,7 +319,7 @@ defmodule RamalLive.InspectorLive do
   defp allowed?(%Column{}, _action), do: false
 
   defp fork(socket, column) do
-    case Ramal.fork(column.id) do
+    case Ramal.fork(column.id, fork_opts(socket.assigns.scope)) do
       {:ok, fork} ->
         socket
         |> refresh(fork.id)
@@ -280,6 +329,10 @@ defmodule RamalLive.InspectorLive do
         fail(socket, column.id, error)
     end
   end
+
+  # A fork made from a scoped page belongs to the person who made it, not to the owner of the branch it came from.
+  defp fork_opts({:owner, owner}), do: [owner: owner]
+  defp fork_opts(_scope), do: []
 
   defp perform(socket, :discard, column, _actor) do
     case Ramal.discard(column.id) do

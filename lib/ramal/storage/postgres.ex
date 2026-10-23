@@ -93,16 +93,8 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
 
     @impl true
     def list(domain, filters, config) do
-      {where, params} =
-        case Keyword.get(filters, :status) do
-          nil ->
-            {"domain = $1", [Atom.to_string(domain)]}
-
-          status ->
-            {"domain = $1 AND status = $2", [Atom.to_string(domain), Atom.to_string(status)]}
-        end
-
       with {:ok, repo} <- repo(config),
+           {:ok, where, params} <- list_filter(domain, filters),
            {:ok, result} <-
              query(
                repo,
@@ -110,6 +102,36 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
                params
              ) do
         result.rows |> Enum.map(&(&1 |> row_to_map() |> decode())) |> collect()
+      end
+    end
+
+    # The owner is compared in the database on its JSON form (`state -> 'owner'`), so the branches of other owners are
+    # never decoded. A branch stored before owners existed has no `owner` key and counts as unowned. `Ramal.list/2`
+    # checks the decoded owner again, so a term whose JSON form is not canonical can only make this miss, never leak.
+    defp list_filter(domain, filters) do
+      base = {"domain = $1", [Atom.to_string(domain)]}
+
+      with {:ok, filtered} <- by_status(base, Keyword.get(filters, :status)) do
+        by_owner(filtered, Keyword.fetch(filters, :owner))
+      end
+    end
+
+    defp by_status(filter, nil), do: {:ok, filter}
+
+    defp by_status({where, params}, status) do
+      {:ok, {where <> " AND status = $#{length(params) + 1}", params ++ [Atom.to_string(status)]}}
+    end
+
+    defp by_owner({where, params}, :error), do: {:ok, where, params}
+
+    defp by_owner({where, params}, {:ok, nil}) do
+      {:ok, where <> " AND (state -> 'owner' IS NULL OR state -> 'owner' = 'null'::jsonb)",
+       params}
+    end
+
+    defp by_owner({where, params}, {:ok, owner}) do
+      with {:ok, json} <- Codec.encode_owner(owner) do
+        {:ok, where <> " AND state -> 'owner' = $#{length(params) + 1}::jsonb", params ++ [json]}
       end
     end
 

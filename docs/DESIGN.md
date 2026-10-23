@@ -26,7 +26,7 @@ discard them. A branch must cost roughly what a process and a map cost, so thous
 
 **Branch.** `%Ramal.Branch{}`: `id` (UUID string), `name`, `domain` (the Ash domain whose resources it covers; several
 domains is a 0.2 question), `status` (`:open | :proposed | :merged | :rejected | :discarded`), `base` (fingerprints and snapshots, section 7), `overlay`,
-`log`, `inserted_at`, `metadata` (a map the host uses freely), `proposal` (`nil` until proposed, section 7.1).
+`log`, `inserted_at`, `metadata` (a map the host uses freely), `owner` (any term the host set at `branch/2` or `fork/2`, `nil` by default; `Ramal.list/2` can filter by it, ADR 0018), `proposal` (`nil` until proposed, section 7.1).
 
 **Overlay.** A map from `{resource_module, primary_key}` to one of `{:created, record}`, `{:updated, record}` or
 `:deleted`. The record is the full Ash struct as the action left it. The primary key is the value of the resource's
@@ -184,7 +184,7 @@ This is the section that decides correctness. In a read action's preparation, wh
 
 ```elixir
 @spec branch(domain :: module, keyword) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
-# opts: name, metadata
+# opts: name, metadata, owner
 
 @spec run(branch | id, (-> result)) :: {:ok, result} | {:error, Ramal.Error.t()}
 @spec run!(branch | id, (-> result)) :: result
@@ -289,8 +289,8 @@ skipping action logic; it is faster and less safe, and needs its own ADR.
 
 ## 8. Fork and diff
 
-- `fork/2` copies overlay, log and `base` into a new open branch with its own process, a fresh id, the parent's name
-  and metadata unless given, and `metadata.forked_from`. Both branches share the database; neither sees the other's later
+- `fork/2` copies overlay, log and `base` into a new open branch with its own process, a fresh id, the parent's name,
+  metadata and owner unless given, and `metadata.forked_from`. Both branches share the database; neither sees the other's later
   changes. Persistent data structures make the copy cheap; the log is a list and gets shared structurally. A fork of a
   branch that is not open is `:not_open`. It emits `[:ramal, :branch, :fork]` with `parent_id`, then `:load`.
 - `diff/1` walks the overlay: for `:updated`, compare the overlay record with the base row as the branch first saw it
@@ -372,7 +372,7 @@ rows (the first 100 changes; the rest are counted). Buttons: fork, merge and dis
 on a proposal. Merge, discard, approve and reject show an inline "are you sure?" first, and the server accepts the second
 event only after the first. Merge and approve run in `start_async`.
 
-**What it reads.** `Ramal.list/2` for the ids, then `Ramal.get/1` and `Ramal.diff/1` per branch, so the page shows what
+**What it reads.** `Ramal.list/2` (with `owner:` when the route has an `:owner` function, ADR 0018) for the ids, then `Ramal.get/1` and `Ramal.diff/1` per branch, so the page shows what
 the public API shows, and loads the processes of the branches on screen. A telemetry event re-reads only the branch it
 names, after a `:debounce` window (default 50 ms) that coalesces a burst of writes. Each read emits
 `[:ramal_live, :column, :read]` with `%{branch_id, domain}` and a `duration`.
@@ -412,3 +412,4 @@ action (ADR 0016).
 | 20 | A many_to_many join resource gets overlay entries like any resource; an update that changes no attribute is logged; a many_to_many load reads the patched join rows when the branch changed them; `append_and_remove` with a link to remove stays refused as a bulk action | Hooks and managed relationships write nested rows that only the outer action can replay; AshPostgres loads the relationship in SQL over the base join table, so the preparation replaces that join; the bulk unrelate bypasses the capture hook and capturing it would rest on undocumented data-layer behaviour. [ADR 0014](adr/0014-many-to-many-join-resources.md), [ADR 0017](adr/0017-many-to-many-links-in-a-branch.md) |
 | 21 | The inspector is a separate project whose router macro expands to one `live` route in the host's own `live_session`; options travel as route metadata; a supervised broadcaster turns telemetry into PubSub messages naming a branch, and the page re-reads only that branch | A `live_session` of its own would need its own root layout, socket and JavaScript, which is an asset pipeline; telemetry is node-local, so a handler attached on first page view would miss events. [ADR 0015](adr/0015-inspector-mounting.md) |
 | 22 | `ramal_inspector` requires `:actor`; `Ramal.branch/2` and `Ramal.fork/2` can be limited per domain by `:max_active_branches` and `:branch_rate` of `Ramal.Supervisor`, both off by default | A page that acts for nobody lets anyone who reaches the route merge as no one, and an unlimited fork is a process and a row per call. The limits stay off so no host changes behaviour by upgrading. [ADR 0016](adr/0016-security-defaults.md) |
+| 23 | A branch has an optional `owner`, stored in the state JSON; `Ramal.list/2` takes `owner:` and `ramal_inspector` an `:owner` function, both off by default; an owner filters, it does not authorize | A host serving several users otherwise keeps its own id-to-user table to show each person their branches. A column would need a migration for hosts that do not scope. [ADR 0018](adr/0018-branch-owner.md) |

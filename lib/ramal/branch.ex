@@ -13,6 +13,8 @@ defmodule Ramal.Branch do
   * `log` - the writes the branch captured, newest first so that recording one is O(1); readers use `Enum.reverse/1`
   * `inserted_at` - when the branch was created
   * `metadata` - a map the host uses freely; Ramal only adds `forked_from` to a fork
+  * `owner` - who the host says the branch belongs to, `nil` unless given at `branch/2` or `fork/2`. Ramal never
+    interprets it: `Ramal.list/2` can filter by it (ADR 0018) and nothing else reads it
   * `proposal` - `nil` until `Ramal.propose/2`; then `t:proposal/0`
 
   Nothing here touches a process or storage, so it is tested with plain data.
@@ -84,6 +86,7 @@ defmodule Ramal.Branch do
           log: list,
           inserted_at: DateTime.t(),
           metadata: map,
+          owner: term,
           proposal: proposal | nil
         }
 
@@ -103,6 +106,7 @@ defmodule Ramal.Branch do
     overlay: %{},
     log: [],
     metadata: %{},
+    owner: nil,
     proposal: nil
   ]
 
@@ -113,12 +117,13 @@ defmodule Ramal.Branch do
 
     * `:name` - a label for people, default `nil`
     * `:metadata` - a map for the host, default `%{}`
+    * `:owner` - who the branch belongs to, any term, default `nil` (see `Ramal.list/2`)
 
   ## Example
 
-      iex> branch = Ramal.Branch.new(MyApp.Farm)
-      iex> {branch.domain, branch.name, branch.log}
-      {MyApp.Farm, nil, []}
+      iex> branch = Ramal.Branch.new(MyApp.Farm, owner: 7)
+      iex> {branch.domain, branch.name, branch.log, branch.owner}
+      {MyApp.Farm, nil, [], 7}
   """
   @spec new(module, keyword) :: t
   def new(domain, opts \\ []) when is_atom(domain) do
@@ -127,7 +132,8 @@ defmodule Ramal.Branch do
       name: opts[:name],
       domain: domain,
       inserted_at: DateTime.utc_now(),
-      metadata: Keyword.get(opts, :metadata, %{})
+      metadata: Keyword.get(opts, :metadata, %{}),
+      owner: opts[:owner]
     }
   end
 
@@ -286,6 +292,7 @@ defmodule Ramal.Branch do
 
     * `:name` - default: the parent's name
     * `:metadata` - default: the parent's metadata
+    * `:owner` - default: the parent's owner
 
   ## Example
 
@@ -305,7 +312,8 @@ defmodule Ramal.Branch do
       | id: Ash.UUID.generate(),
         name: Keyword.get(opts, :name, parent.name),
         inserted_at: DateTime.utc_now(),
-        metadata: metadata
+        metadata: metadata,
+        owner: Keyword.get(opts, :owner, parent.owner)
     }
   end
 

@@ -33,6 +33,8 @@ defmodule Ramal do
 
     * `:name` - a label for people
     * `:metadata` - a map the host uses freely
+    * `:owner` - who the branch belongs to, so that `list/2` can show a user only their own (ADR 0018). Any term, but an
+      id or a string, not a record: it is stored with the branch and compared with `==`. Default `nil`
 
   Returns `{:error, %Ramal.Error{reason: :not_started}}` when `Ramal.Supervisor` is not running, and
   `:no_branchable_resources` when no resource of the domain uses `Ramal.Resource` (or all of them opted out), since
@@ -151,15 +153,33 @@ defmodule Ramal do
   ## Options
 
     * `:status` - only branches with that status (`:open`, `:proposed`, `:merged`, `:rejected`, `:discarded`)
+    * `:owner` - only branches created or forked with that `:owner` (compared with `==`). `owner: nil` lists the
+      branches that have none. Without the option every branch of the domain is listed, as before.
+
+  The owner filter is for showing each user their own branches; it is not access control. A branch is still reachable
+  by its id (`SECURITY.md`).
 
   ## Example
 
       {:ok, open} = Ramal.list(MyApp.Farm, status: :open)
+      {:ok, mine} = Ramal.list(MyApp.Farm, owner: current_user.id)
   """
   @spec list(module, keyword) :: {:ok, [Branch.t()]} | {:error, Error.t()}
   def list(domain, opts \\ []) when is_atom(domain) do
-    with {:ok, config} <- Supervisor.config() do
-      config.storage.list(domain, Keyword.take(opts, [:status]), config.storage_config)
+    filters = Keyword.take(opts, [:status, :owner])
+
+    with {:ok, config} <- Supervisor.config(),
+         {:ok, branches} <- config.storage.list(domain, filters, config.storage_config) do
+      # A storage written before owners existed ignores the filter, and returning every user's branches for an owner
+      # filter is the failure this option exists to prevent, so the result is checked again here.
+      {:ok, filter_owner(branches, filters)}
+    end
+  end
+
+  defp filter_owner(branches, filters) do
+    case Keyword.fetch(filters, :owner) do
+      {:ok, owner} -> Enum.filter(branches, &(&1.owner == owner))
+      :error -> branches
     end
   end
 
@@ -174,6 +194,7 @@ defmodule Ramal do
 
     * `:name` - default: the parent's name
     * `:metadata` - default: the parent's metadata
+    * `:owner` - default: the parent's owner
 
   ## Example
 

@@ -46,6 +46,33 @@ defmodule RamalLive.Test.Router do
         actor: {RamalLive.Test.Inspector, :no_such_function}
       )
 
+      # Each user sees their own branches only.
+      ramal_inspector("/ramal-owned",
+        domain: RamalLive.Test.Farm,
+        pubsub: RamalLive.Test.PubSub,
+        debounce: 0,
+        actor: {RamalLive.Test.Inspector, :actor},
+        owner: {RamalLive.Test.Inspector, :owner}
+      )
+
+      # Mounted with an `:owner` whose function does not exist: the page says so when it opens.
+      ramal_inspector("/ramal-typo-owner",
+        domain: RamalLive.Test.Farm,
+        pubsub: RamalLive.Test.PubSub,
+        debounce: 0,
+        actor: {RamalLive.Test.Inspector, :actor},
+        owner: {RamalLive.Test.Inspector, :no_such_owner}
+      )
+
+      # The owner function finds no owner for the signed-in user.
+      ramal_inspector("/ramal-no-owner",
+        domain: RamalLive.Test.Farm,
+        pubsub: RamalLive.Test.PubSub,
+        debounce: 0,
+        actor: {RamalLive.Test.Inspector, :actor},
+        owner: {RamalLive.Test.Inspector, :no_owner}
+      )
+
       # The host's actor function finds nobody signed in.
       ramal_inspector("/ramal-nobody",
         domain: RamalLive.Test.Farm,

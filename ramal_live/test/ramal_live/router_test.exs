@@ -10,6 +10,7 @@ defmodule RamalLive.RouterTest do
              domain: MyApp.Farm,
              pubsub: MyApp.PubSub,
              actor: @actor,
+             owner: nil,
              debounce: 50
            }
   end
@@ -25,6 +26,29 @@ defmodule RamalLive.RouterTest do
 
     assert config.actor == {MyApp.Inspector, :actor}
     assert config.debounce == 0
+  end
+
+  test "the owner is kept, and is a {module, function} or left out" do
+    config =
+      Router.__config__!(
+        domain: MyApp.Farm,
+        pubsub: MyApp.PubSub,
+        actor: @actor,
+        owner: {MyApp.Inspector, :owner}
+      )
+
+    assert config.owner == {MyApp.Inspector, :owner}
+
+    assert_raise ArgumentError,
+                 ~r/:owner must be \{module, function\} or left out, got: "me"/,
+                 fn ->
+                   Router.__config__!(
+                     domain: MyApp.Farm,
+                     pubsub: MyApp.PubSub,
+                     actor: @actor,
+                     owner: "me"
+                   )
+                 end
   end
 
   test "the domain and the pubsub are required" do
