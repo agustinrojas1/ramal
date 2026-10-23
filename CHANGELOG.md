@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Changed
 
 - `Ramal.diff/1` is about a third faster for a branch with many changes: it no longer builds and deduplicates a list of attribute names for every updated row, and `Ramal.Resource.attributes/1` makes one pass over the attribute names. Same changes, same order.
+- `Ramal.diff/1` runs inside the branch process, so only the changes cross the process boundary and not the whole branch (overlay, log and base). The diff of a branch with 1,000 changes took about 2.8 ms instead of 5.4. The process is busy for the length of the diff, as it is for any other call.
 
 ## [0.3.0] - 2026-10-23
 
