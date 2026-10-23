@@ -175,9 +175,16 @@ defmodule FarmDemo.Data do
     {:ok, _} = Application.ensure_all_started(:postgrex)
 
     case Ecto.Adapters.Postgres.storage_up(config) do
-      :ok -> :ok
-      {:error, :already_up} -> :ok
-      {:error, reason} -> fail!("cannot open database #{config[:database]} as #{config[:username]}: #{inspect(reason)} (check RAMAL_PG_USER and RAMAL_PG_PASSWORD)")
+      :ok ->
+        :ok
+
+      {:error, :already_up} ->
+        :ok
+
+      {:error, reason} ->
+        fail!(
+          "cannot open database #{config[:database]} as #{config[:username]}: #{inspect(reason)} (check RAMAL_PG_USER and RAMAL_PG_PASSWORD)"
+        )
     end
 
     {:ok, pid} = Repo.start_link(pool_size: 2)
