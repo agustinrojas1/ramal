@@ -20,8 +20,13 @@ defmodule Ramal.Tools do
       as not found
     * `:owner` - when given, the tools open branches with that owner and see only branches with it (ADR 0018), whatever
       id the model passes. Pass the id of the agent's user or session, never `nil` (that raises). Without it the tools
-      see every branch of the domain
+      see every branch of the domain, so the agent can fork, diff and propose branches that belong to other people:
+      set `:owner` whenever more than one person or session shares the domain
     * `:proposed_by` - what `ramal_propose_branch` records as the proposer, any term. Default `nil`
+
+  The values in a diff go to the model's provider. Attributes marked `sensitive?` appear as `"[redacted]"` (see
+  `Ramal.Change.redact/1`); every other value is sent as it is. `ramal_discard_branch` refuses a branch a person is
+  reviewing (status `proposed`).
 
   ## Example
 
@@ -115,7 +120,8 @@ defmodule Ramal.Tools do
     },
     %{
       name: "ramal_discard_branch",
-      description: "Throw a branch away. Use it for an alternative you will not propose.",
+      description:
+        "Throw a branch away. Use it for an alternative you will not propose. A branch you have proposed cannot be discarded.",
       input_schema: %{
         "type" => "object",
         "properties" => %{"branch_id" => @branch_id},
@@ -222,6 +228,7 @@ defmodule Ramal.Tools do
 
   defp run("ramal_discard_branch", args, domain, opts) do
     with {:ok, branch} <- scoped(args, domain, opts),
+         :ok <- not_proposed(branch),
          :ok <- Ramal.discard(branch) do
       {:ok, %{"id" => branch.id, "status" => "discarded"}}
     else
@@ -230,6 +237,13 @@ defmodule Ramal.Tools do
   end
 
   defp run(name, _args, _domain, _opts), do: {:error, "unknown tool #{inspect(name)}"}
+
+  # A proposed branch is in front of a person; the agent that proposed it must not be able to withdraw it.
+  defp not_proposed(%Branch{status: :proposed}),
+    do:
+      {:error, "proposed: a person is reviewing this branch, so it cannot be discarded by a tool"}
+
+  defp not_proposed(_branch), do: :ok
 
   # The model chooses the id, so it is checked against the domain and the owner the host configured. A branch outside
   # them is "not found", the same answer as for an id that does not exist.
@@ -306,7 +320,10 @@ defmodule Ramal.Tools do
     }
   end
 
+  # Values go to a model provider, so `sensitive?` attributes are redacted as the inspector does (ADR 0016).
   defp change(%Change{} = change) do
+    change = Change.redact(change)
+
     %{
       "resource" => inspect(change.resource),
       "key" => json(change.key),

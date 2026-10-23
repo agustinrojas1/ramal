@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- `Ramal.Change.redact/1` returns a change with the values of `sensitive?` attributes replaced by `"[redacted]"`.
+
+### Security
+
+- `ramal_branch_diff` of `Ramal.Tools` no longer sends the values of `sensitive?` attributes to the model: they are returned as `[redacted]`, as the inspector shows them (#118).
+- `ramal_discard_branch` refuses a `:proposed` branch, so an agent cannot withdraw a proposal a person is reviewing (#118).
+- `SECURITY.md` has a section on the tools, and the `docs/agents.md` examples check the branch's owner before running in a branch the model or an MCP client named (#118).
+
 ## [0.4.2] - 2026-10-23
 
 Docs only: now that the repository is public, the README images and the Livebook badge link GitHub (`raw.githubusercontent.com`) again, so they render on Hex.pm, HexDocs and GitHub, and the badge opens the notebook. No code change; `~> 0.4.0` pins keep working.

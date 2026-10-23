@@ -76,9 +76,14 @@ The agent still needs tools for the application's own data (`list_herds`, `move_
 `branch_id` argument and run it in the branch, so the agent chooses which alternative it works in:
 
 ```elixir
-def run_tool(%{name: "move_herd", input: %{"branch_id" => branch_id, "herd" => herd, "paddock" => paddock}}, _opts) do
-  # Ramal.run/2 fails with not_found / not_open for an unknown or frozen branch; check the owner as Ramal.Tools does.
-  Ramal.run(branch_id, fn -> MyApp.Farm.move_herd(herd, paddock, actor: agent_actor) end)
+def run_tool(%{name: "move_herd", input: %{"branch_id" => branch_id, "herd" => herd, "paddock" => paddock}}, opts) do
+  # The model chose the id, so check that the branch is the session's before running anything in it: Ramal.run/2
+  # accepts any id. A branch of another owner is reported as not found, as Ramal.Tools does.
+  with {:ok, %Ramal.Branch{owner: owner}} when owner == opts[:owner] <- Ramal.get(branch_id) do
+    Ramal.run(branch_id, fn -> MyApp.Farm.move_herd(herd, paddock, actor: agent_actor) end)
+  else
+    _ -> {:error, "not_found: no branch with that id"}
+  end
   |> to_tool_result()
 end
 ```
@@ -105,8 +110,15 @@ defmodule MyAppWeb.RamalBranchPlug do
   def call(conn, _opts) do
     case Plug.Conn.get_req_header(conn, "x-ramal-branch") do
       [branch_id] ->
-        # Check that this caller may use this branch (see Ramal.Tools' :owner) before trusting the header.
-        Ash.PlugHelpers.set_context(conn, Ramal.context(branch_id))
+        # A client sets this header, so it is not trusted: the branch must belong to the caller, or any client could
+        # read and write any branch. `conn.assigns.current_user` stands for however your app identifies the caller.
+        case Ramal.get(branch_id) do
+          {:ok, %Ramal.Branch{owner: owner}} when owner == conn.assigns.current_user.id ->
+            Ash.PlugHelpers.set_context(conn, Ramal.context(branch_id))
+
+          _ ->
+            conn |> Plug.Conn.send_resp(404, "no such branch") |> Plug.Conn.halt()
+        end
 
       _ ->
         conn |> Plug.Conn.send_resp(400, "x-ramal-branch is required") |> Plug.Conn.halt()
