@@ -138,6 +138,46 @@ defmodule Ramal.MergePersistTest do
     end
   end
 
+  describe "a captured write whose caller gave up before the process started it" do
+    @tag timeout: 30_000
+    test "is never started, so there is nothing to take back if the process is not reached again",
+         %{
+           branch: branch
+         } do
+      Process.unregister(:ramal_test_merged_down)
+      pid = Ramal.Supervisor.whereis(branch.id)
+      test = self()
+      {_ref, before} = :sys.get_state(pid).version
+
+      {:ok, {:error, error}} =
+        Ramal.run(branch, fn ->
+          spawn_link(fn ->
+            send(
+              test,
+              {:busy,
+               GenServer.call(
+                 pid,
+                 {:write, fn b -> Process.sleep(5_500) && {:slept, b} end},
+                 15_000
+               )}
+            )
+          end)
+
+          Process.sleep(100)
+          Ash.create(Herd, %{name: "Late", head: 9}, authorize?: false)
+        end)
+
+      assert %Error{reason: :timeout} = Error.find(error)
+      assert_receive {:busy, {:ok, _, _}}, 10_000
+
+      # The busy write and the refused capture each change the version; a write that was applied and taken back would
+      # add one more (an undo changes it too).
+      {_ref, after_late} = :sys.get_state(pid).version
+      assert after_late - before == 2
+      assert :sys.get_state(pid).running == %{}
+    end
+  end
+
   defp eventually(fun, attempts \\ 50) do
     cond do
       fun.() -> :ok
