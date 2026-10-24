@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **`Ramal.discard(branch, purge: true)` and `Ramal.delete/1` remove the record of a finished branch.** Discarding kept the record in storage forever, so a host that opens a branch per request as scratch space grew its storage and `Ramal.list/2` without bound. `purge: true` stops the process and deletes the record with its write log; `delete/1` does the same for a `:discarded`, `:merged` or `:rejected` branch and refuses an `:open` or `:proposed` one with the new `:not_terminal` reason. Both emit `[:ramal, :branch, :delete]`, and work on ETS and Postgres storage. `discard/1` is unchanged.
+
+### Changed
+
+- **Documented what an upsert that leaves a row alone costs.** `docs/limits.md` says that `upsert_fields []` still rewrites the row in AshPostgres, that an always-false `upsert_condition` is refused in a branch (`:upsert_unsupported`), and that the pattern for a branch is a read then a plain create. `test/ramal/upsert_test.exs` pins it.
+
 ## [0.9.1] - 2026-10-23
 
 A patch release with two fixes: a branch no longer accepts an update or destroy of another tenant's record, and a damaged stored branch no longer crashes `Ramal.get/1` or hides every branch from `Ramal.list/2`. Reads in a branch are also a little faster. Upgrading from 0.9.0 needs no step beyond the version (and `ramal_live ~> 0.9.1`, which shares it).

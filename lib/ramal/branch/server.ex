@@ -517,6 +517,38 @@ defmodule Ramal.Branch.Server do
     end
   end
 
+  @doc """
+  Removes the record of a branch in a terminal status (`:discarded`, `:merged`, `:rejected`) from storage, with its write
+  log, and forgets the marks the supervisor keeps for it.
+
+  The status is read from storage, not from a process: a terminal branch has no process left to ask, and an open or
+  proposed one is refused with `:not_terminal` whether or not its process is loaded. A missing branch is `:not_found`.
+  """
+  @spec purge(String.t()) :: :ok | {:error, Error.t()}
+  def purge(id) do
+    with {:ok, config} <- Supervisor.config(),
+         {:ok, branch} <- config.storage.fetch(id, config.storage_config),
+         :ok <- ensure_terminal(branch),
+         :ok <- config.storage.delete(id, config.storage_config) do
+      Supervisor.clear_too_large(id)
+      Supervisor.clear_running(id)
+      Telemetry.branch(:delete, branch)
+      :ok
+    end
+  end
+
+  defp ensure_terminal(%{status: status}) when status in [:discarded, :merged, :rejected], do: :ok
+
+  defp ensure_terminal(%{id: id, status: status}) do
+    {:error,
+     Error.new(
+       :not_terminal,
+       "branch #{inspect(id)} is #{status}; only a discarded, merged or rejected branch can be deleted " <>
+         "(discard it first, or discard it with purge: true)",
+       %{id: id, status: status}
+     )}
+  end
+
   defp discard_cold(id, config) do
     with {:ok, branch} <- config.storage.fetch(id, config.storage_config),
          {:ok, branch, _recovered} <- recover(branch, config),

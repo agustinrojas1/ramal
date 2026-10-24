@@ -20,7 +20,8 @@ Ramal is comprehensive, and every limit it has is listed here. Each line is one 
 - Only writes of `create`, `update` and `destroy` actions are held in a branch: a generic action and the outside effects of a hook (an HTTP call, an email, an Oban job, a `Repo` write) run for real, so such hooks should skip themselves when `Ramal.current/0` returns a branch or `Ramal.in_branch?/1` is true ([security notes](https://github.com/agustinrojas1/ramal/blob/main/SECURITY.md)).
 - Notifications are dropped unless the resource opts in with `notify_in_branch? true` ([ADR 0005](adr/0005-write-capture.md)).
 - A database-generated integer or UUID key is a placeholder until the merge renames it to the real key, and other key types, `smallint` keys and composite keys are refused ([ADR 0042](adr/0042-placeholder-keys-for-generated-primary-keys.md)).
-- An upsert with an `upsert_condition` is refused, and `upsert?: true` given only to `Ash.create/2` at call time acts as a create ([ADR 0038](adr/0038-upserts-in-the-branch-view.md)).
+- An upsert with an `upsert_condition` is refused, and `upsert?: true` given only to `Ash.create/2` at call time acts as a create ([ADR 0038](adr/0038-upserts-in-the-branch-view.md)), and a branch cannot do `ON CONFLICT DO NOTHING`, so "insert if missing, otherwise leave it alone" is a read then a plain create ([details](#insert-if-missing-otherwise-leave-it-alone)).
+- A discarded, merged or rejected branch keeps its record in storage until you remove it, so a host that opens branches as scratch space should use `Ramal.discard(branch, purge: true)` or `Ramal.delete/1` ([details](#throwaway-branches-leave-a-record-unless-you-purge-them)).
 - A branch works in one tenant, given at `Ramal.branch/2` ([ADR 0034](adr/0034-one-tenant-per-branch.md)).
 - Reads fetch candidate rows and patch them in memory, which is cheap for the rows a session touches and wrong for an analytics table, so Ramal is meant for OLTP-sized working sets ([design, section 4.1](DESIGN.md)).
 - Merge replays each change through your action, so it is slower than one SQL statement, which is the price of merging through your own rules ([details](#merge-is-slower-than-sql)).
@@ -40,3 +41,28 @@ Merge runs the replay in one transaction, and each change goes through your real
 ### Durable branches cost a write per action
 
 With Postgres on the same host, appending one action's writes to the write log takes 1.1 to 1.7 ms in the published benchmark ([bench/README.md](https://github.com/agustinrojas1/ramal/blob/main/bench/README.md#durable-branches)). The action's own transaction holds a connection while the log is written over another, so the pool needs room for both. The SQL sandbox shares one connection and cannot run the append, so test durable branches with the ETS storage ([ADR 0048](adr/0048-durable-branches.md)).
+
+### Throwaway branches leave a record unless you purge them
+
+`Ramal.discard/1` stops the branch process and drops its overlay, but keeps the record in storage with status `:discarded`, so `Ramal.list/2` can show it and a later call gets `:not_open`. Merging or rejecting a branch keeps its record too. Nothing removes a record by itself, and one is about 1 KB in ETS, so a host that opens a branch (or a fork per step) for every request and discards it grows the storage, and slows `list/2`, without bound.
+
+For a branch nobody will look at later, discard it with `Ramal.discard(branch, purge: true)`: the process stops and the record is deleted with its write log, in ETS and in Postgres storage. For a branch you kept for review and are done with, `Ramal.delete(branch)` removes the record of a `:discarded`, `:merged` or `:rejected` branch, and refuses an `:open` or `:proposed` one with `:not_terminal`. Both emit `[:ramal, :branch, :delete]`. Ramal does not sweep old records on a timer; a host that wants that calls `Ramal.list(domain, status: :discarded)` and `Ramal.delete/1` from its own job.
+
+### Insert if missing, otherwise leave it alone
+
+Ash has no `ON CONFLICT DO NOTHING`, and a branch cannot get close to it:
+
+- In AshPostgres, `upsert? true` with `upsert_fields []` becomes `ON CONFLICT (...) DO UPDATE SET <identity columns> = EXCLUDED.<same>`, so a repeated insert still rewrites the existing row (a new tuple, WAL traffic, and any trigger on update fires). It does this so it can return the existing row (`fields_to_upsert` falls back to the identity keys in `deps/ash_postgres/lib/data_layer.ex`, AshPostgres 2.15).
+- The usual way to make the update do nothing, an `upsert_condition` that is never true (`expr(false)`), is refused inside a branch with `:upsert_unsupported`, because the condition is a filter the database evaluates against the existing row ([ADR 0038](adr/0038-upserts-in-the-branch-view.md)).
+- `upsert_fields []` is accepted in a branch. A repeat returns the existing row with its attributes unchanged, but it is recorded as an update that touches only the update timestamp, and the merge replays it.
+
+The pattern that works in a branch and leaves an existing row alone is to read first and create only what is missing:
+
+```elixir
+case MyApp.Farm.Edge |> Ash.Query.filter(a == ^a and b == ^b) |> Ash.read_one!() do
+  nil -> Ash.create!(MyApp.Farm.Edge, %{a: a, b: b})
+  edge -> edge
+end
+```
+
+Outside a concurrent writer this is exact. If another process may insert the same row, give the table a unique identity so the merge fails on the duplicate (`:merge_failed`) instead of writing it twice, or accept the no-op update of `upsert_fields []`, which is race-free and costs one rewritten row per repeat. These behaviours are pinned in `test/ramal/upsert_test.exs`.
