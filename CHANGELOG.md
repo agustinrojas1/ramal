@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- **Documented what a custom Ash type must satisfy in a branch, and tested it.** The embedded form (`dump_to_embedded/3` and `cast_from_embedded/3`) must round-trip, or a branch reads a value the database does not. New tests run a `NewType` over `:string` (`trim?: false`, `allow_empty?: true`), a JSON type with nested lists of maps and a struct with a different database form through create, update, read, diff, fork, ETS, Postgres and durable storage, and merge. See `docs/limits.md`.
+
 ## [0.9.1] - 2026-10-23
 
 A patch release with two fixes: a branch no longer accepts an update or destroy of another tenant's record, and a damaged stored branch no longer crashes `Ramal.get/1` or hides every branch from `Ramal.list/2`. Reads in a branch are also a little faster. Upgrading from 0.9.0 needs no step beyond the version (and `ramal_live ~> 0.9.1`, which shares it).
