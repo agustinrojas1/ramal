@@ -378,6 +378,13 @@ defmodule Ramal.Branch.Server do
   def merge_source(id), do: call(id, {:merge_source, nil})
 
   @doc """
+  Like `merge_source/1` for a staleness check (`Ramal.stale/2`): the branch may be open or proposed, since the check only
+  reads. A proposed branch has no running actions, so there is nothing to wait for.
+  """
+  @spec check_source(String.t()) :: {:ok, Branch.t(), version} | {:error, Error.t()}
+  def check_source(id), do: call(id, {:merge_source, :check})
+
+  @doc """
   Gives the branch the work of a nested fork: `scratch` is a copy of it (`merge_source/1`) in which the fork's writes were
   replayed. Refused with `{:error, :moved}` when the branch changed since the copy was taken, which is what makes the
   replay valid: the branch is then the one the replay saw. Persists the branch before it answers, so that a fork marked
@@ -899,6 +906,12 @@ defmodule Ramal.Branch.Server do
       when kind in [:begin_merge, :propose, :merge_source] and map_size(running) > 0 do
     if usable?(state),
       do: wait(state, from, request),
+      else: reply(state, {:error, unavailable(state)})
+  end
+
+  def handle_call({:merge_source, :check}, _from, state) do
+    if state.merging == nil and state.branch.status in [:open, :proposed],
+      do: reply(state, {:ok, state.branch, state.version}),
       else: reply(state, {:error, unavailable(state)})
   end
 

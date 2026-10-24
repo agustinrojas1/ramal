@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- **`Ramal.stale/2` and `Ramal.mark_merged/2` accept a `:proposed` branch**, so a host that commits through its own commands can keep a branch under review and still use them. `stale/2` only reads, with or without `lock: true`. `mark_merged(branch, decided_by: who, reason: why)` on a proposed branch stores it as `:merged` and records the approval (who, why, when, nothing replayed) as `approve/2` does, so `list/2` and the inspector show it; it emits `[:ramal, :branch, :approve]` as well as `[:ramal, :branch, :mark_merged]`. An open branch behaves as before ([#225](https://github.com/agustinrojas1/ramal/issues/225)).
 - **`context:` on `Ramal.merge/2` and `Ramal.approve/2`** sets a map as the context of every replayed changeset, so a change or hook that reads `changeset.context` sees request data that is not an action input (a request id for a lineage row, a correlation id for an audit entry). The log does not record the context a write was captured with, so until now a replayed action saw none ([#222](https://github.com/agustinrojas1/ramal/issues/222)).
 - **`Ramal.Merge.Result.entries`** lists every replayed log entry in log order, each with its index, type, resource, action, real key, the record the action returned (`:deleted` for a destroy) and that record's metadata. `records` keeps only the last write to a row; `entries` lets a host write one audit entry per action ([#224](https://github.com/agustinrojas1/ramal/issues/224)).
 

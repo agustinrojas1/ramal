@@ -164,7 +164,7 @@ defmodule Ramal.Merge do
     end
 
     with :ok <- ensure_outside_branch(id),
-         {:ok, branch, _version} <- Server.merge_source(id),
+         {:ok, branch, _version} <- Server.check_source(id),
          :ok <- ensure_database_branch(branch, "Ramal.stale/2"),
          :ok <- ensure_transaction(branch, lock?) do
       {rows, _fetched} = stale_rows(branch, lock?)
@@ -176,33 +176,85 @@ defmodule Ramal.Merge do
   end
 
   @doc """
-  Stores an open branch as `:merged` without replaying its log (experimental, ADR 0051), for a host that applied the
-  work through its own commands after `stale/2` found nothing stale.
+  Stores an open or proposed branch as `:merged` without replaying its log (experimental, ADR 0051), for a host that
+  applied the work through its own commands after `stale/2` found nothing stale.
 
   Call it after the host's transaction committed: the branch is claimed, written as `:merged`, and its process stops, as
   at the end of `run/2`. Returns the merged branch. If the storage refuses the write the process keeps the branch as
   merged and stores it when it is idle (ADR 0023), and the call returns the storage's error.
+
+  A proposed branch is approved the way `Ramal.approve/2` does it, without the replay: the decision (who, why, when)
+  is recorded on the branch, with no entries replayed and no stale rows let through, and `list/2` and the inspector
+  show it as an approved proposal.
+
+  ## Options
+
+    * `:decided_by` - who approves a proposed branch, default `nil`
+    * `:reason` - why, a string, default `nil`
+
+  Both are ignored for an open branch, which has no proposal to decide.
 
   ## Example
 
       {:ok, %Ramal.Branch{status: :merged}} = Ramal.Merge.mark_merged(branch_id)
   """
   @spec mark_merged(String.t()) :: {:ok, Branch.t()} | {:error, Error.t()}
-  def mark_merged(id) when is_binary(id) do
+  def mark_merged(id), do: mark_branch_merged(id, [])
+
+  @doc """
+  `mark_merged/1` with the options for a proposed branch: `:decided_by` and `:reason` of the approval it records.
+
+  ## Example
+
+      {:ok, %Ramal.Branch{status: :merged}} = Ramal.Merge.mark_branch_merged(proposed_id, decided_by: "bo")
+  """
+  @spec mark_branch_merged(String.t(), keyword) :: {:ok, Branch.t()} | {:error, Error.t()}
+  def mark_branch_merged(id, opts) when is_binary(id) do
     with :ok <- ensure_outside_branch(id),
-         {:ok, branch} <- Server.begin_merge(id, :open),
+         from = claim_from(id),
+         {:ok, branch} <- Server.begin_merge(id, from),
          :ok <- claimed_database_branch(id, branch) do
-      case Server.finish_merge(id, :merged) do
-        :ok ->
-          Telemetry.branch(:mark_merged, branch)
-          {:ok, %{branch | status: :merged}}
+      store_marked(id, branch, from, approval(from, opts))
+    end
+  end
 
-        {:persist_failed, error} ->
-          {:error, error}
+  defp store_marked(id, branch, from, annotate) do
+    with :ok <- finish_marked(id, annotate) do
+      merged = annotate.(%{branch | status: :merged})
+      if from == :proposed, do: Telemetry.branch(:approve, merged)
+      Telemetry.branch(:mark_merged, merged)
+      {:ok, merged}
+    end
+  end
 
-        {:error, error} ->
-          {:error, error}
-      end
+  defp finish_marked(id, annotate) do
+    case Server.finish_merge(id, :merged, annotate) do
+      :ok -> :ok
+      {:persist_failed, error} -> {:error, error}
+      {:error, _} = error -> error
+    end
+  end
+
+  # What a proposed branch gets when the host committed it: the approval `Ramal.approve/2` records, with no replay.
+  defp approval(:proposed, opts) do
+    at = DateTime.utc_now()
+
+    &Branch.decide(&1, :approved, at,
+      by: opts[:decided_by],
+      reason: opts[:reason],
+      replayed: 0,
+      stale: []
+    )
+  end
+
+  defp approval(:open, _opts), do: & &1
+
+  # The status the claim is made from: a proposed branch is claimed as such, anything else as open (so the refusal of a
+  # merged or discarded branch says "not open").
+  defp claim_from(id) do
+    case Server.get(id) do
+      {:ok, %Branch{status: :proposed}} -> :proposed
+      _ -> :open
     end
   end
 

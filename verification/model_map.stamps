@@ -38,13 +38,13 @@ Ramal.tla:MergerDies  e6e900155b21f504
 Ramal.tla:NodeCrash  ef930fc65b9593ff
 Ramal.tla:Propose  d02678cc782b0d23
 Ramal.tla:Read  27adec9905c897eb
-Ramal.tla:Retract  85f5dc9138153750
+Ramal.tla:Retract  7f4baaaf0187157e
 Ramal.tla:Start  d4bf1052d410a691
-Ramal.tla:Succeed  0bb0c3312bf907fa
+Ramal.tla:Succeed  602535782118937e
 Ramal.tla:Usable  4ead262b1261e027
 Ramal.tla:Watcher  5a43bce3627bba19
-Ramal.tla:Write  821b08f4e611085c
-Ramal.tla:WriteMore  e8a04c9cdddc20f6
+Ramal.tla:Write  7c8e1a902fffe787
+Ramal.tla:WriteMore  72f2b4d6325ff827
 model.bend:capture  620a4f2c9330ce75
 model.bend:put_created  cb2a0a9b0ef12143
 model.bend:put_deleted  542cc6caa1ec5842
