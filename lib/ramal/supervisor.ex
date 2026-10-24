@@ -34,6 +34,8 @@ defmodule Ramal.Supervisor do
       does, with the `epoch` column `mix ramal.gen.migration` adds.
     * `:max_heap_size` - the heap limit of each branch process in words, default 25 million (200 MB on a 64-bit
       machine). A branch exceeding it is killed and its last persisted state remains.
+    * `:ets_compressed` - `true` to create Ramal's ETS tables with `:compressed`, default `false`. Trades read and
+      write speed for memory on large heaps. Applies to all four tables the supervisor owns.
     * `:durable` - `true` to make every branch durable unless `Ramal.branch/2` says otherwise, default `false`
       (ADR 0048). A durable branch appends the writes of each action that ends to the storage's write log before the
       action returns, so a crash of the node loses none of them. The fingerprints of rows the branch read and did not
@@ -145,11 +147,12 @@ defmodule Ramal.Supervisor do
 
   @impl true
   def init(opts) do
-    # init/1 runs in the supervisor process, so the tables are owned by it and live exactly as long as it does.
-    create_table(ETS)
-    create_table(ETS.index_table())
-    create_table(ETS.writes_table(), :ordered_set)
-    create_table(__MODULE__)
+    compressed? = ets_compressed(Keyword.get(opts, :ets_compressed, false))
+    # init/1 runs in the supervisor process...
+    create_table(ETS, :set, compressed?)
+    create_table(ETS.index_table(), :set, compressed?)
+    create_table(ETS.writes_table(), :ordered_set, compressed?)
+    create_table(__MODULE__, :set, compressed?)
     config = build_config(opts)
     check_cluster!(config)
     check_durable!(config)
@@ -254,7 +257,7 @@ defmodule Ramal.Supervisor do
   # `write_concurrency: :auto` lets ETS pick the lock granularity from the concurrency it sees: every table here takes
   # writes from many processes (each branch process marks itself, persists, appends), and the default is one lock for
   # the whole table. `read_concurrency` stays on for the lookups on every call.
-  defp create_table(name, type \\ :set) do
+  defp create_table(name, type, compressed?) do
     if :ets.whereis(name) == :undefined do
       :ets.new(name, [
         :named_table,
@@ -262,7 +265,7 @@ defmodule Ramal.Supervisor do
         type,
         read_concurrency: true,
         write_concurrency: :auto
-      ])
+      ] ++ if(compressed?, do: [:compressed], else: []))
     end
   end
 
@@ -285,7 +288,8 @@ defmodule Ramal.Supervisor do
         :durable,
         :max_active_branches,
         :branch_rate,
-        :warn_raw_queries
+        :warn_raw_queries,
+        :ets_compressed
       ])
 
     %{
@@ -306,6 +310,15 @@ defmodule Ramal.Supervisor do
   defp raw_queries(other) do
     raise ArgumentError,
           "Ramal.Supervisor `warn_raw_queries` is true, :raise or false, got #{inspect(other)}"
+  end
+
+  @doc false
+  @spec ets_compressed(term()) :: boolean()
+  def ets_compressed(value) when value in [true, false], do: value
+
+  def ets_compressed(other) do
+    raise ArgumentError,
+          "Ramal.Supervisor `ets_compressed` is true or false, got #{inspect(other)}"
   end
 
   @doc false
