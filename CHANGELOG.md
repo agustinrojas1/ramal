@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- **`Ramal.stale/2` and `Ramal.mark_merged/1` (experimental, ADR 0051)** for a host that commits a branch through its own command layer. `stale/2` runs the staleness check of `merge/2` on its own and returns `{:ok, []}` or the stale rows; with `lock: true` inside the host's transaction it takes the same `FOR UPDATE` locks (outside one it returns `:not_in_transaction`). `mark_merged/1` stores the branch as merged afterwards, so `list/2` and the inspector show it. A nested fork gets `:nested_fork`. New telemetry event `[:ramal, :branch, :mark_merged]`.
 - **`Ramal.discard(branch, purge: true)` and `Ramal.delete/1` remove the record of a finished branch.** Discarding kept the record in storage forever, so a host that opens a branch per request as scratch space grew its storage and `Ramal.list/2` without bound. `purge: true` stops the process and deletes the record with its write log; `delete/1` does the same for a `:discarded`, `:merged` or `:rejected` branch and refuses an `:open` or `:proposed` one with the new `:not_terminal` reason. Both emit `[:ramal, :branch, :delete]`, and work on ETS and Postgres storage. `discard/1` is unchanged.
 
 ### Fixed
