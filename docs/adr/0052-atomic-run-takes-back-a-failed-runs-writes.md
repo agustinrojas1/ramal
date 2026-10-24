@@ -1,4 +1,4 @@
-# 0051. An atomic run takes back what a failed run wrote
+# 0052. An atomic run takes back what a failed run wrote
 
 Status: accepted, 2026-10-24. Builds on [ADR 0033](0033-running-actions-hold-their-writes.md) and [ADR 0048](0048-durable-branches.md).
 

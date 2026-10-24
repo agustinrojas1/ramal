@@ -16,7 +16,7 @@ verification/check.sh bend     # under a second
 ```
 
 `check.sh tla` needs Java 11 or later and `tla2tools.jar` at `verification/.tools/` (or `TLA2TOOLS=path`):
-`curl -fsSL -o verification/.tools/tla2tools.jar https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar`.
+`curl -fsSL -o verification/.tools/tla2tools.jar https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar`.
 `check.sh bend` needs Bend 2 (`curl -fsSL https://bend-lang.com/install.sh | sh`); `BEND_FLAGS=--verdict` adds the
 kernel check, which needs Lean 4.34.0 (`elan toolchain install leanprover/lean4:v4.34.0`). The
 [Verification workflow](../.github/workflows/verification.yml) runs both, with `--verdict`.

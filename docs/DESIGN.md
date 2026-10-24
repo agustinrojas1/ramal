@@ -245,7 +245,10 @@ This is the section that decides correctness. In a read action's preparation, wh
   or UUID key gets a placeholder (integers from `-2_147_483_648` up, random UUIDs) that the merge renames to the key the
   replayed create gets, in the later entries' input and keys too ([ADR 0042](adr/0042-placeholder-keys-for-generated-primary-keys.md)).
   `Ramal.Merge.Result.keys` maps placeholder to real key. Any other generated key fails the action with
-  `:database_generated_key`.
+  `:database_generated_key`. A sort or a keyset page on a generated integer key compares a placeholder as larger than
+  every real key, in creation order, which is where the merge puts the row (Ramal.Preparation.Placeholders, internal,
+  one line on why: the sort and the cursor comparison are done in Elixir on the patched list; UUID keys have no order to
+  match).
 - Destroys mark the key `:deleted`. Updates of a `:created` row stay `:created` with the new record. The first write to
   an existing row keeps the row as the action found it in `base`, which `diff/1` compares against.
 - Every write is appended to the log as `{action_type, resource, action_name, params, actor, opts, at}`; `opts` has
@@ -332,6 +335,11 @@ This is the section that decides correctness. In a read action's preparation, wh
 # Ash.load/3 that follows the branch's foreign keys (ADR 0031)
 
 @spec discard(branch | id) :: :ok | {:error, Ramal.Error.t()}
+@spec discard(branch | id, keyword) :: :ok | {:error, Ramal.Error.t()}
+# purge: true also deletes the record and its write log, as delete/1 does
+
+@spec delete(branch | id) :: :ok | {:error, Ramal.Error.t()}
+# removes the record of a :discarded, :merged or :rejected branch; :not_terminal for an open or proposed one
 
 @spec get(id) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
 @spec list(domain, keyword) :: {:ok, [Ramal.Branch.t()]} | {:error, Ramal.Error.t()}
@@ -488,7 +496,7 @@ Events, all with `%{branch_id, domain}` metadata:
 `[:ramal, :branch, :create]`, `[:ramal, :branch, :fork]`, `[:ramal, :branch, :unload]`, `[:ramal, :branch, :load]`,
 `[:ramal, :branch, :persist_failed]` (storage refused a write on `:idle`, `:shutdown`, `:merged`, `:append` or `:compact`, with the `error`),
 `[:ramal, :branch, :append]` (a durable branch stored an action's delta: `seq`, `rows`, measurement `duration`), `[:ramal, :branch, :compact]` (a snapshot covering the write log: `wal`, `duration`),
-`[:ramal, :branch, :discard]`, `[:ramal, :branch, :propose]`, `[:ramal, :branch, :approve]`, `[:ramal, :branch, :reject]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
+`[:ramal, :branch, :discard]`, `[:ramal, :branch, :delete]`, `[:ramal, :branch, :propose]`, `[:ramal, :branch, :approve]`, `[:ramal, :branch, :reject]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
 `[:ramal, :read, :patch]` with measurements `%{base_rows, overlay_rows, result_rows, duration}`,
 `[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource, action, nested?}`.
 
@@ -614,4 +622,4 @@ action (ADR 0016).
 | 37 | A nested fork (`fork/2` with `nested: true`) merges into its parent by replaying its own entries in a scratch copy that the parent adopts if its version did not change; the parent persists first and remembers the fork; a fork the parent holds is merged however its own status was left | A fork that replayed its whole log into the database could not be merged without its parent. Replaying in a copy keeps the parent untouched when a replay fails, the version makes an adoption valid, and the model checked in `verification/tla/Nested.tla` found the fork that was still writable after its merger died. [ADR 0043](adr/0043-nested-branches-merge-into-their-parent.md) |
 | 38 | With `cluster: true` branch processes are named with `:global`, every load takes the next epoch from the storage and every save is conditional on it; a refused process emits `:fenced` and stops; `:global` keeps the higher epoch when split nodes meet | Two nodes sharing Postgres could each hold a branch and the later save overwrote the earlier one's writes. The database, not the network, decides who may write. Marks and telemetry stay per node. [ADR 0044](adr/0044-branches-in-a-cluster.md) |
 | 39 | A branch can be durable: the outermost action's end is a call that appends the action's delta (its own rows, never a running action's) to the storage's write log, conditional on the epoch in a cluster, before the action returns; a load is the snapshot plus the log; a snapshot compacts the log | Writes since the last save were lost on a node crash, and storing on every write would store the writes of running actions (ADR 0033). The cost is a storage write per action. [ADR 0048](adr/0048-durable-branches.md) |
-| 40 | `Ramal.run(branch, fun, atomic: true)` takes a savepoint of the branch (its maps, log length and placeholder counter) and, when `fun` raises, throws, exits or returns `{:error, _}`, cuts the log back and restores the overlay entries of the rows the cut entries touched; a durable branch stores a snapshot, which deletes the deltas it covers | A branch has no transaction, so the writes before a failure stayed; a fork per unit of work costs a branch and a `:discarded` record each. It is not isolation: one process at a time. [ADR 0051](adr/0051-atomic-run-takes-back-a-failed-runs-writes.md) |
+| 40 | `Ramal.run(branch, fun, atomic: true)` takes a savepoint of the branch (its maps, log length and placeholder counter) and, when `fun` raises, throws, exits or returns `{:error, _}`, cuts the log back and restores the overlay entries of the rows the cut entries touched; a durable branch stores a snapshot, which deletes the deltas it covers | A branch has no transaction, so the writes before a failure stayed; a fork per unit of work costs a branch and a `:discarded` record each. It is not isolation: one process at a time. [ADR 0052](adr/0052-atomic-run-takes-back-a-failed-runs-writes.md) |

@@ -34,6 +34,22 @@ defmodule Ramal.Test.Farm.Paddock do
       upsert_identity(:unique_name)
       upsert_condition(expr(capacity_head < upsert_conflict(:capacity_head)))
     end
+
+    # What a host reaches for to get "insert if missing, otherwise leave it alone". docs/limits.md says what each does.
+    create :upsert_nothing do
+      accept([:name, :hectares, :capacity_head])
+      upsert?(true)
+      upsert_identity(:unique_name)
+      upsert_fields([])
+    end
+
+    create :upsert_never do
+      accept([:name, :hectares, :capacity_head])
+      upsert?(true)
+      upsert_identity(:unique_name)
+      upsert_fields([])
+      upsert_condition(expr(false))
+    end
   end
 
   identities do

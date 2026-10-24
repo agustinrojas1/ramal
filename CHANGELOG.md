@@ -6,7 +6,17 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
-- **`Ramal.run(branch, fun, atomic: true)`** (and `run!/3`) takes back the writes `fun` made when it raises, throws, exits or returns `{:error, _}`, and then re-raises or returns as it would without the option. A branch has no transaction, so until now the writes made before a failure stayed in it and the workaround was a fork per unit of work. The branch notes where its log and overlay stand and cuts them back, which is cheaper than a fork and leaves no `:discarded` record. It also works on a durable branch (it stores a snapshot that deletes the write log it covers) and restores the counter of generated keys. It is not isolation: use it from one process at a time on a branch. New `[:ramal, :branch, :rollback]` event and `:savepoint_lost` error reason ([ADR 0051](docs/adr/0051-atomic-run-takes-back-a-failed-runs-writes.md)).
+- **`Ramal.run(branch, fun, atomic: true)`** (and `run!/3`) takes back the writes `fun` made when it raises, throws, exits or returns `{:error, _}`, and then re-raises or returns as it would without the option. A branch has no transaction, so until now the writes made before a failure stayed in it and the workaround was a fork per unit of work. The branch notes where its log and overlay stand and cuts them back, which is cheaper than a fork and leaves no `:discarded` record. It also works on a durable branch (it stores a snapshot that deletes the write log it covers) and restores the counter of generated keys. It is not isolation: use it from one process at a time on a branch. New `[:ramal, :branch, :rollback]` event and `:savepoint_lost` error reason ([ADR 0052](docs/adr/0052-atomic-run-takes-back-a-failed-runs-writes.md)).
+- **`Ramal.discard(branch, purge: true)` and `Ramal.delete/1` remove the record of a finished branch.** Discarding kept the record in storage forever, so a host that opens a branch per request as scratch space grew its storage and `Ramal.list/2` without bound. `purge: true` stops the process and deletes the record with its write log; `delete/1` does the same for a `:discarded`, `:merged` or `:rejected` branch and refuses an `:open` or `:proposed` one with the new `:not_terminal` reason. Both emit `[:ramal, :branch, :delete]`, and work on ETS and Postgres storage. `discard/1` is unchanged.
+
+### Fixed
+
+- **A read sorted by a database-generated integer key puts the branch's new rows where the merge will.** Inside a branch the rows had negative placeholder keys, so `sort(id: :asc)` listed them before every real row and, after the merge, last. They now sort after every real key in creation order (before them for `:desc`), and a keyset page by that key (`after` and `before` cursors) returns the rows the same page returns after the merge. UUID keys are unchanged: their order is not creation order (ADR 0042, #206).
+
+### Changed
+
+- **Documented what an upsert that leaves a row alone costs.** `docs/limits.md` says that `upsert_fields []` still rewrites the row in AshPostgres, that an always-false `upsert_condition` is refused in a branch (`:upsert_unsupported`), and that the pattern for a branch is a read then a plain create. `test/ramal/upsert_test.exs` pins it.
+- **Documented what a custom Ash type must satisfy in a branch, and tested it.** The embedded form (`dump_to_embedded/3` and `cast_from_embedded/3`) must round-trip, or a branch reads a value the database does not. New tests run a `NewType` over `:string` (`trim?: false`, `allow_empty?: true`), a JSON type with nested lists of maps and a struct with a different database form through create, update, read, diff, fork, ETS, Postgres and durable storage, and merge. See `docs/limits.md`.
 
 ## [0.9.1] - 2026-10-23
 

@@ -18,6 +18,7 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :branch, :adopt]` | a branch took the work of a nested fork that merged into it (extra metadata: `child_id`; ADR 0043) |
   | `[:ramal, :branch, :fenced]` | the storage refused a write of a branch process because another process loaded the branch after it did (`Ramal.Supervisor` `cluster: true`, metadata `epoch` and `error`): the process stops, and what it held since its last save is lost |
   | `[:ramal, :branch, :discard]` | a branch was discarded |
+  | `[:ramal, :branch, :delete]` | the record of a discarded, merged or rejected branch was removed from storage (`Ramal.delete/1`, or `Ramal.discard/2` with `purge: true`) |
   | `[:ramal, :branch, :propose]` | a branch was proposed for a decision |
   | `[:ramal, :branch, :approve]` | a proposed branch was approved and merged (after the `[:ramal, :merge]` span) |
   | `[:ramal, :branch, :reject]` | a proposed branch was rejected |
@@ -61,6 +62,7 @@ defmodule Ramal.Telemetry do
           :persist_failed,
           :fenced,
           :discard,
+          :delete,
           :too_large,
           :propose,
           :approve,

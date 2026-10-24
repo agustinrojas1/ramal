@@ -11,7 +11,7 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 jar=${TLA2TOOLS:-$here/.tools/tla2tools.jar}
-tlc="java -XX:+UseParallelGC -cp $jar tlc2.TLC -workers auto -cleanup -noGenerateSpecTE"
+tlc="java -XX:+UseParallelGC -cp $jar tlc2.TLC -workers auto -cleanup"
 
 only=${1:-all}
 
