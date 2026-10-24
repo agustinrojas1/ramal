@@ -356,4 +356,28 @@ defmodule Ramal.MergeReplayTest do
       assert Ash.get!(Paddock, created.id, authorize?: false).name == "NEW"
     end
   end
+
+  describe "a row a hook changed during the replay" do
+    # The staleness check reads and locks R7 (head 30) and the replay takes it from there, unless a skipped nested
+    # entry drops that copy. The create's hook bumps R7 once while it is replayed, and the top-level bump after it
+    # must start from the head the hook left (31), not from the copy (issue #233).
+    test "a later update reads the row again instead of using the copy the check locked", %{
+      branch: branch,
+      herds: herds
+    } do
+      inside(branch, fn ->
+        Ash.create!(Herd, %{name: "R10", head: 5, bump_id: herds.r7.id},
+          action: :create_bumping,
+          authorize?: false
+        )
+
+        current = Ash.get!(Herd, herds.r7.id, authorize?: false)
+        Ash.update!(current, %{}, action: :bump, authorize?: false)
+      end)
+
+      # The nested bump is skipped: the create's replay runs the hook, so two entries are replayed.
+      assert {:ok, %Result{replayed: 2}} = Ramal.merge(branch, authorize?: false)
+      assert Ash.get!(Herd, herds.r7.id, authorize?: false).head == 32
+    end
+  end
 end

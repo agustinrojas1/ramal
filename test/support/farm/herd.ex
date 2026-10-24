@@ -57,6 +57,35 @@ defmodule Ramal.Test.Farm.Herd do
       end)
     end
 
+    # A create whose hook bumps the head of another herd, an existing row. The bump is a write of a hook, so the log
+    # holds it with `nested?: true`, and a merge replays it by replaying this create (issue #233).
+    create :create_bumping do
+      accept([:name, :head])
+      argument(:bump_id, :uuid, allow_nil?: false)
+
+      change(fn changeset, _context ->
+        Ash.Changeset.after_action(changeset, fn changeset, herd ->
+          bumped =
+            Ash.get!(__MODULE__, Ash.Changeset.get_argument(changeset, :bump_id),
+              authorize?: false
+            )
+
+          Ash.update!(bumped, %{}, action: :bump, authorize?: false)
+          {:ok, herd}
+        end)
+      end)
+    end
+
+    # Adds one to the head from the record it is given, so a stale copy of the row gives a wrong head.
+    update :bump do
+      require_atomic?(false)
+      accept([])
+
+      change(fn changeset, _context ->
+        Ash.Changeset.change_attribute(changeset, :head, changeset.data.head + 1)
+      end)
+    end
+
     # An action that loads a calculation in its own preparation, which runs after the one Ramal installs.
     read :with_size do
       prepare(build(load: [:size]))

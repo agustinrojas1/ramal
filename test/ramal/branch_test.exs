@@ -368,6 +368,30 @@ defmodule Ramal.BranchTest do
                {MyApp.Herd, 1} => %{fingerprint: 5, snapshot: nil}
              }
     end
+
+    test "adopt/3 keeps the parent's record of a row the child read after the parent wrote it" do
+      # The parent's record is what its own parent held (`:base`). The child's reading is the parent's overlay entry,
+      # a view in the parent's frame, so letting the child win would make the parent's merge look stale for nothing.
+      # A row only the child read joins the parent's record, which is what `adopt/3` documents.
+      grand = Branch.new(MyApp.Farm)
+      parent = Branch.fork(grand, nested: true)
+
+      {parent, _} =
+        Branch.put_write(
+          parent,
+          :updated,
+          {MyApp.Herd, 1},
+          %{id: 1, n: 2},
+          row(1, 5),
+          entry(:update, 1)
+        )
+
+      child = Branch.see(Branch.fork(parent, nested: true), [{MyApp.Herd, 1}, {MyApp.Herd, 2}])
+      adopted = Branch.adopt(parent, Branch.scratch(parent), child)
+
+      assert adopted.parent_seen == %{{MyApp.Herd, 1} => :base, {MyApp.Herd, 2} => :base}
+      assert Branch.stale_against(adopted, grand) == []
+    end
   end
 
   describe "put_fingerprints/2" do
