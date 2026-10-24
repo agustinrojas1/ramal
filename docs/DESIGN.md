@@ -228,6 +228,13 @@ This is the section that decides correctness. In a read action's preparation, wh
    through one changed `belongs_to` or `has_one`: the data-layer query keeps `(leaf and fk not in ^changed) or fk in ^matching`
    (`has_one`: the leaf plus the sources the branch's related rows point at), and the Elixir check stays the final word
    ([ADR 0047](adr/0047-relationship-filter-narrowing.md)).
+10. **Fragments in a filter:** `Ash.Filter.Runtime` cannot evaluate `fragment(...)`, so the rows a branch created or
+   changed never matched one. Ramal.Preparation.Fragments (internal, lib/ramal/preparation/fragments.ex, with its Ecto half
+   in fragments/postgres.ex) sends the conjuncts that hold a fragment to the database with the overlay's records as an
+   inline `VALUES` table that shadows the resource's table in one read-only query, and the rest of the filter is judged in
+   Elixir as before. It refuses with `:fragment_unsupported` where the database cannot judge right: another data layer, a
+   table in a schema, a conjunct that reaches a resource the branch changed
+   ([ADR 0054](adr/0054-fragment-filters-judged-by-the-database.md)).
 
 ### 4.2 How writes are captured
 
@@ -614,3 +621,4 @@ action (ADR 0016).
 | 37 | A nested fork (`fork/2` with `nested: true`) merges into its parent by replaying its own entries in a scratch copy that the parent adopts if its version did not change; the parent persists first and remembers the fork; a fork the parent holds is merged however its own status was left | A fork that replayed its whole log into the database could not be merged without its parent. Replaying in a copy keeps the parent untouched when a replay fails, the version makes an adoption valid, and the model checked in `verification/tla/Nested.tla` found the fork that was still writable after its merger died. [ADR 0043](adr/0043-nested-branches-merge-into-their-parent.md) |
 | 38 | With `cluster: true` branch processes are named with `:global`, every load takes the next epoch from the storage and every save is conditional on it; a refused process emits `:fenced` and stops; `:global` keeps the higher epoch when split nodes meet | Two nodes sharing Postgres could each hold a branch and the later save overwrote the earlier one's writes. The database, not the network, decides who may write. Marks and telemetry stay per node. [ADR 0044](adr/0044-branches-in-a-cluster.md) |
 | 39 | A branch can be durable: the outermost action's end is a call that appends the action's delta (its own rows, never a running action's) to the storage's write log, conditional on the epoch in a cluster, before the action returns; a load is the snapshot plus the log; a snapshot compacts the log | Writes since the last save were lost on a node crash, and storing on every write would store the writes of running actions (ADR 0033). The cost is a storage write per action. [ADR 0048](adr/0048-durable-branches.md) |
+| 40 | A filter conjunct that holds a `fragment(...)` is judged by the database on the branch's rows, sent as an inline `VALUES` table that shadows the resource's table in one read-only query; the read is refused with `:fragment_unsupported` where that cannot be right (another data layer, a table in a schema, a conjunct that reaches a changed resource) | Ash's runtime cannot evaluate SQL text, so rows a branch created or changed never matched a fragment and a changed row that still matched vanished, with no error (#218). Asking the database keeps fragments working; refusing everywhere would have made jsonb, full-text and PostGIS filters unusable in a branch. [ADR 0054](adr/0054-fragment-filters-judged-by-the-database.md) |

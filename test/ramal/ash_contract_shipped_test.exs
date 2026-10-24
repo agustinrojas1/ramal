@@ -52,7 +52,7 @@ defmodule Ramal.AshContractShippedTest do
   test "the generated export tests are found in the tripwire file" do
     generated = Enum.filter(tripwire_names(), &String.contains?(&1, " is exported ("))
 
-    assert length(generated) == 9
+    assert length(generated) == 10
   end
 
   test "every assumption has a unique id, a summary and a tripwire" do

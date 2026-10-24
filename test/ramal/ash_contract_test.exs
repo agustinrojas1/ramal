@@ -476,7 +476,9 @@ defmodule Ramal.AshContractTest do
         {Ash.Filter, :hydrate_refs, 2, "lib/ramal/preparation/related.ex",
          "deps/ash/lib/ash/filter/filter.ex"},
         # Ramal: the keyset cursor and the key lookups of Ramal.Capture and Ramal.Merge. Ash: deps/ash/lib/ash/query/query.ex (do_filter/3, @doc false, opts defaulted).
-        {Ash.Query, :do_filter, 2, "lib/ramal/capture.ex", "deps/ash/lib/ash/query/query.ex"}
+        {Ash.Query, :do_filter, 2, "lib/ramal/capture.ex", "deps/ash/lib/ash/query/query.ex"},
+        # Ramal: lib/ramal/ash.ex fragment?/1 (finds a fragment in a filter, ADR 0054). Ash: deps/ash/lib/ash/filter/filter.ex (flat_map/2, l.1699).
+        {Ash.Filter, :flat_map, 2, "lib/ramal/ash.ex", "deps/ash/lib/ash/filter/filter.ex"}
       ] do
     test "assumption: #{inspect(module)}.#{function}/#{arity} is exported (Ramal calls it in #{ramal}; from #{ash})" do
       Code.ensure_loaded!(unquote(module))

@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `fragment(...)` in a filter now sees the branch's changes.** Inside a branch, `fragment("? > 80", capacity_head)` did not find a paddock the branch raised to 500 (while `capacity_head > 80` did), and dropped a row the branch changed that still matched, with no error: Ash's runtime cannot evaluate SQL text, so the rows a branch holds never matched (#218). The conjuncts of the filter that hold a fragment (directly, under `exists`, or in an expression calculation) are now judged by Postgres on the branch's rows, sent as an inline `VALUES` table that stands in for the table in one read-only query. It needs AshPostgres, and a read with no fragment is unchanged. A read is refused with `:fragment_unsupported` when the database cannot judge it right: another data layer, a table in a schema or a schema-per-tenant tenant, or a fragment in a conjunct that reaches a resource the branch changed. See `docs/limits.md` and ADR 0054.
+
 ### Changed
 
 - **Documented what a custom Ash type must satisfy in a branch, and tested it.** The embedded form (`dump_to_embedded/3` and `cast_from_embedded/3`) must round-trip, or a branch reads a value the database does not. New tests run a `NewType` over `:string` (`trim?: false`, `allow_empty?: true`), a JSON type with nested lists of maps and a struct with a different database form through create, update, read, diff, fork, ETS, Postgres and durable storage, and merge. See `docs/limits.md`.

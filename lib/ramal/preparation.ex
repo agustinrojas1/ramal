@@ -34,6 +34,10 @@ defmodule Ramal.Preparation do
       takes the conjuncts that reach it out of the data-layer query, and `check_base_rows/3` evaluates them in Elixir on
       the base rows the branch did not change; a sort loads the relationship and evaluates the calculation in memory
       (ADR 0025). Relationships are loaded first with `reuse_values?: true` so the branch's foreign keys are used.
+    * A conjunct of the filter with a `fragment(...)` cannot be evaluated by `Ash.Filter.Runtime`, which gives unknown for
+      SQL text, so the overlay's records are judged by the database instead: lib/ramal/preparation/fragments.ex sends them
+      as an inline `VALUES` table that shadows the resource's table in one read-only query (ADR 0054), and refuses the read
+      where the database cannot judge it right.
     * Filters are evaluated on overlay records with `Ash.Filter.Runtime.filter_matches/4` and sorting uses
       Ash.Actions.Sort.runtime_sort/3.
     * A paginated read (`page:`, `Ash.page!/2`, `Ash.stream!/2`) of a resource the overlay touches is paged here, not by
@@ -92,7 +96,7 @@ defmodule Ramal.Preparation do
   alias Ramal.Ash.Contract
   alias Ramal.Branch.Server
   alias Ramal.{Collation, Current, Overlay, Prefilter, Resource, Telemetry}
-  alias Ramal.Preparation.{Aggregates, ManyToMany, Paged, Related}
+  alias Ramal.Preparation.{Aggregates, Fragments, ManyToMany, Paged, Related}
 
   @impl true
   def prepare(query, _opts, _context) do
@@ -222,10 +226,16 @@ defmodule Ramal.Preparation do
         strip_paging(query, id, nil, nil)
 
       {:ok, plan} ->
-        query
-        |> Ash.Query.ensure_selected(plan.select)
-        |> relax(plan)
-        |> strip_paging(id, nil, plan)
+        case Fragments.check_removed(query, plan.removed) do
+          :ok ->
+            query
+            |> Ash.Query.ensure_selected(plan.select)
+            |> relax(plan)
+            |> strip_paging(id, nil, plan)
+
+          {:error, error} ->
+            Ash.Query.add_error(query, error)
+        end
 
       {:error, error} ->
         Ash.Query.add_error(query, error)
@@ -626,9 +636,9 @@ defmodule Ramal.Preparation do
   defp full_filter(%{context: %{ramal: %{related: %{full: full}}}}), do: full
   defp full_filter(query), do: query.filter
 
-  defp filter_calculations(query) do
+  defp filter_calculations(filter) do
     for %{relationship_path: [], attribute: %Ash.Query.Calculation{} = calculation} <-
-          Ramal.Ash.filter_refs(full_filter(query), true),
+          Ramal.Ash.filter_refs(filter, true),
         into: %{},
         do: {calculation.name, calculation}
   end
@@ -671,14 +681,25 @@ defmodule Ramal.Preparation do
   # first, which the runtime then finds already loaded.
   defp matching_keys(query, slice, id) do
     records = for {_key, {_kind, record}} <- slice, do: record
+    {fragments, filter} = Fragments.split(full_filter(query))
 
-    with {:ok, records} <- load_in_memory(records, filter_calculations(query), query),
-         {:ok, records} <-
-           load_aggregates(records, Related.aggregates(full_filter(query)), query, id),
-         {:ok, records} <- load_for_filter(records, full_filter(query), query),
-         {:ok, matches} <-
-           Ramal.Ash.filter_matches(query.domain, records, full_filter(query)) do
+    with {:ok, judged} <- judge_fragments(query, records, fragments),
+         {:ok, records} <- load_in_memory(judged, filter_calculations(filter), query),
+         {:ok, records} <- load_aggregates(records, Related.aggregates(filter), query, id),
+         {:ok, records} <- load_for_filter(records, filter, query),
+         {:ok, matches} <- Ramal.Ash.filter_matches(query.domain, records, filter) do
       {:ok, MapSet.new(matches, Resource.key_fun(query.resource))}
+    end
+  end
+
+  # The conjuncts that hold a fragment are judged by the database on the branch's rows (ADR 0054), and the rest in
+  # Elixir; a record must pass both.
+  defp judge_fragments(_query, records, nil), do: {:ok, records}
+
+  defp judge_fragments(query, records, fragments) do
+    with {:ok, keys} <- Fragments.matching(query, records, fragments) do
+      key = Resource.key_fun(query.resource)
+      {:ok, Enum.filter(records, &MapSet.member?(keys, key.(&1)))}
     end
   end
 

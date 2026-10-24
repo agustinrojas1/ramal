@@ -54,3 +54,4 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0048](0048-durable-branches.md) | Durable branches store each action that ended | accepted |
 | [0049](0049-ash-contract-checked-where-ramal-runs.md) | Ramal checks its Ash contract where it runs | accepted |
 | [0050](0050-models-tied-to-the-code-by-a-map.md) | The formal models are tied to the code by a map that CI reads | accepted |
+| [0054](0054-fragment-filters-judged-by-the-database.md) | A fragment filter is judged by the database on the branch's rows | accepted |

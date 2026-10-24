@@ -23,6 +23,7 @@ lib/ramal/resource/transformer.ex  the extension's transformer (Spark needs a mo
 lib/ramal/preparation.ex     read side: strip limit/offset, patch results
 lib/ramal/preparation/aggregates.ex  aggregates a read loads, recomputed from the branch's rows after the patch (ADR 0029)
 lib/ramal/preparation/related.ex  filters and sorts through a relationship the branch changed: split out of the data-layer query (ADR 0025), narrowed for to-one paths (ADR 0047)
+lib/ramal/preparation/fragments.ex  filter conjuncts with a `fragment(...)`, judged by Postgres on the branch's rows as an inline VALUES table (ADR 0054); fragments/postgres.ex is its Ecto half
 lib/ramal/preparation/lateral.ex  a relationship load with a multi-hop `through` path, walked hop by hop over the branch's rows instead of the database's lateral join (ADR 0046)
 lib/ramal/preparation/paged.ex   what page a query asks for and the cut of it from the patched list, so a paginated read in a branch is paged after the patch (ADR 0030)
 lib/ramal/collation.ex       the database's collation for the text a branch sorts in Elixir: ranks from one query, so a sort and min/max of text agree with Postgres (ADR 0045)

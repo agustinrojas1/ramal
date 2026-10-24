@@ -63,6 +63,11 @@ defmodule Ramal.Test.Farm.Paddock do
     has_many(:herd_vets, Ramal.Test.Farm.Vet, public?: true, through: [:herds, :vets])
   end
 
+  calculations do
+    # A calculation whose expression holds a fragment: only the database can evaluate it (ADR 0054).
+    calculate(:roomy, :boolean, expr(fragment("? > 80", capacity_head)), public?: true)
+  end
+
   aggregates do
     # Computed by the database; inside a branch the preparation recomputes them from the patched rows (ADR 0029).
     sum(:head_count, :herds, :head, default: 0, public?: true)
