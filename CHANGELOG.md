@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **`warn_raw_queries: true | :raise` on `Ramal.Supervisor`** (with `repo:`) reports a raw Ecto query on the table of a branched resource made inside `Ramal.run/2`, which reads the base data and never sees the branch. It emits `[:ramal, :raw_query, :detected]` and with `true` logs a warning with the stack trace, once per call site; with `:raise`, `Ramal.run/2` returns `{:error, %Ramal.Error{reason: :raw_query}}` (and `run!/2` raises) when its function returns. Queries of Ash actions, Ramal's own reads and the merge are not reported. Off by default, meant for development and test: it is the one opt-in that logs above `:debug` ([ADR 0051](docs/adr/0051-raw-query-guard.md), [#207](https://github.com/agustinrojas1/ramal/issues/207)).
+- **`mix ramal.doctor` lists the places in `lib/` that look like a raw query on a branched resource** (`from(x in Resource)`, an Ecto schema over its table, or a `Repo` call on one), as a heuristic that never changes the exit status.
+
 ## [0.9.1] - 2026-10-23
 
 A patch release with two fixes: a branch no longer accepts an update or destroy of another tenant's record, and a damaged stored branch no longer crashes `Ramal.get/1` or hides every branch from `Ramal.list/2`. Reads in a branch are also a little faster. Upgrading from 0.9.0 needs no step beyond the version (and `ramal_live ~> 0.9.1`, which shares it).

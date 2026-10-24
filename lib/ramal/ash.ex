@@ -249,6 +249,19 @@ defmodule Ramal.Ash do
   @spec mark_internal(Ash.Query.t()) :: Ash.Query.t()
   def mark_internal(query), do: Ash.Query.set_context(query, %{private: %{internal?: true}})
 
+  # Tripwire: "assumption: a query AshPostgres runs has an AshPostgres.DataLayer frame in the stack of its caller"
+  # (test/ramal/raw_query_guard_test.exs). Ramal.RawQueryGuard tells a raw Ecto query from the ones Ash and Ramal's own
+  # reads issue by it; no assumption of the Ash contract rests on it, as a miss only means a spurious warning in the
+  # opt-in guard. AshPostgres: deps/ash_postgres/lib/data_layer.ex (run_query/2, create/2, update/2, destroy/2 and the
+  # aggregate and bulk functions call the repo from there; AshSql frames are the query building, which never run it).
+  @doc false
+  @spec data_layer_stack?([tuple]) :: boolean
+  def data_layer_stack?(stacktrace),
+    do:
+      Enum.any?(stacktrace, fn {module, _fun, _arity, _location} ->
+        module == AshPostgres.DataLayer
+      end)
+
   # Tripwire: "assumption: a bulk update of a query reads with context.query_for == :bulk_update" (and :bulk_destroy).
   # Ash: deps/ash/lib/ash/actions/update/bulk.ex (query_for, ~l.82 and ~l.175).
   @doc false

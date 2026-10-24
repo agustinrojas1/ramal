@@ -342,11 +342,13 @@ This is the section that decides correctness. In a read action's preparation, wh
 `:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:upsert_unsupported`, `:atomic_unsupported`, `:branch_too_large`,
 `:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`, `:timeout`, `:merge_failed`,
 `:multitenancy_unsupported`, `:tenant_mismatch`, `:partial_record`, `:branch_mismatch`, `:task_in_action`,
-`:unbranchable_resources`, `:row_busy`, `:limit_reached`, `:ash_incompatible`. `lib/ramal/error.ex` holds the authoritative table.
+`:unbranchable_resources`, `:row_busy`, `:limit_reached`, `:ash_incompatible`, `:raw_query`. `lib/ramal/error.ex` holds the authoritative table.
 
 `Ramal.Ash` (public) is Ramal's contract with Ash: the Ash and AshPostgres versions the suite passes on, and the Ash internals Ramal relies on, so that a change in Ash has one place to look. `Ramal.Supervisor` compares the host's versions with it at boot and warns when they are outside the range. It never refuses to start.
 
 Ramal also checks that contract where it runs (ADR 0049). Ramal.Ash.Contract (internal) lists each assumption with its tier, the feature it serves, its tripwire test and a check; Ramal.Ash.Probe (internal, with its Ramal.Ash.Probe.* submodules) holds the small ETS resources and hooks the checks run on, which do not use `Ramal.Resource`. `mix ramal.doctor` (public) runs the checks on the host's Ash and prints each one. The supervisor runs them at boot outside the tested range. A broken core assumption makes every branch read and write fail with `:ash_incompatible`; a broken extended one makes only its feature fail.
+
+`Ramal.RawQueryGuard` (internal, started by `Ramal.Supervisor`; ADR 0051) is the opt-in `warn_raw_queries: true | :raise` guard: a `:telemetry` handler on the host repo's query event that reports a raw Ecto query on the table of a branched resource made inside `Ramal.run/2`, which never sees the branch. It emits `[:ramal, :raw_query, :detected]` and, with `true`, logs a warning once per call site (the one place besides `Ramal.Ash`'s boot warnings that logs above `:debug`, because the log is the point of a development guard); with `:raise`, `Ramal.run/2` returns `:raw_query` when its function returns. `mix ramal.doctor` also scans the project for raw queries on branched resources, as a labelled heuristic.
 
 ### 5.1 Agent tools (ADR 0019)
 
@@ -490,7 +492,8 @@ Events, all with `%{branch_id, domain}` metadata:
 `[:ramal, :branch, :append]` (a durable branch stored an action's delta: `seq`, `rows`, measurement `duration`), `[:ramal, :branch, :compact]` (a snapshot covering the write log: `wal`, `duration`),
 `[:ramal, :branch, :discard]`, `[:ramal, :branch, :propose]`, `[:ramal, :branch, :approve]`, `[:ramal, :branch, :reject]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
 `[:ramal, :read, :patch]` with measurements `%{base_rows, overlay_rows, result_rows, duration}`,
-`[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource, action, nested?}`.
+`[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource, action, nested?}`,
+`[:ramal, :raw_query, :detected]` with `%{branch_id, repo, table, resource, query, call_site, stacktrace}` (no `domain`).
 
 `[:ramal, :branch, :load]` is emitted every time a branch process starts, including right after creation, so
 `create` is followed by `load`. `unload` carries `reason: :idle | :shutdown`. `discard` is emitted once per discard

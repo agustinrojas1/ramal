@@ -106,7 +106,7 @@ defmodule Ramal do
     else
       with {:ok, status} <- Server.status(id),
            :ok <- ensure_open(id, status) do
-        {:ok, collect_notifications(id, fun)}
+        id |> collect_notifications(fun) |> refuse_raw_query(id)
       end
     end
   end
@@ -715,6 +715,14 @@ defmodule Ramal do
   """
   @spec discard(branch_or_id) :: :ok | {:error, Error.t()}
   def discard(branch_or_id), do: branch_or_id |> id_of() |> Server.discard()
+
+  # Only `warn_raw_queries: :raise` records a raw query (Ramal.RawQueryGuard); telemetry cannot raise in the query.
+  defp refuse_raw_query(result, id) do
+    case Supervisor.take_raw_query(id) do
+      nil -> {:ok, result}
+      detail -> {:error, Ramal.RawQueryGuard.error(detail)}
+    end
+  end
 
   # Writes inside a branch queue their notifications exactly as writes inside `Ash.transaction/3` do: nothing is sent
   # until the outermost transaction ends. `Ash.transaction/3` with no resources opens no database transaction and,
