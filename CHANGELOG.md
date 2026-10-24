@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **`context:` on `Ramal.merge/2` and `Ramal.approve/2`** sets a map as the context of every replayed changeset, so a change or hook that reads `changeset.context` sees request data that is not an action input (a request id for a lineage row, a correlation id for an audit entry). The log does not record the context a write was captured with, so until now a replayed action saw none ([#222](https://github.com/agustinrojas1/ramal/issues/222)).
+- **`Ramal.Merge.Result.entries`** lists every replayed log entry in log order, each with its index, type, resource, action, real key, the record the action returned (`:deleted` for a destroy) and that record's metadata. `records` keeps only the last write to a row; `entries` lets a host write one audit entry per action ([#224](https://github.com/agustinrojas1/ramal/issues/224)).
+
 ### Fixed
 
 - **A refused merge inside the caller's transaction returns its error instead of rolling the caller back.** Called inside `Repo.transaction/1` or `Ash.transact/3`, a merge that was refused (rows changed, or a replayed action failed) did not return: the rollback unwound to the caller's outermost transaction and took the caller's earlier writes with it. The merge now runs in a `SAVEPOINT` there (AshPostgres) and goes back to it, so it returns `{:error, %Ramal.Error{}}`, the caller's writes are kept, and the branch stays open ([#223](https://github.com/agustinrojas1/ramal/issues/223)). Outside a transaction nothing changes.

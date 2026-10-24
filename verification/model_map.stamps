@@ -7,7 +7,7 @@ Cluster.tla:Load  28a4abfe29622f5a
 Cluster.tla:Split  9bbfe9d6e6706b48
 Cluster.tla:Unload  042771e3ee4156be
 Cluster.tla:Write  d0e86c14da4791cf
-Nested.tla:Abort  01af87e4cae971d4
+Nested.tla:Abort  3162f9455c446fdb
 Nested.tla:Adopt  f8046927a9e85ccd
 Nested.tla:ChildWrite  0658134f13bd6909
 Nested.tla:Claim  8df1fa191401cf6a
@@ -22,7 +22,7 @@ Nested.tla:Snapshot  84f280b1037125eb
 Ramal.tla:Abort  01ceecfa0fa39d50
 Ramal.tla:Claim  0705d54141cfc09f
 Ramal.tla:Close  94a3173bc07dcd5b
-Ramal.tla:Commit  22fdb1db309ceb82
+Ramal.tla:Commit  5d894861b59bb91c
 Ramal.tla:Compact  20fea49dff2e7ade
 Ramal.tla:Crash  aba00d7436b5a919
 Ramal.tla:Down  129fc7228ca46257
@@ -51,5 +51,5 @@ model.bend:put_deleted  542cc6caa1ec5842
 model.bend:put_entry  75de6e7efa2e7b57
 model.bend:put_updated  1a8585d3df3e9555
 model.bend:rename  056a76a0df95a103
-model.bend:run  1ceb45982e74c0d1
+model.bend:run  d325e6903fe5d975
 model.bend:view  089573057a2a8d60

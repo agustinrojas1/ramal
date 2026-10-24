@@ -37,6 +37,26 @@ defmodule Ramal.Test.Farm.Herd do
       pagination(offset?: true, countable: true, required?: false)
     end
 
+    # An update that reads the host's context: the name takes `context[:name]` when it is given, and the returned record
+    # carries `context[:request_id]` as metadata, which `Ramal.Merge.Result.entries` hands back.
+    update :annotate do
+      require_atomic?(false)
+      accept([:head])
+
+      change(fn changeset, _context ->
+        changeset
+        |> Ash.Changeset.before_action(fn changeset ->
+          case changeset.context[:name] do
+            nil -> changeset
+            name -> Ash.Changeset.force_change_attribute(changeset, :name, name)
+          end
+        end)
+        |> Ash.Changeset.after_action(fn changeset, herd ->
+          {:ok, Ash.Resource.put_metadata(herd, :request_id, changeset.context[:request_id])}
+        end)
+      end)
+    end
+
     # An action that loads a calculation in its own preparation, which runs after the one Ramal installs.
     read :with_size do
       prepare(build(load: [:size]))
@@ -217,7 +237,16 @@ defmodule Ramal.Test.Farm.Herd do
       authorize_if(Checks.SmallHerd)
     end
 
-    policy action([:read, :list, :keyset_list, :create, :update, :destroy, :move_early]) do
+    policy action([
+             :read,
+             :list,
+             :keyset_list,
+             :create,
+             :update,
+             :destroy,
+             :move_early,
+             :annotate
+           ]) do
       authorize_if(always())
     end
   end

@@ -637,6 +637,8 @@ defmodule Ramal do
     * `:actor` - the actor for every replayed action. Default: the actor each write was captured with.
     * `:authorize?` - default `true`
     * `:on_stale` - `:error` (default), `:ignore`, or a function from the stale rows to `:continue` or `:abort`
+    * `:context` - a map set as the context of every replayed changeset, so a change or hook reads it in
+      `changeset.context` (`context: %{request_id: "req-42"}`). `approve/2` takes it too. Default: none.
     * `:mode` - only `:replay`
 
   ## Example
