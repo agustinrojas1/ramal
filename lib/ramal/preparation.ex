@@ -96,7 +96,7 @@ defmodule Ramal.Preparation do
   alias Ramal.Ash.Contract
   alias Ramal.Branch.Server
   alias Ramal.{Collation, Current, Overlay, Prefilter, Resource, Telemetry}
-  alias Ramal.Preparation.{Aggregates, Fragments, ManyToMany, Paged, Related}
+  alias Ramal.Preparation.{Aggregates, Fragments, ManyToMany, Paged, Placeholders, Related}
 
   @impl true
   def prepare(query, _opts, _context) do
@@ -743,13 +743,15 @@ defmodule Ramal.Preparation do
   defp sort_by(rows, pick, _query) when pick in [nil, []], do: {:ok, rows}
 
   # Text is ordered by the database's collation (`Ramal.Collation`, ADR 0045); everything else by Ash's runtime sort.
-  defp sort_by(rows, pick, query),
-    do:
-      Collation.sort(rows, pick,
+  defp sort_by(rows, pick, query) do
+    Placeholders.sorted(rows, pick, query.resource, fn lifted ->
+      Collation.sort(lifted, pick,
         resource: query.resource,
         domain: query.domain,
         tenant: query.tenant
       )
+    end)
+  end
 
   # A sort through a relationship the branch changed is evaluated in memory first, with the relationship loaded through
   # the patched reads, as for a filter calculation (`load_in_memory/3`); the runtime sort then reuses those values
@@ -779,13 +781,15 @@ defmodule Ramal.Preparation do
          {:ok, loaded} <- load_sort_calculations(loaded, calculations, query),
          {:ok, loaded} <- load_aggregates(loaded, Related.aggregates(sort), query, id),
          {:ok, sorted} <-
-           Collation.sort(loaded, sort,
-             resource: query.resource,
-             domain: query.domain,
-             tenant: query.tenant,
-             lazy?: true,
-             rename_calcs?: false
-           ) do
+           Placeholders.sorted(loaded, sort, query.resource, fn lifted ->
+             Collation.sort(lifted, sort,
+               resource: query.resource,
+               domain: query.domain,
+               tenant: query.tenant,
+               lazy?: true,
+               rename_calcs?: false
+             )
+           end) do
       # The relationships and calculations loaded to sort are not part of what the caller asked for.
       key = Resource.key_fun(query.resource)
       by_key = Map.new(rows, &{key.(&1), &1})

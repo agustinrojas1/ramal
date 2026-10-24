@@ -12,6 +12,7 @@ defmodule Ramal.Error do
   |---|---|
   | `:not_found` | no branch with that id, in memory or in storage |
   | `:not_open` | the branch is not in the status the call needs: open for `run/2`, `fork/2`, `merge/2` and `propose/2`, proposed for `approve/2` and `reject/2` |
+  | `:not_terminal` | `Ramal.delete/1` of a branch that is still `:open` or `:proposed` (`details.status`); discard it first, or discard it with `purge: true` |
   | `:stale` | the base moved under rows the branch read (`details.rows`); for a nested fork, the parent branch did (`details.rows`), or changed again while the fork was being merged (`details.rows` is empty) |
   | `:merge_failed` | a replayed action failed; `details` has `index`, `type`, `resource`, `action` and the Ash `error` |
   | `:database_generated_key` | a branch cannot create a row whose primary key the database generates and that has no placeholder type (not a single integer or UUID `generated? true` key) |
@@ -29,6 +30,8 @@ defmodule Ramal.Error do
   | `:parent_not_open` | a nested fork cannot merge because its parent branch is not open (merged, discarded, proposed or being merged); discard the fork (`details.parent`, `status`) |
   | `:no_parent` | `Ramal.diff/2` with `against: :parent` of a branch that is not a nested fork |
   | `:nested_branch` | `Ramal.run/2` was called inside another `Ramal.run/2`, or `Ramal.merge/2` inside one |
+  | `:nested_fork` | `Ramal.stale/2` or `Ramal.mark_merged/1` of a nested fork, which merges into its parent with `Ramal.merge/2` (ADR 0051) |
+  | `:not_in_transaction` | `Ramal.stale/2` with `lock: true` outside the caller's transaction, where the locks would be released on return (`details.resources`, ADR 0051) |
   | `:row_busy` | a write to a row that another process's action wrote in the branch and has not ended (`details.resource`, `key`); retry once it has |
   | `:missing_snapshot` | an overlay entry that needs the base row as first seen has none recorded |
   | `:limit_reached` | `Ramal.branch/2` or `Ramal.fork/2` was refused by `:max_active_branches` or `:branch_rate` of `Ramal.Supervisor` (`details.limit`, `max`, and `active` or `window`) |
@@ -53,6 +56,7 @@ defmodule Ramal.Error do
   @type reason ::
           :not_found
           | :not_open
+          | :not_terminal
           | :stale
           | :merge_failed
           | :database_generated_key
@@ -70,6 +74,8 @@ defmodule Ramal.Error do
           | :parent_not_open
           | :no_parent
           | :nested_branch
+          | :nested_fork
+          | :not_in_transaction
           | :missing_snapshot
           | :row_busy
           | :limit_reached

@@ -596,6 +596,53 @@ defmodule Ramal do
   def merge(branch_or_id, opts \\ []), do: branch_or_id |> id_of() |> Ramal.Merge.run(opts)
 
   @doc """
+  Experimental (ADR 0051, `docs/STABILITY.md`). The rows the branch read or wrote that the database changed since the
+  branch first saw them: the staleness check `merge/2` runs, on its own, for a host that commits through its own
+  command layer instead of letting `merge/2` replay the Ash log.
+
+  Returns `{:ok, []}` when nothing is stale, or `{:ok, rows}` with `%{resource: module, key: term, reason: :changed |
+  :deleted}` for each stale row. The branch stays open and unchanged. Use `mark_merged/1` after the host's own commit.
+
+  ## Options
+
+    * `:lock` - take the same `FOR UPDATE` locks the merge takes, held until the caller's transaction ends. The call
+      must be inside that transaction, or it is refused with `:not_in_transaction`. Default `false`.
+
+  A nested fork is refused with `:nested_fork`. The staleness check of a branch that is not locked and not in a
+  transaction can be out of date by the time the host acts on it; use `lock: true` for a commit.
+
+  ## Example
+
+      Ash.transact([MyApp.Farm.Herd], fn ->
+        case Ramal.stale(branch, lock: true) do
+          {:ok, []} -> MyApp.Commands.replay(commands)
+          {:ok, rows} -> {:error, {:stale, rows}}
+        end
+      end)
+
+      {:ok, %Ramal.Branch{status: :merged}} = Ramal.mark_merged(branch)
+  """
+  @spec stale(branch_or_id, keyword) ::
+          {:ok, [%{resource: module, key: term, reason: :changed | :deleted}]}
+          | {:error, Error.t()}
+  def stale(branch_or_id, opts \\ []), do: branch_or_id |> id_of() |> Ramal.Merge.stale(opts)
+
+  @doc """
+  Experimental (ADR 0051, `docs/STABILITY.md`). Stores an open branch as `:merged` without replaying its log, after the
+  host applied the branch's work through its own commands (see `stale/2`), so `list/2` and the inspector show it as
+  merged. Its process stops. Returns the merged branch.
+
+  Call it after the host's transaction committed. It is a separate step from that commit, so a crash between the two
+  leaves the branch open: running `stale/2` on it then reports the rows the host's commands changed.
+
+  ## Example
+
+      {:ok, %Ramal.Branch{status: :merged}} = Ramal.mark_merged(branch)
+  """
+  @spec mark_merged(branch_or_id) :: {:ok, Branch.t()} | {:error, Error.t()}
+  def mark_merged(branch_or_id), do: branch_or_id |> id_of() |> Ramal.Merge.mark_merged()
+
+  @doc """
   Proposes an open branch for a decision: the branch is frozen (status `:proposed`, no more reads, writes or forks) and
   persisted, with who proposed it and why. Someone with the right to decide then calls `approve/2`, which merges it, or
   `reject/2`. The proposer can still `discard/1` it to withdraw it.
@@ -707,14 +754,61 @@ defmodule Ramal do
   The record stays in storage with status `:discarded`, so `list/2` can show it and later calls return
   `:not_open`. Discarding an already discarded branch is a no-op. A merged branch cannot be discarded.
 
+  ## Options
+
+    * `:purge` - `true` also deletes the record and its write log once the branch is discarded, as `delete/1` does, so
+      nothing is left in storage or in `list/2`. Default `false`.
+
+  A host that opens a branch (or a fork) per request as scratch space should discard it with `purge: true`: a kept
+  record is about 1 KB in ETS and nothing else ever removes it, so the table and `list/2` grow without bound. Keep the
+  record only for a branch someone will look at later, and `delete/1` it when they are done.
+
   ## Example
 
       {:ok, branch} = Ramal.branch(MyApp.Farm)
       :ok = Ramal.discard(branch)
       {:error, %Ramal.Error{reason: :not_open}} = Ramal.run(branch, fn -> :never end)
+
+      {:ok, scratch} = Ramal.branch(MyApp.Farm)
+      :ok = Ramal.discard(scratch, purge: true)
+      {:error, %Ramal.Error{reason: :not_found}} = Ramal.get(scratch.id)
   """
   @spec discard(branch_or_id) :: :ok | {:error, Error.t()}
   def discard(branch_or_id), do: branch_or_id |> id_of() |> Server.discard()
+
+  @doc """
+  `discard/1` with options: `discard(branch, purge: true)` also deletes the record, as `delete/1` does. See `discard/1`
+  for what discarding does and for the options.
+
+  ## Example
+
+      :ok = Ramal.discard(branch, purge: true)
+  """
+  @spec discard(branch_or_id, keyword) :: :ok | {:error, Error.t()}
+  def discard(branch_or_id, opts) when is_list(opts) do
+    with :ok <- discard(branch_or_id) do
+      if Keyword.get(opts, :purge, false), do: delete(branch_or_id), else: :ok
+    end
+  end
+
+  @doc """
+  Deletes the record of a branch that is `:discarded`, `:merged` or `:rejected` from storage, with its write log.
+
+  Afterwards `get/1` returns `:not_found` and `list/2` no longer shows it. An `:open` or `:proposed` branch is refused
+  with `{:error, %Ramal.Error{reason: :not_terminal}}`: discard it first, or use `discard/2` with `purge: true`.
+  Deleting a branch that is not in storage returns `:not_found`.
+
+  This never touches the database the branch was made from, only the branch's own record.
+
+  ## Example
+
+      {:ok, branch} = Ramal.branch(MyApp.Farm)
+      {:error, %Ramal.Error{reason: :not_terminal}} = Ramal.delete(branch)
+      :ok = Ramal.discard(branch)
+      :ok = Ramal.delete(branch)
+  """
+  @spec delete(branch_or_id) :: :ok | {:error, Error.t()}
+  def delete(branch_or_id), do: branch_or_id |> id_of() |> Server.purge()
 
   # Writes inside a branch queue their notifications exactly as writes inside `Ash.transaction/3` do: nothing is sent
   # until the outermost transaction ends. `Ash.transaction/3` with no resources opens no database transaction and,

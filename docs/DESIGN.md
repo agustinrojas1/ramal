@@ -252,7 +252,10 @@ This is the section that decides correctness. In a read action's preparation, wh
   or UUID key gets a placeholder (integers from `-2_147_483_648` up, random UUIDs) that the merge renames to the key the
   replayed create gets, in the later entries' input and keys too ([ADR 0042](adr/0042-placeholder-keys-for-generated-primary-keys.md)).
   `Ramal.Merge.Result.keys` maps placeholder to real key. Any other generated key fails the action with
-  `:database_generated_key`.
+  `:database_generated_key`. A sort or a keyset page on a generated integer key compares a placeholder as larger than
+  every real key, in creation order, which is where the merge puts the row (Ramal.Preparation.Placeholders, internal,
+  one line on why: the sort and the cursor comparison are done in Elixir on the patched list; UUID keys have no order to
+  match).
 - Destroys mark the key `:deleted`. Updates of a `:created` row stay `:created` with the new record. The first write to
   an existing row keeps the row as the action found it in `base`, which `diff/1` compares against.
 - Every write is appended to the log as `{action_type, resource, action_name, params, actor, opts, at}`; `opts` has
@@ -323,6 +326,12 @@ This is the section that decides correctness. In a read action's preparation, wh
 @spec merge(branch | id, keyword) :: {:ok, Ramal.Merge.Result.t()} | {:error, Ramal.Error.t()}
 # opts: actor, authorize? (default true), on_stale (:error | :ignore | (stale_rows -> :continue | :abort)), mode (:replay)
 
+@spec stale(branch | id, keyword) :: {:ok, [%{resource: module, key: term, reason: :changed | :deleted}]} | {:error, Ramal.Error.t()}
+# experimental (ADR 0051): the staleness check of merge/2 on its own; opts: lock (true: FOR UPDATE inside the caller's transaction)
+
+@spec mark_merged(branch | id) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
+# experimental (ADR 0051): store an open branch as merged without replaying it, after the host committed its own commands
+
 @spec propose(branch | id, keyword) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
 # opts: proposed_by, reason
 
@@ -339,6 +348,11 @@ This is the section that decides correctness. In a read action's preparation, wh
 # Ash.load/3 that follows the branch's foreign keys (ADR 0031)
 
 @spec discard(branch | id) :: :ok | {:error, Ramal.Error.t()}
+@spec discard(branch | id, keyword) :: :ok | {:error, Ramal.Error.t()}
+# purge: true also deletes the record and its write log, as delete/1 does
+
+@spec delete(branch | id) :: :ok | {:error, Ramal.Error.t()}
+# removes the record of a :discarded, :merged or :rejected branch; :not_terminal for an open or proposed one
 
 @spec get(id) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
 @spec list(domain, keyword) :: {:ok, [Ramal.Branch.t()]} | {:error, Ramal.Error.t()}
@@ -349,7 +363,7 @@ This is the section that decides correctness. In a read action's preparation, wh
 `:not_found`, `:not_open`, `:stale`, `:database_generated_key`, `:bulk_unsupported`, `:upsert_unsupported`, `:atomic_unsupported`, `:branch_too_large`,
 `:no_branchable_resources`, `:nested_branch`, `:missing_snapshot`, `:not_started`, `:storage`, `:timeout`, `:merge_failed`,
 `:multitenancy_unsupported`, `:tenant_mismatch`, `:partial_record`, `:branch_mismatch`, `:task_in_action`,
-`:unbranchable_resources`, `:row_busy`, `:limit_reached`, `:ash_incompatible`. `lib/ramal/error.ex` holds the authoritative table.
+`:unbranchable_resources`, `:row_busy`, `:limit_reached`, `:ash_incompatible`, `:nested_fork`, `:not_in_transaction`. `lib/ramal/error.ex` holds the authoritative table.
 
 `Ramal.Ash` (public) is Ramal's contract with Ash: the Ash and AshPostgres versions the suite passes on, and the Ash internals Ramal relies on, so that a change in Ash has one place to look. `Ramal.Supervisor` compares the host's versions with it at boot and warns when they are outside the range. It never refuses to start.
 
@@ -442,6 +456,16 @@ keyed by `{resource, key}`. On `merge/2`:
 
 Limits and the reasons for these choices are in [ADR 0007](adr/0007-merge.md).
 
+### Committing through the host's own commands (experimental)
+
+A host with a command layer above Ash (plain modules that validate across resources, write an audit entry and call
+several actions) can use step 2 alone. `Ramal.stale(branch, lock: true)` inside the host's own `Ash.transact/3` returns the
+stale rows, taking the same locks, through the same Ramal.Merge.stale_rows/2 the merge calls; the host then runs its
+commands in that transaction, and after the commit calls `Ramal.mark_merged(branch)`, which claims the branch and stores
+it as `:merged` (steps 1 and 5 without the replay) so `list/2` and the inspector show it. The merge's exactly-once
+guarantee (ADR 0035) does not cover the host's commit. The formal models need no new step: the check is the read-only part
+of `Commit`, and the host's commit is another writer to the base. ADR [0051](adr/0051-staleness-check-without-the-merge.md).
+
 ### 7.1 Proposals (0.2)
 
 A branch can be frozen as a proposal that someone decides on, with the decision recorded on the branch itself.
@@ -495,7 +519,7 @@ Events, all with `%{branch_id, domain}` metadata:
 `[:ramal, :branch, :create]`, `[:ramal, :branch, :fork]`, `[:ramal, :branch, :unload]`, `[:ramal, :branch, :load]`,
 `[:ramal, :branch, :persist_failed]` (storage refused a write on `:idle`, `:shutdown`, `:merged`, `:append` or `:compact`, with the `error`),
 `[:ramal, :branch, :append]` (a durable branch stored an action's delta: `seq`, `rows`, measurement `duration`), `[:ramal, :branch, :compact]` (a snapshot covering the write log: `wal`, `duration`),
-`[:ramal, :branch, :discard]`, `[:ramal, :branch, :propose]`, `[:ramal, :branch, :approve]`, `[:ramal, :branch, :reject]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
+`[:ramal, :branch, :discard]`, `[:ramal, :branch, :delete]`, `[:ramal, :branch, :propose]`, `[:ramal, :branch, :approve]`, `[:ramal, :branch, :reject]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
 `[:ramal, :read, :patch]` with measurements `%{base_rows, overlay_rows, result_rows, duration}`,
 `[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource, action, nested?}`.
 
@@ -620,5 +644,6 @@ action (ADR 0016).
 | 36 | A text sort, `:min` and `:max` inside a branch order by the rank Postgres gives the value under the column's collation, from one read-only query per sort key; `C`, `POSIX` and other data layers keep byte order | Strings compared as bytes in the branch and by `en_US.UTF-8` in the database, so the same read disagreed before and after the merge. No Elixir comparator reproduces a collation; asking the database does. [ADR 0045](adr/0045-text-sorted-by-the-databases-collation.md), supersedes [ADR 0024](adr/0024-text-sort-order.md) |
 | 37 | A nested fork (`fork/2` with `nested: true`) merges into its parent by replaying its own entries in a scratch copy that the parent adopts if its version did not change; the parent persists first and remembers the fork; a fork the parent holds is merged however its own status was left | A fork that replayed its whole log into the database could not be merged without its parent. Replaying in a copy keeps the parent untouched when a replay fails, the version makes an adoption valid, and the model checked in `verification/tla/Nested.tla` found the fork that was still writable after its merger died. [ADR 0043](adr/0043-nested-branches-merge-into-their-parent.md) |
 | 38 | With `cluster: true` branch processes are named with `:global`, every load takes the next epoch from the storage and every save is conditional on it; a refused process emits `:fenced` and stops; `:global` keeps the higher epoch when split nodes meet | Two nodes sharing Postgres could each hold a branch and the later save overwrote the earlier one's writes. The database, not the network, decides who may write. Marks and telemetry stay per node. [ADR 0044](adr/0044-branches-in-a-cluster.md) |
+| 40 | The staleness check is public and experimental: `Ramal.stale/2` runs it alone (with the merge's locks inside the caller's transaction) and `Ramal.mark_merged/1` stores the branch as merged; there is no replay hook | A host with a command layer wants to run its own commands but keep the guarantee that the base did not move. Exposing the check composes with any host and leaves the merge path in one place. [ADR 0051](adr/0051-staleness-check-without-the-merge.md) |
 | 39 | A branch can be durable: the outermost action's end is a call that appends the action's delta (its own rows, never a running action's) to the storage's write log, conditional on the epoch in a cluster, before the action returns; a load is the snapshot plus the log; a snapshot compacts the log | Writes since the last save were lost on a node crash, and storing on every write would store the writes of running actions (ADR 0033). The cost is a storage write per action. [ADR 0048](adr/0048-durable-branches.md) |
 | 40 | A filter conjunct that holds a `fragment(...)` is judged by the database on the branch's rows, sent as an inline `VALUES` table that shadows the resource's table in one read-only query; the read is refused with `:fragment_unsupported` where that cannot be right (another data layer, a table in a schema, a conjunct that reaches a changed resource) | Ash's runtime cannot evaluate SQL text, so rows a branch created or changed never matched a fragment and a changed row that still matched vanished, with no error (#218). Asking the database keeps fragments working; refusing everywhere would have made jsonb, full-text and PostGIS filters unusable in a branch. [ADR 0054](adr/0054-fragment-filters-judged-by-the-database.md) |
