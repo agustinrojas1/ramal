@@ -96,7 +96,13 @@ defmodule Ramal.Telemetry do
       iex> Ramal.Telemetry.branch(:discard, %{id: "b1", domain: MyApp.Farm}, %{reason: :requested})
       :ok
   """
-  @spec branch(atom, %{id: String.t(), domain: module}, map, map) :: :ok
+  @spec branch(
+          atom,
+          %{required(:id) => String.t(), required(:domain) => module, optional(atom) => term},
+          map,
+          map
+        ) ::
+          :ok
   def branch(step, %{id: id, domain: domain}, extra \\ %{}, measurements \\ %{}) do
     :telemetry.execute(
       [:ramal, :branch, step],
@@ -170,7 +176,12 @@ defmodule Ramal.Telemetry do
       iex> Ramal.Telemetry.write(:capture, %{id: "b1", domain: MyApp.Farm}, %{action_type: :update})
       :ok
   """
-  @spec write(atom, %{id: String.t(), domain: module}, map) :: :ok
+  @spec write(
+          atom,
+          %{required(:id) => String.t(), required(:domain) => module, optional(atom) => term},
+          map
+        ) ::
+          :ok
   def write(step, %{id: id, domain: domain}, extra \\ %{}) do
     :telemetry.execute(
       [:ramal, :write, step],

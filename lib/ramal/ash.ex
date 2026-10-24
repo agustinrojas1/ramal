@@ -436,7 +436,7 @@ defmodule Ramal.Ash do
   # @doc false). Ash's own filter step with no validation of the filter, which the keyset cursor and the lookups of
   # Ramal.Capture and Ramal.Merge use.
   @doc false
-  @spec do_filter(Ash.Query.t(), term) :: Ash.Query.t()
+  @spec do_filter(Ash.Query.t() | Ash.Resource.t(), term) :: Ash.Query.t()
   def do_filter(query, filter), do: Ash.Query.do_filter(query, filter)
 
   # Relationship loads through the branch
