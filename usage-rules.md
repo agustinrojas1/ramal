@@ -36,6 +36,8 @@ test decides whether it happens.
 
 - Every function that takes a branch also takes its id. Keep the id, not the struct, between requests.
 - `Ramal.run/2` returns `{:ok, result}`; `run!/2` returns the result and raises.
+- Writes made before `fun` raises stay in the branch. `Ramal.run(branch, fun, atomic: true)` takes them back when `fun` raises,
+  throws, exits or returns `{:error, _}`, and re-raises or returns as usual; it is not isolation, so use it from one process at a time.
 - `Ramal.merge/2` replays the log through the real actions in one transaction, with `authorize?: true`. Pass `actor:`.
 - `Ramal.list(domain, status: :proposed, owner: id)` is what a reviewer lists.
 

@@ -87,13 +87,61 @@ defmodule Ramal do
   Creates, updates and destroys inside `fun` land in the branch instead of the data layer (`Ramal.Capture`), and the
   notifications they produce are dropped unless the resource sets `notify_in_branch? true`.
 
+  ## Options
+
+    * `:atomic` - `true` to take back what `fun` wrote when it does not succeed. Default `false`
+
+  ## Atomic runs
+
+  A branch has no transaction, so by default the writes `fun` made before it raised stay in the branch. With
+  `atomic: true`, if `fun` raises, throws, exits or returns `{:error, _}`, every write it made is taken back and the
+  branch is as it was before the call. Then the failure goes on as it would without the option: the exception, throw or
+  exit is raised again, and the `{:error, _}` is returned as `{:ok, {:error, _}}`. A result of any other shape, `{:ok, _}`
+  included, keeps the writes. The notifications of rolled-back writes are dropped.
+
+  It is cheaper than forking before the unit of work and discarding the fork when it fails: the branch process notes where
+  its log and overlay stand when `fun` starts, and a failure cuts the log back to that length and puts back the overlay
+  entries of the rows the cut entries touched, and the counter of generated keys. No branch is created, and no `:discarded`
+  record is left.
+
+  It differs from a database transaction in these ways:
+
+    * It is not isolation. Nothing is locked, and another process that runs the same branch sees `fun`'s writes while it
+      runs. The writes such a process makes meanwhile are taken back too, because the log is cut back by length, so use an
+      atomic run from one process at a time on a branch.
+    * It covers the branch only. What `fun` did outside it (an HTTP call, a message, a write the host made with `Repo`) stays.
+    * It does not nest: `run/3` inside a run is refused with `:nested_branch`, as always. To keep part of the work of `fun`,
+      make the parts separate runs.
+    * On a durable branch (ADR 0048) the actions that ended inside `fun` are already in the write log, which only grows.
+      The rollback stores a snapshot of the branch, which deletes those entries of the log, and returns once it is stored.
+      If the storage refuses the snapshot, the rollback stands in memory, `[:ramal, :branch, :persist_failed]` is emitted
+      with `reason: :rollback` and the snapshot is tried again; a crash of the node before one succeeds brings the
+      rolled-back writes back.
+    * While an atomic run is open the branch process does not unload for being idle.
+
+  When the branch cannot be rolled back (its process was restarted meanwhile, `:savepoint_lost`, or it is not open any
+  more), `run/3` returns `{:error, %Ramal.Error{}}` if `fun` returned, and raises again what `fun` raised.
+
   ## Example
 
       {:ok, branch} = Ramal.branch(MyApp.Farm)
       {:ok, nil} = Ramal.run(branch, fn -> Ramal.current() && nil end)
+
+      {:ok, {:error, :no_room}} =
+        Ramal.run(
+          branch,
+          fn ->
+            Ash.create!(MyApp.Farm.Paddock, %{name: "L18", capacity_head: 1})
+            {:error, :no_room}
+          end,
+          atomic: true
+        )
+
+      {:ok, []} = Ramal.diff(branch)
   """
-  @spec run(branch_or_id, (-> result)) :: {:ok, result} | {:error, Error.t()} when result: term
-  def run(branch_or_id, fun) when is_function(fun, 0) do
+  @spec run(branch_or_id, (-> result), keyword) :: {:ok, result} | {:error, Error.t()}
+        when result: term
+  def run(branch_or_id, fun, opts \\ []) when is_function(fun, 0) and is_list(opts) do
     id = id_of(branch_or_id)
 
     if current = Current.own_id() do
@@ -106,23 +154,25 @@ defmodule Ramal do
     else
       with {:ok, status} <- Server.status(id),
            :ok <- ensure_open(id, status) do
-        id |> collect_notifications(fun) |> refuse_raw_query(id)
+        id |> execute(fun, Keyword.get(opts, :atomic, false)) |> refuse_raw_query(id)
       end
     end
   end
 
   @doc """
-  Like `run/2` but returns the result and raises `Ramal.Error` instead of returning an error tuple.
+  Like `run/3` but returns the result and raises `Ramal.Error` instead of returning an error tuple.
 
   ## Example
 
       {:ok, branch} = Ramal.branch(MyApp.Farm)
       Ramal.run!(branch, fn -> :done end)
       #=> :done
+      Ramal.run!(branch, fn -> :done end, atomic: true)
+      #=> :done
   """
-  @spec run!(branch_or_id, (-> result)) :: result when result: term
-  def run!(branch_or_id, fun) do
-    case run(branch_or_id, fun) do
+  @spec run!(branch_or_id, (-> result), keyword) :: result when result: term
+  def run!(branch_or_id, fun, opts \\ []) do
+    case run(branch_or_id, fun, opts) do
       {:ok, result} -> result
       {:error, error} -> raise error
     end
@@ -777,12 +827,14 @@ defmodule Ramal do
   def discard(branch_or_id), do: branch_or_id |> id_of() |> Server.discard()
 
   # Only `warn_raw_queries: :raise` records a raw query (Ramal.RawQueryGuard); telemetry cannot raise in the query.
-  defp refuse_raw_query(result, id) do
+  defp refuse_raw_query({:ok, _result} = ok, id) do
     case Supervisor.take_raw_query(id) do
-      nil -> {:ok, result}
+      nil -> ok
       detail -> {:error, Ramal.RawQueryGuard.error(detail)}
     end
   end
+
+  defp refuse_raw_query(error, _id), do: error
 
   @doc """
   `discard/1` with options: `discard(branch, purge: true)` also deletes the record, as `delete/1` does. See `discard/1`
@@ -822,16 +874,50 @@ defmodule Ramal do
   # until the outermost transaction ends. `Ash.transaction/3` with no resources opens no database transaction and,
   # with `return_notifications?: true`, hands the queue back instead of sending it. Only resources that opted in with
   # `notify_in_branch? true` get theirs sent.
-  defp collect_notifications(id, fun) do
+  # `keep?` decides from the result whether the notifications are sent: those of a rolled-back run never are.
+  defp collect_notifications(id, fun, keep?) do
     {:ok, result, notifications} =
       Ash.transaction([], fn -> Current.with_branch(id, fun) end, return_notifications?: true)
 
-    notifications
-    |> Enum.filter(&Resource.notify_in_branch?(&1.resource))
-    |> Ash.Notifier.notify()
+    if keep?.(result) do
+      notifications
+      |> Enum.filter(&Resource.notify_in_branch?(&1.resource))
+      |> Ash.Notifier.notify()
+    end
 
     result
   end
+
+  defp execute(id, fun, true), do: run_atomic(id, fun)
+  defp execute(id, fun, _plain), do: {:ok, collect_notifications(id, fun, fn _result -> true end)}
+
+  defp run_atomic(id, fun) do
+    with {:ok, savepoint} <- Server.savepoint(id),
+         do: settle(id, savepoint, attempt(id, fun, savepoint))
+  end
+
+  defp settle(id, savepoint, {:error, _reason} = result) do
+    with :ok <- Server.rollback(id, savepoint), do: {:ok, result}
+  end
+
+  defp settle(id, savepoint, result) do
+    Server.keep(id, savepoint)
+    {:ok, result}
+  end
+
+  # An exception, throw or exit of `fun` is raised again after the rollback, with its own stacktrace. When the rollback
+  # itself fails there is nothing better to raise than what `fun` raised.
+  defp attempt(id, fun, savepoint) do
+    collect_notifications(id, fun, &(not failed?(&1)))
+  catch
+    kind, reason ->
+      stacktrace = __STACKTRACE__
+      Server.rollback(id, savepoint)
+      :erlang.raise(kind, reason, stacktrace)
+  end
+
+  defp failed?({:error, _reason}), do: true
+  defp failed?(_result), do: false
 
   defp ensure_durable(true, %{storage: storage}) do
     if Storage.durable?(storage), do: :ok, else: {:error, Storage.durability_unsupported(storage)}

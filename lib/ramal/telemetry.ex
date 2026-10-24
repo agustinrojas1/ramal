@@ -11,9 +11,10 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :branch, :fork]` | a branch was forked from another (extra metadata: `parent_id`, and `nested: true` for a fork that merges into its parent) |
   | `[:ramal, :branch, :load]` | a branch process started from storage, or right after creation |
   | `[:ramal, :branch, :unload]` | a branch process stopped after persisting (`reason`: `:idle` or `:shutdown`) |
-  | `[:ramal, :branch, :persist_failed]` | storage refused the write of a branch (`reason`: `:idle`, `:shutdown`, `:merged`, `:append` or `:compact`, `error`): an idle branch stays loaded and tries again; so does a merge whose commit succeeded but whose `:merged` status could not be stored (`Ramal.Merge.Result` `persist_failed`); on a shutdown its last persisted state is what remains; a refused `:append` fails the action it belongs to (ADR 0048), and a refused `:compact` is tried again after fifty more appends |
+  | `[:ramal, :branch, :persist_failed]` | storage refused the write of a branch (`reason`: `:idle`, `:shutdown`, `:merged`, `:append`, `:compact` or `:rollback`, `error`): an idle branch stays loaded and tries again; so does a merge whose commit succeeded but whose `:merged` status could not be stored (`Ramal.Merge.Result` `persist_failed`); on a shutdown its last persisted state is what remains; a refused `:append` fails the action it belongs to (ADR 0048), and a refused `:compact` is tried again after fifty more appends |
   | `[:ramal, :branch, :append]` | a durable branch (ADR 0048) stored the writes of an action that ended in its write log, before the action returned (extra metadata: `seq`, `rows`, the rows the delta holds; measurement `duration`, in native time units, of the storage call) |
   | `[:ramal, :branch, :compact]` | a durable branch stored a snapshot that covers its write log, which deleted the deltas it covers (extra metadata: `wal`, the last `seq` the snapshot covers; measurement `duration`) |
+  | `[:ramal, :branch, :rollback]` | an atomic run (`Ramal.run/3` with `atomic: true`) failed and the branch took back its writes (extra metadata: `entries`, the log entries cut) |
   | `[:ramal, :branch, :adopt]` | a branch took the work of a nested fork that merged into it (extra metadata: `child_id`; ADR 0043) |
   | `[:ramal, :branch, :fenced]` | the storage refused a write of a branch process because another process loaded the branch after it did (`Ramal.Supervisor` `cluster: true`, metadata `epoch` and `error`): the process stops, and what it held since its last save is lost |
   | `[:ramal, :branch, :discard]` | a branch was discarded |
@@ -59,6 +60,7 @@ defmodule Ramal.Telemetry do
           :unload,
           :append,
           :compact,
+          :rollback,
           :persist_failed,
           :fenced,
           :discard,
