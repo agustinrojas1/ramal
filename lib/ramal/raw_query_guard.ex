@@ -18,17 +18,13 @@ defmodule Ramal.RawQueryGuard do
   # Each report emits `[:ramal, :raw_query, :detected]` (measurement `system_time`; metadata `branch_id`, `repo`,
   # `table`, `resource`, `query`, `call_site` and `stacktrace`). The mode decides what else happens:
   #
-  #   * `true` - logs a warning with the stack trace, once per table and call site, so a loop does not flood the log.
+  #   * `true` - nothing else: the host attaches a handler that logs or warns as it likes (docs/limits.md).
   #   * `:raise` - `Ramal.run/2` returns `{:error, %Ramal.Error{reason: :raw_query}}` (and `Ramal.run!/2` raises it)
   #     once `fun` has returned, with the first query in `details`. It cannot fail the query itself: `:telemetry`
   #     detaches a handler that raises, and by then the query has run.
   #
-  # Exception to "the library never logs above `:debug`":
-  # This is the one place besides the boot warnings of `Ramal.Ash` where Ramal logs a warning. It is an explicit
-  # opt-in for development and test, and the log is the point of it. Without the option nothing is attached and
-  # nothing is logged.
-
-  require Logger
+  # The guard never logs: observability goes through the event, like the rest of the library. Without the option
+  # nothing is attached.
 
   alias Ramal.{Current, Error, Telemetry}
   alias Ramal.Supervisor
@@ -37,7 +33,6 @@ defmodule Ramal.RawQueryGuard do
   # Frames of the stack that belong to the query machinery, not to the code that issued it.
   @machinery_prefixes ["Elixir.Ecto.", "Elixir.DBConnection.", "Elixir.Postgrex."]
   @machinery_modules [:telemetry, Process, Enum, DBConnection, Postgrex, __MODULE__]
-  @max_frames 20
   @depth 64
 
   @type mode :: true | :raise
@@ -167,30 +162,8 @@ defmodule Ramal.RawQueryGuard do
 
     Telemetry.raw_query(:detected, detail)
 
-    case mode do
-      :raise -> Supervisor.record_raw_query(branch_id, detail)
-      true -> warn_once(detail)
-    end
-
+    if mode == :raise, do: Supervisor.record_raw_query(branch_id, detail)
     :ok
-  end
-
-  defp warn_once(%{table: table, call_site: call_site} = detail) do
-    if Supervisor.first_raw_query?({table, call_site}), do: Logger.warning(message(detail))
-    :ok
-  end
-
-  @doc false
-  @spec message(map) :: String.t()
-  def message(detail) do
-    trace =
-      detail.stacktrace
-      |> Enum.take(@max_frames)
-      |> Enum.map_join("\n", &("    " <> format_frame(&1)))
-
-    "Ramal: a raw Ecto query on #{inspect(detail.table)} (#{inspect(detail.resource)}) ran inside branch " <>
-      "#{inspect(detail.branch_id)} at #{detail.call_site}. It reads or writes the database, not the branch. " <>
-      "Use an Ash action, or Ramal.load/3 and Ramal.aggregate/4, so the branch is seen.\n#{trace}"
   end
 
   @doc false

@@ -42,12 +42,27 @@ defmodule Ramal.Supervisor do
       and `c:Ramal.Storage.writes_after/2`, as `Ramal.Storage.ETS` and `Ramal.Storage.Postgres` do; the supervisor
       refuses to start otherwise. It costs one storage write per action.
     * `:warn_raw_queries` - `true` or `:raise` to report a raw Ecto query that touches the table of a branched resource
-      inside `Ramal.run/2`, default off (issue #207). Needs `:repo`, the host's repo. `true` logs a warning with the stack
-      trace, once per table and call site; `:raise` makes `Ramal.run/2` return `{:error, %Ramal.Error{reason: :raw_query}}`
-      (`run!/2` raises it) after the function returns. Both emit `[:ramal, :raw_query, :detected]`. Queries of Ash
-      actions, Ramal's own reads and the merge are not reported. This is the one opt-in that logs above `:debug`
-      (as the boot warnings below do), because the log is its point (ADR 0051). It is for development and test: it
-      costs a stack trace per such query inside a branch.
+      inside `Ramal.run/2`, default off (issue #207). Needs `:repo`, the host's repo. Each such query emits
+      `[:ramal, :raw_query, :detected]` and Ramal logs nothing: the host attaches a handler that warns or logs, with the
+      branch id, table, resource, SQL, `call_site` (a formatted stack frame) and `stacktrace` (the frames, for
+      `Exception.format_stacktrace/1`) in the metadata. `:raise` also makes `Ramal.run/2` return
+      `{:error, %Ramal.Error{reason: :raw_query}}`, and `Ramal.run!/2` raise it, once the function has returned (the
+      query itself cannot be failed from telemetry); the branch's writes stay. Queries of Ash actions, Ramal's own reads
+      and the merge are not reported. For development and test: it costs a stack trace per such query inside a branch.
+      To log them:
+
+          :telemetry.attach(
+            "warn-raw-queries",
+            [:ramal, :raw_query, :detected],
+            fn _event, _measurements, meta, _config ->
+              Logger.warning(
+                "raw query on \#{meta.table} inside branch \#{meta.branch_id} at \#{meta.call_site}\\n" <>
+                  Exception.format_stacktrace(meta.stacktrace)
+              )
+            end,
+            nil
+          )
+
     * any other option is the storage config, for example `:repo` for the Postgres backend
 
   Both limits are off by default, so adding them is the only change; see ADR 0016 for why they exist (a client that can
@@ -337,12 +352,8 @@ defmodule Ramal.Supervisor do
     end
   end
 
-  # What the raw query guard keeps in the supervisor's table: the call sites it already warned about, and for `:raise`
-  # the first query a branch's run made, which `Ramal.run/2` takes when its function returns.
-  @doc false
-  @spec first_raw_query?(term) :: boolean
-  def first_raw_query?(key), do: :ets.insert_new(__MODULE__, {{:raw_query_seen, key}, true})
-
+  # What the raw query guard keeps in the supervisor's table for `:raise`: the first query a branch's run made, which
+  # `Ramal.run/2` takes when its function returns.
   @doc false
   @spec record_raw_query(String.t(), map) :: true
   def record_raw_query(id, detail), do: :ets.insert_new(__MODULE__, {{:raw_query, id}, detail})

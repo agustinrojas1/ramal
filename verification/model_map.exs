@@ -144,7 +144,7 @@ st = fn name -> ["Ramal.Storage.#{name}", "Ramal.Storage.ETS.#{name}", "Ramal.St
     "lib/ramal/limits.ex" => "refuses to create branches over a limit; a refusal removes steps of the model, tests: limits_test.exs",
     "lib/ramal/merge/result.ex" => "the struct merge returns",
     "lib/ramal/raw_query_guard.ex" =>
-      "a telemetry handler that reports raw Ecto queries inside a branch; it reads, never changes a branch (ADR 0051), tests: test/ramal/raw_query_guard_test.exs",
+      "a telemetry handler that reports raw Ecto queries inside a branch; it reads, never changes a branch (ADR 0053), tests: test/ramal/raw_query_guard_test.exs",
     "lib/ramal/prefilter.ex" => "read side, tests: test/ramal/prefilter_test.exs",
     "lib/ramal/preparation.ex" => "read side, tests: test/ramal/overlay_property_test.exs and the preparation tests",
     "lib/ramal/preparation/aggregates.ex" => "read side, tests: test/ramal/aggregate_test.exs",

@@ -18,7 +18,7 @@ Ramal is comprehensive, and every limit it has is listed here. Each line is one 
 - `Ramal.branch/2` refuses a domain with a resource that has write actions and neither uses `Ramal.Resource` nor sets `branchable? false`, and only the branch's domain is checked, so a resource of another domain is not covered ([ADR 0027](adr/0027-domain-coverage.md)).
 - A changeset built under one branch and run under another, or outside a branch and run inside one, fails with `:branch_mismatch`, and a query prepared outside a branch is patched when it is read inside one ([ADR 0026](adr/0026-branch-checked-at-execution.md), [ADR 0028](adr/0028-late-binding-queries.md)).
 - Only writes of `create`, `update` and `destroy` actions are held in a branch: a generic action and the outside effects of a hook (an HTTP call, an email, an Oban job, a `Repo` write) run for real, so such hooks should skip themselves when `Ramal.current/0` returns a branch or `Ramal.in_branch?/1` is true ([security notes](https://github.com/agustinrojas1/ramal/blob/main/SECURITY.md)).
-- Raw Ecto and SQL queries on a branched table do not see a branch: inside `Ramal.run/2` they read and write the database. Nothing stops them, but `warn_raw_queries: true | :raise` on `Ramal.Supervisor` reports each one while you develop and test, and `mix ramal.doctor` lists the places that look like one ([details](#raw-ecto-queries-do-not-see-a-branch), [ADR 0051](adr/0051-raw-query-guard.md)).
+- Raw Ecto and SQL queries on a branched table do not see a branch: inside `Ramal.run/2` they read and write the database. Nothing stops them, but `warn_raw_queries: true | :raise` on `Ramal.Supervisor` reports each one while you develop and test, and `mix ramal.doctor` lists the places that look like one ([details](#raw-ecto-queries-do-not-see-a-branch), [ADR 0053](adr/0053-raw-query-guard.md)).
 - Notifications are dropped unless the resource opts in with `notify_in_branch? true` ([ADR 0005](adr/0005-write-capture.md)).
 - A database-generated integer or UUID key is a placeholder until the merge renames it to the real key, and other key types, `smallint` keys and composite keys are refused ([ADR 0042](adr/0042-placeholder-keys-for-generated-primary-keys.md)).
 - An upsert with an `upsert_condition` is refused, and `upsert?: true` given only to `Ash.create/2` at call time acts as a create ([ADR 0038](adr/0038-upserts-in-the-branch-view.md)).
@@ -50,13 +50,31 @@ computed from it is wrong with no error. Two tools find them, both off by defaul
 
 - `{Ramal.Supervisor, repo: MyApp.Repo, warn_raw_queries: true}` (or `:raise`) attaches a handler to the repo's query
   event. A query that names the table of a branched resource of your `:ash_domains`, made by a process inside a branch
-  (tasks it started included), emits `[:ramal, :raw_query, :detected]` and, with `true`, logs a warning with the stack
-  trace, once per call site. With `:raise`, `Ramal.run/2` returns `{:error, %Ramal.Error{reason: :raw_query}}` when the function
-  returns (the query itself cannot be failed, because `:telemetry` detaches a handler that raises), and `run!/2` raises. Ash
-  actions, Ramal's own reads and the merge are not reported. Use it in development and test: it takes a stack trace
-  for each such query. It is the one place Ramal logs above `:debug`.
+  (tasks it started included), emits `[:ramal, :raw_query, :detected]`, with the branch id, table, resource, SQL,
+  `call_site` and `stacktrace` in the metadata. Ramal logs nothing: attach a handler that warns or logs where you want it.
+  Ash actions, Ramal's own reads and the merge are not reported. Use it in development and test: it takes a stack trace
+  for each such query.
+- With `:raise`, `Ramal.run/2` also returns `{:error, %Ramal.Error{reason: :raw_query}}` once its function has returned,
+  and `Ramal.run!/2` raises it. The query itself cannot be failed, because `:telemetry` detaches a handler that raises and
+  the query has run by then; the branch's writes stay.
 - `mix ramal.doctor` prints the lines of `lib/**/*.ex` that look like `from(x in <resource or its Ecto schema or table>)`
   or a `Repo` call on one. It is a regular expression over single lines: a query split across lines or built at runtime is
   missed, and the guard above is the check that sees what runs.
 
-Replace what they find with an Ash action, `Ramal.load/3` or `Ramal.aggregate/4` ([ADR 0051](adr/0051-raw-query-guard.md)).
+To log them, attach a handler in your application start (development and test):
+
+```elixir
+:telemetry.attach(
+  "warn-raw-queries",
+  [:ramal, :raw_query, :detected],
+  fn _event, _measurements, meta, _config ->
+    Logger.warning(
+      "raw query on #{meta.table} inside branch #{meta.branch_id} at #{meta.call_site}\n" <>
+        Exception.format_stacktrace(meta.stacktrace)
+    )
+  end,
+  nil
+)
+```
+
+Replace what they find with an Ash action, `Ramal.load/3` or `Ramal.aggregate/4` ([ADR 0053](adr/0053-raw-query-guard.md)).

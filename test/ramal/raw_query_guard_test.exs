@@ -4,7 +4,6 @@ defmodule Ramal.RawQueryGuardTest do
   use Ramal.DataCase, async: false
 
   import Ecto.Query, only: [from: 2]
-  import ExUnit.CaptureLog
 
   alias Ecto.Adapters.SQL
   alias Ramal.Error
@@ -53,65 +52,50 @@ defmodule Ramal.RawQueryGuardTest do
       listen()
     end
 
-    test "a raw query on a branched table inside a branch warns once with the call site" do
-      log =
-        capture_log(fn ->
-          assert {:ok, _} = in_branch(fn -> for _ <- 1..3, do: raw_read() end)
-        end)
+    test "a raw query on a branched table inside a branch emits the event, for every query" do
+      assert {:ok, _} = in_branch(fn -> for _ <- 1..3, do: raw_read() end)
 
-      assert log =~ "raw Ecto query on \"paddocks\" (Ramal.Test.Farm.Paddock)"
-      assert log =~ "Ramal.RawQueryGuardTest.raw_read/0"
-      assert length(String.split(log, "raw Ecto query on")) == 2
-
-      # The event fires for every query, the log only once per call site.
       for _ <- 1..3, do: assert_received({:detected, %{table: "paddocks"}})
+      refute_received {:detected, _}
     end
 
-    test "the event names the branch, the resource, the query and the call site" do
-      capture_log(fn -> assert {:ok, _} = in_branch(&raw_read/0) end)
+    test "the event names the branch, the resource, the query, the call site and the stack" do
+      assert {:ok, _} = in_branch(&raw_read/0)
 
       assert_received {:detected, meta}
       assert is_binary(meta.branch_id)
       assert meta.resource == Paddock
       assert meta.repo == TestRepo
       assert meta.query =~ ~s(FROM "paddocks")
-      assert meta.call_site =~ "raw_read"
+      assert meta.call_site =~ "Ramal.RawQueryGuardTest.raw_read/0"
+      assert [{Ramal.RawQueryGuardTest, :raw_read, 0, _} | _] = meta.stacktrace
+      assert Exception.format_stacktrace(meta.stacktrace) =~ "raw_read"
     end
 
-    test "the same query outside a branch logs and emits nothing" do
-      assert capture_log(&raw_read/0) == ""
+    test "the same query outside a branch emits nothing" do
+      raw_read()
       refute_received {:detected, _}
     end
 
     test "a query on a table no branched resource uses is not reported" do
-      log =
-        capture_log(fn ->
-          assert {:ok, _} = in_branch(fn -> SQL.query!(TestRepo, "SELECT 1") end)
-        end)
+      assert {:ok, _} = in_branch(fn -> SQL.query!(TestRepo, "SELECT 1") end)
 
-      assert log == ""
       refute_received {:detected, _}
     end
 
     test "raw SQL that joins a branched table is reported" do
       sql = ~s(SELECT 1 FROM "pg_tables" t JOIN "paddocks" p ON p.name = t.tablename)
 
-      log =
-        capture_log(fn ->
-          assert {:ok, _} = in_branch(fn -> SQL.query!(TestRepo, sql) end)
-        end)
+      assert {:ok, _} = in_branch(fn -> SQL.query!(TestRepo, sql) end)
 
-      assert log =~ "raw Ecto query on"
       assert_received {:detected, %{table: "paddocks"}}
     end
 
     test "a raw write is reported too" do
-      capture_log(fn ->
-        assert {:ok, _} =
-                 in_branch(fn ->
-                   TestRepo.update_all(from(p in "paddocks", where: false), set: [name: "x"])
-                 end)
-      end)
+      assert {:ok, _} =
+               in_branch(fn ->
+                 TestRepo.update_all(from(p in "paddocks", where: false), set: [name: "x"])
+               end)
 
       assert_received {:detected, %{table: "paddocks"}}
     end
@@ -119,26 +103,22 @@ defmodule Ramal.RawQueryGuardTest do
     test "Ash reads, writes, loads and aggregates inside a branch are not reported" do
       Ash.create!(Paddock, %{name: "base", capacity_head: 3}, authorize?: false)
 
-      log =
-        capture_log(fn ->
-          assert {:ok, _} =
-                   in_branch(fn ->
-                     paddock =
-                       Ash.create!(Paddock, %{name: "new", capacity_head: 2}, authorize?: false)
+      assert {:ok, _} =
+               in_branch(fn ->
+                 paddock =
+                   Ash.create!(Paddock, %{name: "new", capacity_head: 2}, authorize?: false)
 
-                     Ash.create!(Herd, %{name: "h", head: 1, paddock_id: paddock.id},
-                       authorize?: false
-                     )
+                 Ash.create!(Herd, %{name: "h", head: 1, paddock_id: paddock.id},
+                   authorize?: false
+                 )
 
-                     Ash.update!(paddock, %{capacity_head: 5}, authorize?: false)
-                     Ash.read!(Paddock, load: [:herds], authorize?: false)
-                     Ash.count!(Paddock, authorize?: false)
-                     Ramal.aggregate!(Herd, :sum, :head)
-                     Ash.destroy!(paddock, authorize?: false)
-                   end)
-        end)
+                 Ash.update!(paddock, %{capacity_head: 5}, authorize?: false)
+                 Ash.read!(Paddock, load: [:herds], authorize?: false)
+                 Ash.count!(Paddock, authorize?: false)
+                 Ramal.aggregate!(Herd, :sum, :head)
+                 Ash.destroy!(paddock, authorize?: false)
+               end)
 
-      assert log == ""
       refute_received {:detected, _}
     end
 
@@ -150,12 +130,8 @@ defmodule Ramal.RawQueryGuardTest do
           Ash.create!(Paddock, %{name: "merged", capacity_head: 1}, authorize?: false)
         end)
 
-      log =
-        capture_log(fn ->
-          assert {:ok, %Ramal.Merge.Result{replayed: 1}} = Ramal.merge(branch, authorize?: false)
-        end)
+      assert {:ok, %Ramal.Merge.Result{replayed: 1}} = Ramal.merge(branch, authorize?: false)
 
-      assert log == ""
       refute_received {:detected, _}
     end
   end
@@ -198,7 +174,7 @@ defmodule Ramal.RawQueryGuardTest do
       start_supervised!({Ramal.Supervisor, repo: TestRepo})
       listen()
 
-      assert capture_log(fn -> assert {:ok, _} = in_branch(&raw_read/0) end) == ""
+      assert {:ok, _} = in_branch(&raw_read/0)
       refute_received {:detected, _}
     end
 
@@ -224,7 +200,7 @@ defmodule Ramal.RawQueryGuardTest do
       start_supervised!({Ramal.Supervisor, repo: TestRepo})
       listen()
 
-      assert capture_log(fn -> assert {:ok, _} = in_branch(&raw_read/0) end) == ""
+      assert {:ok, _} = in_branch(&raw_read/0)
       refute_received {:detected, _}
     end
   end
