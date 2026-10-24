@@ -50,7 +50,8 @@ an existing application, so a host with them could not use a branch for creates.
   has the value in its comparisons lifted the same way. This matches the merged order when the sequence is above every
   base key and the branch's creates replay in creation order, which the merge does. A UUID placeholder is random and a
   real UUID's position is not creation order either, so UUID keys are out of scope: their position in a sort is
-  arbitrary until the merge. A comparison filter on the key (`id > 5`) still sees the negative number, and a sort
-  through another resource's key (`parent.id`) is not lifted.
+  arbitrary until the merge. A comparison filter on the key (`id > 5`) still sees the negative number, except a
+  page `filter:` (`Paged.narrow/3`), which sees the lifted value as the keyset cursor does. A sort through another
+  resource's key (`parent.id`) is not lifted.
 - A data layer that does not generate the key (`Ash.DataLayer.Ets` with `integer_primary_key`) accepts the create in the
   branch and fails it at the merge.
