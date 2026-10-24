@@ -245,7 +245,10 @@ This is the section that decides correctness. In a read action's preparation, wh
   or UUID key gets a placeholder (integers from `-2_147_483_648` up, random UUIDs) that the merge renames to the key the
   replayed create gets, in the later entries' input and keys too ([ADR 0042](adr/0042-placeholder-keys-for-generated-primary-keys.md)).
   `Ramal.Merge.Result.keys` maps placeholder to real key. Any other generated key fails the action with
-  `:database_generated_key`.
+  `:database_generated_key`. A sort or a keyset page on a generated integer key compares a placeholder as larger than
+  every real key, in creation order, which is where the merge puts the row (Ramal.Preparation.Placeholders, internal,
+  one line on why: the sort and the cursor comparison are done in Elixir on the patched list; UUID keys have no order to
+  match).
 - Destroys mark the key `:deleted`. Updates of a `:created` row stay `:created` with the new record. The first write to
   an existing row keeps the row as the action found it in `base`, which `diff/1` compares against.
 - Every write is appended to the log as `{action_type, resource, action_name, params, actor, opts, at}`; `opts` has
