@@ -206,6 +206,22 @@ defmodule Ramal.Ash.Contract do
         fn -> exported(Ash.Query, :do_filter, 2) end
       ),
       entry(
+        :export_peek_queued_notifications,
+        :core,
+        :core,
+        "Ash.Actions.Helpers.peek_queued_notifications/0 is exported",
+        "assumption: Ash.Actions.Helpers.peek_queued_notifications/0 is exported (Ramal calls it in lib/ramal/ash.ex; from deps/ash/lib/ash/actions/helpers.ex)",
+        fn -> exported(Ash.Actions.Helpers, :peek_queued_notifications, 0) end
+      ),
+      entry(
+        :export_restore_queued_notifications,
+        :core,
+        :core,
+        "Ash.Actions.Helpers.restore_queued_notifications/1 is exported",
+        "assumption: Ash.Actions.Helpers.restore_queued_notifications/1 is exported (Ramal calls it in lib/ramal/ash.ex; from deps/ash/lib/ash/actions/helpers.ex)",
+        fn -> exported(Ash.Actions.Helpers, :restore_queued_notifications, 1) end
+      ),
+      entry(
         :export_filter_matches,
         :core,
         :core,

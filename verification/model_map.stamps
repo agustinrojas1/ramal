@@ -22,7 +22,7 @@ Nested.tla:Snapshot  84f280b1037125eb
 Ramal.tla:Abort  01ceecfa0fa39d50
 Ramal.tla:Claim  0705d54141cfc09f
 Ramal.tla:Close  94a3173bc07dcd5b
-Ramal.tla:Commit  3c1f4a0c9ae4a4bc
+Ramal.tla:Commit  22fdb1db309ceb82
 Ramal.tla:Compact  20fea49dff2e7ade
 Ramal.tla:Crash  aba00d7436b5a919
 Ramal.tla:Down  129fc7228ca46257
