@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-10-24
+
+A security-hardening release. Reading a stored branch no longer runs the `@on_load` callback of a module it names: a module that is not loaded yet is loaded only after the VM reports, from its beam file and without running anything, that it has none, so whoever can write the branch table cannot run a module's callback, as `SECURITY.md` promises. A fresh VM still decodes the host's own resources and types. A module with an `@on_load` that the host has not loaded and a stored branch names now fails to decode with `:storage` until the host loads it. Upgrading from 0.10.2 needs no step beyond the version (and `ramal_live ~> 0.10.3`, which shares it).
+
 ### Fixed
 
 - **Reading a stored branch no longer runs the `@on_load` of a module it names.** Decoding loaded each module named in the stored state with `Code.ensure_loaded/1`, so whoever could write `ramal_branches.state` could run the `@on_load` callback of any module on the code path, which `SECURITY.md` says stored state must not do. A module that is not loaded yet is now loaded only after the VM reports, from its beam file and without running anything, that it has no `@on_load`; one that has one fails the load with `:storage` unless the host loaded it first. A fresh VM still decodes the host's own resources and types ([#237](https://github.com/agustinrojas1/ramal/issues/237)).
