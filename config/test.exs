@@ -21,6 +21,7 @@ config :ramal,
     Ramal.Test.PgTenants,
     Ramal.Test.Serial,
     Ramal.Test.Texts,
+    Ramal.Test.Bookings,
     Ramal.Test.Customs
   ]
 

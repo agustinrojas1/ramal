@@ -12,6 +12,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Fixed
 
 - **A read sorted by a database-generated integer key puts the branch's new rows where the merge will.** Inside a branch the rows had negative placeholder keys, so `sort(id: :asc)` listed them before every real row and, after the merge, last. They now sort after every real key in creation order (before them for `:desc`), and a keyset page by that key (`after` and `before` cursors) returns the rows the same page returns after the merge. UUID keys are unchanged: their order is not creation order (ADR 0042, #206).
+- **A create or update in a branch is held to the resource's identities.** A row that took the value another row holds in a unique identity was accepted by the branch, shown in reads and in `Ramal.diff/2`, and refused only by the merge, or never if the branch was discarded. It now fails at once with the error AshPostgres returns for the violated index (`Ash.Error.Invalid` wrapping an `InvalidAttribute` "has already been taken" on the identity's first key), in the branch's view: rows the branch created count, rows it destroyed or renamed away do not, and a fork sees its parent's rows. `nils_distinct?` and an identity's `where` are honoured; an identity whose `where` cannot be evaluated in Elixir stays unchecked (see `docs/limits.md`). Each create costs one patched read per identity, and an update one per identity whose keys it changes.
 
 ### Changed
 

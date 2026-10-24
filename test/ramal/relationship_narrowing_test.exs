@@ -68,11 +68,17 @@ defmodule Ramal.RelationshipNarrowingTest do
     end)
   end
 
-  test "a paddock renamed into the filter brings its herds in", %{branch: branch, extra: extra} do
+  test "a paddock renamed into the filter brings its herds in", %{
+    branch: branch,
+    paddocks: p,
+    extra: extra
+  } do
     Ramal.run!(branch, fn ->
+      # The name is free first: a branch refuses a second paddock with it, as the database would.
+      Ash.update!(p.l07, %{name: "OLD07"}, authorize?: false)
       Ash.update!(extra[1].paddock, %{name: "L07"}, authorize?: false)
 
-      assert read(Ash.Query.filter(Herd, paddock.name == "L07")) == {["H1", "R7", "R8"], 3}
+      assert read(Ash.Query.filter(Herd, paddock.name == "L07")) == {["H1"], 1}
     end)
   end
 
@@ -109,11 +115,12 @@ defmodule Ramal.RelationshipNarrowingTest do
     Ramal.run!(branch, fn ->
       new = Ash.create!(Paddock, %{name: "NEW", capacity_head: 10}, authorize?: false)
       Ash.update!(extra[3].herd, %{paddock_id: new.id}, authorize?: false)
-      other = Ash.create!(Paddock, %{name: "L18", capacity_head: 10}, authorize?: false)
+      other = Ash.create!(Paddock, %{name: "L19", capacity_head: 10}, authorize?: false)
       Ash.create!(Herd, %{name: "CREATED", head: 1, paddock_id: other.id}, authorize?: false)
 
       assert read(Ash.Query.filter(Herd, paddock.name == "NEW")) == {["H3"], 0}
-      assert {["CREATED", "R9"], _rows} = read(Ash.Query.filter(Herd, paddock.name == "L18"))
+      assert {["CREATED"], _rows} = read(Ash.Query.filter(Herd, paddock.name == "L19"))
+      assert {["R9"], _rows} = read(Ash.Query.filter(Herd, paddock.name == "L18"))
       assert {[], _rows} = read(Ash.Query.filter(Herd, paddock.name == "P3"))
     end)
   end
@@ -126,16 +133,16 @@ defmodule Ramal.RelationshipNarrowingTest do
     } do
       Ramal.run!(branch, fn ->
         Ash.update!(p.l07, %{name: "RENAMED"}, authorize?: false)
-        Ash.update!(extra[2].paddock, %{name: "L18"}, authorize?: false)
+        Ash.update!(extra[2].paddock, %{name: "Q2"}, authorize?: false)
 
         assert read(Ash.Query.filter(Herd, paddock.name == "RENAMED" and head > 30)) ==
                  {["R8"], 1}
 
-        assert read(Ash.Query.filter(Herd, paddock.name == "L18" or name == "H4")) ==
-                 {["H2", "H4", "R9"], 3}
+        assert read(Ash.Query.filter(Herd, paddock.name == "Q2" or name == "H4")) ==
+                 {["H2", "H4"], 2}
 
-        assert read(Ash.Query.filter(Herd, paddock.name == "RENAMED" or paddock.name == "L18")) ==
-                 {["H2", "R7", "R8", "R9"], 4}
+        assert read(Ash.Query.filter(Herd, paddock.name == "RENAMED" or paddock.name == "Q2")) ==
+                 {["H2", "R7", "R8"], 3}
 
         assert read(Ash.Query.filter(Herd, paddock.name in ["RENAMED", "P5"])) ==
                  {["H5", "R7", "R8"], 3}
@@ -275,11 +282,13 @@ defmodule Ramal.RelationshipNarrowingTest do
     Ash.create!(Herd, %{name: "LOOSE", head: 1}, authorize?: false)
 
     Ramal.run!(branch, fn ->
+      # Names swap through a free one, as they must on the database.
+      Ash.update!(p.l18, %{name: "M18"}, authorize?: false)
       Ash.update!(p.l07, %{name: "L18"}, authorize?: false)
       Ash.update!(extra[1].paddock, %{name: "L07"}, authorize?: false)
       Ash.destroy!(extra[2].paddock, authorize?: false)
       Ash.update!(h.r9, %{paddock_id: extra[4].paddock.id}, authorize?: false)
-      new = Ash.create!(Paddock, %{name: "L07", capacity_head: 1}, authorize?: false)
+      new = Ash.create!(Paddock, %{name: "N07", capacity_head: 1}, authorize?: false)
       Ash.create!(Herd, %{name: "NEWH", head: 1, paddock_id: new.id}, authorize?: false)
 
       # Every herd with its paddock, as the branch sees them; the predicates are the filters written in Elixir.
