@@ -213,6 +213,14 @@ defmodule Ramal.Ash.Contract do
         "assumption: Ash.Filter.Runtime.filter_matches/4 is exported (Ramal calls it in lib/ramal/preparation.ex; from deps/ash/lib/ash/filter/runtime.ex)",
         fn -> exported(Ash.Filter.Runtime, :filter_matches, 4) end
       ),
+      entry(
+        :export_filter_flat_map,
+        :core,
+        :core,
+        "Ash.Filter.flat_map/2 is exported",
+        "assumption: Ash.Filter.flat_map/2 is exported (Ramal calls it in lib/ramal/ash.ex; from deps/ash/lib/ash/filter/filter.ex)",
+        fn -> exported(Ash.Filter, :flat_map, 2) end
+      ),
 
       # Extended, :bulk: the record-by-record path of the bulk actions.
       entry(

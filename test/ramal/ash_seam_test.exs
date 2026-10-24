@@ -32,6 +32,7 @@ defmodule Ramal.AshSeamTest do
     "set_result(",
     "Ash.Filter.list_refs",
     "Ash.Filter.map(",
+    "Ash.Filter.flat_map",
     "Ash.Filter.hydrate_refs",
     "Ash.Filter.Runtime",
     "Runtime.filter_matches",

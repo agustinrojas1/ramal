@@ -433,18 +433,22 @@ defmodule Ramal.Preparation.Related do
         do: ref.relationship_path
   end
 
-  defp conjuncts(nil), do: []
-  defp conjuncts(%Ash.Filter{expression: expression}), do: conjuncts(expression)
-  defp conjuncts(true), do: []
+  @doc false
+  @spec conjuncts(term) :: [term]
+  def conjuncts(nil), do: []
+  def conjuncts(%Ash.Filter{expression: expression}), do: conjuncts(expression)
+  def conjuncts(true), do: []
 
-  defp conjuncts(%BooleanExpression{op: :and, left: left, right: right}),
+  def conjuncts(%BooleanExpression{op: :and, left: left, right: right}),
     do: conjuncts(left) ++ conjuncts(right)
 
-  defp conjuncts(expression), do: [expression]
+  def conjuncts(expression), do: [expression]
 
-  defp filter_of(_filter, []), do: nil
+  @doc false
+  @spec filter_of(Ash.Filter.t() | nil, [term]) :: Ash.Filter.t() | nil
+  def filter_of(_filter, []), do: nil
 
-  defp filter_of(filter, expressions) do
+  def filter_of(filter, expressions) do
     %{
       filter
       | expression: Enum.reduce(expressions, &BooleanExpression.optimized_new(:and, &2, &1))
