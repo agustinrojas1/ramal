@@ -10,6 +10,13 @@ defmodule Ramal.Branch.Server do
   #     `:killed` when the heap exceeds `n` words. The kill cannot be trapped, so a separate watcher process notices it.
   #   * A GenServer reply tuple `{:reply, reply, state, timeout}` delivers `:timeout` only when no message arrived in
   #     `timeout` ms, which is how idle detection works without timers.
+  #
+  # Not done, and why: `hibernate_after` (a `GenServer.start_link/3` option) would shrink the heap of a branch that sits
+  # idle, which is most of them, most of the time. It does nothing here. OTP 28's `gen_server:loop/5` consults
+  # `hibernate_after` only in its `infinity` clause, and the idle unload needs the relative
+  # `{:noreply, state, timeout}` (the `?is_rel_timeout(Time)` clause of `gen_server.erl`), so the process never reaches
+  # it. Turning it on means moving the unload to a `Process.send_after/3` timer and returning `:infinity`, which is a
+  # change to the lifecycle ADR 0003 describes: measure what an idle branch costs in `bench/` first.
   use GenServer
 
   alias Ramal.{Branch, Error, Overlay, Prefilter, Supervisor, Telemetry}
@@ -51,19 +58,29 @@ defmodule Ramal.Branch.Server do
 
   @doc false
   def start_link({:handoff, id, _ref, config} = arg) do
-    GenServer.start_link(__MODULE__, arg, name: Supervisor.via(id, config))
+    GenServer.start_link(__MODULE__, arg, server_options(id, config))
   end
 
   def start_link({:load, id, config} = arg) do
-    GenServer.start_link(__MODULE__, arg, name: Supervisor.via(id, config))
+    GenServer.start_link(__MODULE__, arg, server_options(id, config))
   end
 
   def start_link({:scratch, branch, config} = arg) do
-    GenServer.start_link(__MODULE__, arg, name: Supervisor.via(branch.id, config))
+    GenServer.start_link(__MODULE__, arg, server_options(branch.id, config))
   end
 
   def start_link({branch, config}) do
-    GenServer.start_link(__MODULE__, {branch, config}, name: Supervisor.via(branch.id, config))
+    GenServer.start_link(__MODULE__, {branch, config}, server_options(branch.id, config))
+  end
+
+  # The limits are on the spawn, not only in `init/1`: the branch is copied into the process before `init/1` runs, from
+  # the child specification or by the handoff message, and the limit has to cover that copy. `flags/1` sets the heap
+  # limit again because `share/2` lifts it to 0 for the sharing pass and then puts it back.
+  defp server_options(id, config) do
+    [
+      name: Supervisor.via(id, config),
+      spawn_opt: [max_heap_size: %{size: config.max_heap_size, kill: true, error_logger: false}]
+    ]
   end
 
   @doc """
@@ -114,6 +131,7 @@ defmodule Ramal.Branch.Server do
 
     Supervisor.clear_too_large(id)
     Supervisor.clear_running(id)
+    :ok
   end
 
   defp start_child(arg, started) do
@@ -608,6 +626,7 @@ defmodule Ramal.Branch.Server do
   def init({:scratch, branch, config}) do
     flags(config)
     Supervisor.mark_running(branch.id)
+    label(branch)
     state = process_state(branch, %{config | idle_timeout: :infinity})
     {:ok, %{state | scratch: true}, :infinity}
   end
@@ -634,6 +653,7 @@ defmodule Ramal.Branch.Server do
     watch(branch)
     Telemetry.branch(:load, branch)
     Supervisor.mark_running(branch.id)
+    label(branch)
     process_state(branch, config)
   end
 
@@ -655,6 +675,10 @@ defmodule Ramal.Branch.Server do
     Process.flag(:trap_exit, true)
     heap_limit(config.max_heap_size)
   end
+
+  # A label is what `:observer`, a crash report and `:proc_lib.get_label/1` show for a process; with thousands of
+  # branch processes, "Ramal.Branch.Server" alone says nothing about which one died.
+  defp label(branch), do: Process.set_label({:ramal_branch, branch.id, branch.domain})
 
   defp heap_limit(size),
     do: Process.flag(:max_heap_size, %{size: size, kill: true, error_logger: false})
@@ -726,6 +750,7 @@ defmodule Ramal.Branch.Server do
   defp started_branch(branch) do
     watch(branch)
     Telemetry.branch(:load, branch)
+    label(branch)
     branch
   end
 
