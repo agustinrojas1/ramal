@@ -26,6 +26,15 @@ defmodule Ramal.GeneratedKeyTest do
   end
 
   describe "a create whose key the database generates" do
+    test "appears in Result.entries with the real key, not the placeholder", %{branch: branch} do
+      inside(branch, fn -> note!(%{body: "first"}) end)
+
+      assert {:ok, %Result{entries: [entry], keys: keys}} = Ramal.merge(branch, authorize?: false)
+      assert [real] = Map.values(keys)
+      assert entry.key == real and entry.key == entry.record.id
+      assert entry.key != @first
+    end
+
     test "gets a placeholder key in the branch and writes nothing", %{branch: branch} do
       note = inside(branch, fn -> note!(%{body: "first"}) end)
 
