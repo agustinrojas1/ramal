@@ -90,6 +90,12 @@ defmodule Ramal.Branch.Server do
   @spec start(Branch.t(), Supervisor.config()) :: {:ok, pid} | {:error, Error.t()}
   def start(branch, config), do: start_child({branch, config}, & &1)
 
+  # Debug/analysis helper for issue #274: hibernate the branch process on demand. Not part of the public API.
+  @doc false
+  def hibernate_now(id) do
+    GenServer.call(Supervisor.whereis(id), :hibernate_now, 5_000)
+  end
+
   @doc """
   Like `start/2`, for a branch the caller holds that is large: the process starts empty and the caller sends it the
   branch in one message. `start/2` puts the branch in the child specification, so it is copied into the dynamic
@@ -837,6 +843,10 @@ defmodule Ramal.Branch.Server do
     else
       reply(state, {:error, unavailable(state)})
     end
+  end
+
+  def handle_call(:hibernate_now, _from, state) do
+    {:reply, :ok, state, :hibernate}
   end
 
   def handle_call({:write, fun}, _from, state) do
