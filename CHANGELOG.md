@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- **A create or update in a branch is held to the resource's identities.** A row that took the value another row holds in a unique identity was accepted by the branch, shown in reads and in `Ramal.diff/2`, and refused only by the merge, or never if the branch was discarded. It now fails at once with the error AshPostgres returns for the violated index (`Ash.Error.Invalid` wrapping an `InvalidAttribute` "has already been taken" on the identity's first key), in the branch's view: rows the branch created count, rows it destroyed or renamed away do not, and a fork sees its parent's rows. `nils_distinct?` and an identity's `where` are honoured; an identity whose `where` cannot be evaluated in Elixir stays unchecked (see `docs/limits.md`). Each create costs one patched read per identity, and an update one per identity whose keys it changes.
+
 ## [0.9.1] - 2026-10-23
 
 A patch release with two fixes: a branch no longer accepts an update or destroy of another tenant's record, and a damaged stored branch no longer crashes `Ramal.get/1` or hides every branch from `Ramal.list/2`. Reads in a branch are also a little faster. Upgrading from 0.9.0 needs no step beyond the version (and `ramal_live ~> 0.9.1`, which shares it).

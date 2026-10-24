@@ -21,6 +21,7 @@ Ramal is comprehensive, and every limit it has is listed here. Each line is one 
 - Notifications are dropped unless the resource opts in with `notify_in_branch? true` ([ADR 0005](adr/0005-write-capture.md)).
 - A database-generated integer or UUID key is a placeholder until the merge renames it to the real key, and other key types, `smallint` keys and composite keys are refused ([ADR 0042](adr/0042-placeholder-keys-for-generated-primary-keys.md)).
 - An upsert with an `upsert_condition` is refused, and `upsert?: true` given only to `Ash.create/2` at call time acts as a create ([ADR 0038](adr/0038-upserts-in-the-branch-view.md)).
+- A create or update in a branch is checked against the resource's identities in the branch's view, but an identity whose `where` cannot be evaluated in Elixir for the new row is left unchecked, an identity that spans tenants (`all_tenants? true`) is checked only inside the branch's tenant, and a row another writer adds to the database after the branch opened is found only by the merge.
 - A branch works in one tenant, given at `Ramal.branch/2` ([ADR 0034](adr/0034-one-tenant-per-branch.md)).
 - Reads fetch candidate rows and patch them in memory, which is cheap for the rows a session touches and wrong for an analytics table, so Ramal is meant for OLTP-sized working sets ([design, section 4.1](DESIGN.md)).
 - Merge replays each change through your action, so it is slower than one SQL statement, which is the price of merging through your own rules ([details](#merge-is-slower-than-sql)).

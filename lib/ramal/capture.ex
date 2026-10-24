@@ -63,6 +63,7 @@ defmodule Ramal.Capture do
   """
   use Ash.Resource.Change
 
+  alias Ash.Error.Changes.InvalidAttribute
   alias Ash.Error.Changes.StaleRecord
   alias Ash.Resource.Info
   alias Ramal.Ash.Contract
@@ -558,15 +559,18 @@ defmodule Ramal.Capture do
     {:ok, built} = Ash.Changeset.apply_attributes(changeset)
     upsert = if upsert?, do: plan_upsert(changeset, built)
 
-    with {:ok, upsert} <- find_conflict(upsert, changeset, built, id) do
-      written_create(changeset, built, id, upsert)
+    with {:ok, upsert} <- find_conflict(upsert, changeset, built, id),
+         {:ok, _kind, record, _base_row, _extra} = written <-
+           written_create(changeset, built, id, upsert),
+         :ok <- check_identities(changeset, upsert && upsert.found, record, id) do
+      written
     end
   end
 
   # An update that changes no attribute is still logged: its hooks and managed relationships can write other rows, and
   # those writes are logged as nested, so only replaying this action brings them back. The overlay keeps the row as it
   # was (Ash does not write it either, so `updated_at` stays) and `Ramal.diff/1` leaves it out.
-  defp written(%{action_type: :update} = changeset, held, _id, _upsert?) do
+  defp written(%{action_type: :update} = changeset, held, id, _upsert?) do
     original = changeset.data
     changeset = if held, do: %{changeset | data: held}, else: changeset
 
@@ -578,7 +582,8 @@ defmodule Ramal.Capture do
         changeset.data
       end
 
-    with {:ok, record} <- apply_atomics(changeset, record) do
+    with {:ok, record} <- apply_atomics(changeset, record),
+         :ok <- check_identities(changeset, changeset.data, record, id) do
       {:ok, :updated, record, base_row(original), []}
     end
   end
@@ -748,6 +753,58 @@ defmodule Ramal.Capture do
     do: Ramal.Ash.do_filter(query, where)
 
   defp add_where(query, _definition), do: query
+
+  # The database refuses a row that takes the value of another in a unique identity; the overlay has no unique index, so
+  # a write looks the value up in the branch's view with the upsert's lookup. `original` is the row an update
+  # starts from, or the row an upsert found, and `nil` for a create: an identity whose keys did not change is not
+  # asked again, unless it has a `where` (the row may have entered the partial index). A `where` that cannot be
+  # evaluated in Elixir leaves the identity unchecked, as it always was (docs/limits.md). The error is what AshPostgres
+  # returns for the violated index: an `InvalidAttribute` on the first key, with the identity's message.
+  defp check_identities(changeset, original, record, id) do
+    changeset.resource
+    |> Info.identities()
+    |> Enum.reduce_while(:ok, fn identity, :ok ->
+      case identity_taken(identity, changeset, original, record, id) do
+        :ok -> {:cont, :ok}
+        {:error, _error} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp identity_taken(identity, changeset, original, record, id) do
+    probe = %{
+      definition: identity,
+      values: Enum.map(identity.keys, &{&1, Map.get(record, &1)}),
+      found: nil
+    }
+
+    with true <- identity_changed?(identity, original, record),
+         {:ok, true} <- identity_applies?(identity, changeset, record),
+         false <- distinct_nil?(probe),
+         {:ok, %{found: %{}}} <- lookup(probe, changeset, id) do
+      {:error,
+       InvalidAttribute.exception(
+         field: hd(identity.keys),
+         message: identity.message || "has already been taken"
+       )}
+    else
+      {:error, error} -> {:error, error}
+      _free_or_unchecked -> :ok
+    end
+  end
+
+  defp identity_changed?(_identity, nil, _record), do: true
+  defp identity_changed?(%{where: where}, _original, _record) when not is_nil(where), do: true
+
+  defp identity_changed?(identity, original, record),
+    do: Enum.any?(identity.keys, &(Map.get(original, &1) != Map.get(record, &1)))
+
+  defp identity_applies?(identity, changeset, record) do
+    case applies?(identity, changeset, record) do
+      {:ok, applies?} -> {:ok, applies?}
+      {:error, _where_unknown} -> {:ok, false}
+    end
+  end
 
   defp touch_update_defaults(record, _resource, %{touch?: false}), do: record
 
