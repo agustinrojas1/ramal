@@ -914,7 +914,7 @@ defmodule Ramal.Storage.Codec do
   #
   # A module that is not loaded yet is loaded only when its code has no `@on_load` callback, which would run the moment
   # it loads (issue #237). The check reads the beam file with `:erlang.prepare_loading/2` and asks
-  # `:erlang.has_prepared_code_on_load/1` (erts, OTP 26 and later), which loads nothing and runs nothing; the beam's
+  # `:erlang.has_prepared_code_on_load/1`, which loads nothing and runs nothing; the beam's
   # attributes do not list `@on_load`. A fresh VM, or one that loads modules on first use, still decodes the host's own
   # resources and types, and a module that is already loaded is not looked at again: its `@on_load` has run.
   defp module!(name) do
