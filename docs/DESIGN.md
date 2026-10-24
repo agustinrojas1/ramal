@@ -52,7 +52,13 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
 ## 3. Process model
 
 - `Ramal.Supervisor` (a `DynamicSupervisor` plus a `Registry` keyed by branch id). The host adds it to its tree:
-  `{Ramal.Supervisor, storage: Ramal.Storage.Postgres, repo: MyApp.Repo}`.
+  `{Ramal.Supervisor, storage: Ramal.Storage.Postgres, repo: MyApp.Repo}`. Its tables are created once, with
+  `read_concurrency` and `write_concurrency: :auto`, because they take reads and writes from every branch process.
+- `:persistent_term` holds what is written once and read on every path: the supervisor's configuration, the collation
+  of a column (section 4.1) and the ids of the Ash assumptions found broken at boot. Mutable state never goes there:
+  the rate counters of the limits, the marks and the storage live in ETS or in the storage itself. An update of an
+  existing `:persistent_term` key forces a global GC pass over every process, which is the cost a counter must not
+  pay.
 - Ramal.Cluster (internal): with `cluster: true` the branch registry is `:global` instead of the `Registry`, and
   this is its `:via` module and the resolver that decides which process keeps a name two nodes both registered
   (section 6, ADR 0044).

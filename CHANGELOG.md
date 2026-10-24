@@ -4,6 +4,51 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **Compiling a resource warns about the parts of it a branch handles only in part.** A resource whose primary key the
+  database generates, of a type a branch has no placeholder for (anything but one integer, uuid or uuid_v7 key), used to
+  fail its first create inside a branch with `:database_generated_key` and nothing else; a resource with a `custom`
+  aggregate keeps the database's value and says so only with `[:ramal, :read, :unpatched_aggregate]`. Both are now a
+  compiler warning that names the resource and the limit (`Ramal.Resource.Verifier`), and a resource that keeps such a
+  limitation on purpose turns it off with `ramal do warnings?(false) end`. The warning changes no behaviour.
+
+### Changed
+
+- **A branch process is labelled, and its heap limit covers the branch from the spawn.** The label,
+  `{:ramal_branch, id, domain}`, is what `:observer`, `:proc_lib.get_label/1` and a crash report show for a process;
+  `max_heap_size` is a spawn option now, so the copy of the branch that arrives with the process is already under the
+  limit that `init/1` used to set after it.
+- **The `Registry` that names branch processes has one partition per scheduler**, as its documentation recommends for a
+  highly concurrent environment. Every call into a branch looks its process up there.
+- **`Ramal.Storage.ETS.list/3` copies only the branches it returns.** It reads their ids from an index by
+  `{domain, status, id}` instead of copying every branch of every domain, overlays included, and filtering in the caller.
+- **The supervisor's ETS tables take concurrent writers.** They are created with `write_concurrency: :auto` (OTP 25
+  and later), so ETS picks the lock granularity from the concurrency it sees instead of one lock for the whole table:
+  every branch process marks itself, persists and appends to them. Nothing changes for a reader or a caller.
+- **`Ramal.run/2` uses `Ash.transact/3`.** Ash 3.37 documents `Ash.transaction/3` as deprecated, and with no resources
+  the two run the same code.
+
+### Fixed
+
+- **An unbounded relationship load no longer takes the path for a paged one.** The check asked `offset != nil`, and
+  `Ash.Query` gives `offset` the default `0`, so it was always true: a `has_many` or `many_to_many` load whose
+  destination the branch changed was read whole and grouped per source even when it asked for no page. It now asks for
+  a page, a limit or an `offset` above zero, which is the case ADR 0040 describes. The suite sees the same rows.
+- **The raw query guard reaches the call site by the one mechanism that works.** It first tried
+  `Process.info(self(), {:current_stacktrace, depth})`, which is not a `process_info_item()`: it raises on OTP 28, so
+  every reported query for which the guard is on paid the raise, the rescue and the node-wide flag. That path is gone
+  and the flag is documented; it is the flag that the fallback always used.
+- **`Ramal.Ash.do_filter/2` takes a resource as well as a query.** Its spec said `Ash.Query.t()` while the function has
+  always accepted whatever `Ash.Query.do_filter/2` does, which includes a resource module; the narrower spec made
+  Dialyzer treat every write that looks a row up in `Ramal.Capture` as unreachable.
+
+### Documentation
+
+- **`docs/DESIGN.md` says what `:persistent_term` holds and what it must not.** Configuration, the collation of a
+  column and the broken-assumption ids: values written once and read on every path. Counters, marks and the branch
+  state stay in ETS or in the storage, because updating an existing `:persistent_term` key forces a global GC pass.
+
 ## [0.10.3] - 2026-10-24
 
 A security-hardening release. Reading a stored branch no longer runs the `@on_load` callback of a module it names: a module that is not loaded yet is loaded only after the VM reports, from its beam file and without running anything, that it has none, so whoever can write the branch table cannot run a module's callback, as `SECURITY.md` promises. A fresh VM still decodes the host's own resources and types. A module with an `@on_load` that the host has not loaded and a stored branch names now fails to decode with `:storage` until the host loads it. Upgrading from 0.10.2 needs no step beyond the version (and `ramal_live ~> 0.10.3`, which shares it).

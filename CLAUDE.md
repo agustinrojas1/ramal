@@ -20,6 +20,7 @@ lib/ramal/current.ex         the current branch id of the calling process (proce
 lib/ramal/overlay.ex         the overlay map: apply, patch, diff (pure)
 lib/ramal/resource.ex        Spark extension: adds the read preparation and the write change
 lib/ramal/resource/transformer.ex  the extension's transformer (Spark needs a module for it)
+lib/ramal/resource/verifier.ex  compile-time warnings about what a branch handles only in part (internal)
 lib/ramal/preparation.ex     read side: strip limit/offset, patch results
 lib/ramal/preparation/aggregates.ex  aggregates a read loads, recomputed from the branch's rows after the patch (ADR 0029)
 lib/ramal/preparation/related.ex  filters and sorts through a relationship the branch changed: split out of the data-layer query (ADR 0025), narrowed for to-one paths (ADR 0047)
@@ -60,7 +61,7 @@ Do not add a module `docs/DESIGN.md` does not name without first adding it there
 - `mise.toml` pins Erlang and Elixir. Run everything through `mise exec -- mix ...` or activate mise in the shell.
 - Postgres for tests: `docker compose up -d db` (host port **5435**, database `ramal_test`, user and password `ramal`). Two test runs at once must not share a database: give each its own `MIX_TEST_PARTITION=1`, `2`, ... (database `ramal_test1`, ...).
 - `mix ci` must pass before every commit: format, compile with warnings as errors, credo strict, tests. Fix the cause, never silence a warning.
-- Locked versions matter: Ash 3.36.x, AshPostgres 2.15.x, Spark 2.7.x. Before relying on an Ash hook or option, confirm it exists in the locked version's docs (`mix hex.docs offline ash` or the deps source under `deps/ash`). Write what you confirmed into the module doc. Do not guess APIs from memory.
+- Locked versions matter: Ash 3.37.x (the tested range in `Ramal.Ash` is 3.36 and 3.37), AshPostgres 2.15.x, Spark 2.7.x. Before relying on an Ash hook or option, confirm it exists in the locked version's docs (`mix hex.docs offline ash` or the deps source under `deps/ash`). Write what you confirmed into the module doc. Do not guess APIs from memory.
 
 ## Code style
 
