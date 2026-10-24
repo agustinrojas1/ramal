@@ -78,6 +78,7 @@ Done; released in 0.3.0.
 - 0.10.0: A branch holds a row to the resource's identities, a `fragment` filter sees the branch's changes ([ADR 0054](adr/0054-fragment-filters-judged-by-the-database.md)), new rows sort last by a generated key, and new APIs: `run(atomic: true)` ([ADR 0052](adr/0052-atomic-run-takes-back-a-failed-runs-writes.md)), `discard(purge: true)` and `delete/1`, `stale/2` and `mark_merged/1` ([ADR 0051](adr/0051-staleness-check-without-the-merge.md)), and the raw query guard ([ADR 0053](adr/0053-raw-query-guard.md)).
 - 0.10.1: A merge inside the caller's transaction returns its error when refused and keeps the caller's writes (a savepoint), `merge/2` and `approve/2` take `context:`, `Result.entries` lists the replayed writes in log order, and `stale/2` and `mark_merged` accept a proposed branch.
 - 0.10.2: An atomic run whose process dies is rolled back and a merge or proposal waits for an open one, a replayed write refused by a constraint returns `:merge_failed` naming the key and the constraint (also inside the caller's transaction), `uniq?: true` counts distinct values on every path, a page filter on a generated key is lifted, `warn_raw_queries` matches an unquoted table, and the Postgres storage reports a missing row, a NULL epoch and a non-atom filter as errors.
+- 0.10.3: Reading a stored branch no longer runs the `@on_load` of a module it names; a module with one fails the load with `:storage` unless the host loaded it first.
 
 ## Formal verification
 

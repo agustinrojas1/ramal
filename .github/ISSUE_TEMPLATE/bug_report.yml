@@ -40,6 +40,6 @@ body:
     attributes:
       label: Versions
       description: Ramal, Ash, AshPostgres, Elixir and OTP.
-      placeholder: "ramal 0.10.2, ash 3.37.x, ash_postgres 2.15.x, Elixir 1.19, OTP 28"
+      placeholder: "ramal 0.10.3, ash 3.37.x, ash_postgres 2.15.x, Elixir 1.19, OTP 28"
     validations:
       required: true
