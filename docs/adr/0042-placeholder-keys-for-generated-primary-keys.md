@@ -44,7 +44,7 @@ an existing application, so a host with them could not use a branch for creates.
   of that value exists in the log. A `smallint` key column is not supported: the placeholder does not fit it.
 - A sort or keyset page on a single generated integer key orders a placeholder **after every real key**, in creation
   order (before them for `:desc`), which is where the merge puts the row: the sequence gives it a key above every
-  existing one. The sort and the cursor comparison run in Elixir on the patched list, so `Ramal.Preparation.Placeholders`
+  existing one. The sort and the cursor comparison run in Elixir on the patched list, so Ramal.Preparation.Placeholders
   lifts a placeholder `-2^31 + n` to `2^63 + n` (above any `int8`) for the comparison and restores it afterwards: the
   rows, the cursors Ash puts on them and `Ramal.diff/1` keep the placeholder. A keyset cursor that names a placeholder
   has the value in its comparisons lifted the same way. This matches the merged order when the sequence is above every
