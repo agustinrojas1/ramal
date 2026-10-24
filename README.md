@@ -204,6 +204,24 @@ whole, leaving the database untouched, if any replayed action is no longer valid
 
 Pass `on_stale: :ignore`, or a function that decides per stale row, when you know better.
 
+If your application commits through its own command layer instead of letting `merge/2` replay the Ash log, you can use the
+check on its own (experimental, [ADR 0051](https://github.com/agustinrojas1/ramal/blob/main/docs/adr/0051-staleness-check-without-the-merge.md)).
+Inside your own transaction, `Ramal.stale/2` returns the rows the database changed under the branch, with the same row
+locks as the merge when you pass `lock: true`. Run your commands in that transaction, and after it commits call
+`Ramal.mark_merged/1` so the branch shows as merged:
+
+```elixir
+{:ok, :committed} =
+  Ash.transact([MyApp.Farm.Herd], fn ->
+    case Ramal.stale(branch, lock: true) do
+      {:ok, []} -> MyApp.Commands.replay(commands) && :committed
+      {:ok, rows} -> Ash.DataLayer.rollback(MyApp.Farm.Herd, {:stale, rows})
+    end
+  end)
+
+{:ok, %Ramal.Branch{status: :merged}} = Ramal.mark_merged(branch)
+```
+
 ### Proposals: an agent proposes, a person decides
 
 ```elixir

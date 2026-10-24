@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **`Ramal.stale/2` and `Ramal.mark_merged/1` (experimental, ADR 0051)** for a host that commits a branch through its own command layer. `stale/2` runs the staleness check of `merge/2` on its own and returns `{:ok, []}` or the stale rows; with `lock: true` inside the host's transaction it takes the same `FOR UPDATE` locks (outside one it returns `:not_in_transaction`). `mark_merged/1` stores the branch as merged afterwards, so `list/2` and the inspector show it. A nested fork gets `:nested_fork`. New telemetry event `[:ramal, :branch, :mark_merged]`.
+
 ## [0.9.1] - 2026-10-23
 
 A patch release with two fixes: a branch no longer accepts an update or destroy of another tenant's record, and a damaged stored branch no longer crashes `Ramal.get/1` or hides every branch from `Ramal.list/2`. Reads in a branch are also a little faster. Upgrading from 0.9.0 needs no step beyond the version (and `ramal_live ~> 0.9.1`, which shares it).

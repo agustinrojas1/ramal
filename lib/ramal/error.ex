@@ -29,6 +29,8 @@ defmodule Ramal.Error do
   | `:parent_not_open` | a nested fork cannot merge because its parent branch is not open (merged, discarded, proposed or being merged); discard the fork (`details.parent`, `status`) |
   | `:no_parent` | `Ramal.diff/2` with `against: :parent` of a branch that is not a nested fork |
   | `:nested_branch` | `Ramal.run/2` was called inside another `Ramal.run/2`, or `Ramal.merge/2` inside one |
+  | `:nested_fork` | `Ramal.stale/2` or `Ramal.mark_merged/1` of a nested fork, which merges into its parent with `Ramal.merge/2` (ADR 0051) |
+  | `:not_in_transaction` | `Ramal.stale/2` with `lock: true` outside the caller's transaction, where the locks would be released on return (`details.resources`, ADR 0051) |
   | `:row_busy` | a write to a row that another process's action wrote in the branch and has not ended (`details.resource`, `key`); retry once it has |
   | `:missing_snapshot` | an overlay entry that needs the base row as first seen has none recorded |
   | `:limit_reached` | `Ramal.branch/2` or `Ramal.fork/2` was refused by `:max_active_branches` or `:branch_rate` of `Ramal.Supervisor` (`details.limit`, `max`, and `active` or `window`) |
@@ -69,6 +71,8 @@ defmodule Ramal.Error do
           | :parent_not_open
           | :no_parent
           | :nested_branch
+          | :nested_fork
+          | :not_in_transaction
           | :missing_snapshot
           | :row_busy
           | :limit_reached
