@@ -18,8 +18,8 @@ Real Ash apps filter by fragments often (jsonb, full-text search, PostGIS), so t
   the query Ash builds for those conjuncts gets a common table expression with the name of the resource's table,
   `WITH "paddocks" AS (SELECT ... FROM (VALUES (...), ...) AS v0 (...))`, which shadows the table for that one query.
   The fragment, the calculations and the joins to resources the branch did not change are the database's own, and the
-  query reads only. Ash and Ecto build the query (`Ash.Query.data_layer_query/2`, `Ecto.Query.values/2`,
-  `with_cte/3`), so no SQL is written by hand.
+  query reads only. Ash and Ecto build the query (`Ash.Query.data_layer_query/2`, Ecto's `values` source,
+  and `with_cte`), so no SQL is written by hand.
 - **The rest is unchanged.** A record must pass the fragment conjuncts (database) and the other conjuncts (Elixir), as
   the conjuncts of an `and` do. A filter with no fragment takes the old path and costs nothing more.
 - **Refuse where the answer would be wrong**, with `{:error, %Ramal.Error{reason: :fragment_unsupported}}`: a resource
