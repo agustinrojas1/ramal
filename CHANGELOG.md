@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reading a stored branch no longer runs the `@on_load` of a module it names.** Decoding loaded each module named in the stored state with `Code.ensure_loaded/1`, so whoever could write `ramal_branches.state` could run the `@on_load` callback of any module on the code path, which `SECURITY.md` says stored state must not do. A module that is not loaded yet is now loaded only after the VM reports, from its beam file and without running anything, that it has no `@on_load`; one that has one fails the load with `:storage` unless the host loaded it first. A fresh VM still decodes the host's own resources and types ([#237](https://github.com/agustinrojas1/ramal/issues/237)).
+
 ## [0.10.2] - 2026-10-24
 
 A bug-fix release from a review of the branch process, the Postgres storage and the merge. An atomic run whose process dies is rolled back, and a merge or a proposal waits for an open atomic run instead of committing what it is about to take back. A replayed write that the database refuses with a constraint Ash does not map returns `:merge_failed` naming the key and the constraint, also inside the caller's transaction. `uniq?: true` counts distinct values on every path, a page filter on a generated key sees the lifted placeholder, `warn_raw_queries` matches an unquoted table, and the storage reports a missing row, a NULL epoch and a non-atom filter as errors. Upgrading from 0.10.1 needs no step beyond the version (and `ramal_live ~> 0.10.2`, which shares it); a merge now waits for an open atomic run, so calling `merge/2` from inside the process's own atomic run times out.
