@@ -1,6 +1,6 @@
 # Ramal design
 
-Status: describes Ramal 0.9. First written 2026-10-22. This document is the current state of the design; the history of
+Status: describes Ramal 0.10. First written 2026-10-22. This document is the current state of the design; the history of
 decisions lives in `docs/adr/`. Where this document and the code disagree, open an issue: one of them is wrong.
 
 Marks: **[confirm]** flagged an Ash behaviour the implementer had to verify against the locked version before relying
@@ -103,7 +103,10 @@ preparation to every read action and one global change to every create, update a
 never be branchable, for example). `Ramal.branch/2` refuses a domain with no branchable resource (`:no_branchable_resources`). That check runs when the
 branch is created, not as a compile-time domain verifier: a verifier would need the domain to opt into an extension
 of its own, which 0.1 does not ask of the host. The transformer is Ramal.Resource.Transformer (`@moduledoc false`);
-Spark needs a module for it.
+Spark needs a module for it. A verifier, Ramal.Resource.Verifier (`@moduledoc false`), warns at compile time about the
+parts of a resource a branch can handle only in part (a database-generated key with no placeholder, a `custom`
+aggregate); a resource that keeps such a limitation on purpose sets `warnings? false`, and the warning changes no
+behaviour.
 
 Both hooks are no-ops when no branch is current. A test per hook proves that: the same action, with and without the
 extension, produces byte-identical results when no branch is active.

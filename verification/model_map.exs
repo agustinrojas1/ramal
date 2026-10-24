@@ -157,6 +157,8 @@ st = fn name -> ["Ramal.Storage.#{name}", "Ramal.Storage.ETS.#{name}", "Ramal.St
     "lib/ramal/preparation/related.ex" => "read side, tests: test/ramal/relationship_filter_test.exs",
     "lib/ramal/resource.ex" => "the Spark extension that installs the read preparation and the write change",
     "lib/ramal/resource/transformer.ex" => "the extension's transformer",
+    "lib/ramal/resource/verifier.ex" =>
+      "a compile-time warning about what a branch handles only in part; it runs nothing at branch time",
     "lib/ramal/storage/codec.ex" => "a branch to JSON and back, tests: test/ramal/codec_test.exs",
     "lib/ramal/telemetry.ex" => "event names",
     "lib/ramal/tools.ex" => "the tool definitions for an LLM agent; they call the public API"

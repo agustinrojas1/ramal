@@ -10,6 +10,12 @@ defmodule Ramal.Test.Farm.Paddock do
     repo(Ramal.TestRepo)
   end
 
+  # `herd_name_csv` below is a `custom` aggregate on purpose: the preparation keeps the database's value for it and
+  # the read tests pin the event (test/ramal/aggregate_test.exs).
+  ramal do
+    warnings?(false)
+  end
+
   actions do
     defaults([:read, :destroy, create: :*, update: :*])
 
