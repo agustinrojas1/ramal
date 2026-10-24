@@ -147,6 +147,7 @@ defmodule Ramal.Supervisor do
   def init(opts) do
     # init/1 runs in the supervisor process, so the tables are owned by it and live exactly as long as it does.
     create_table(ETS)
+    create_table(ETS.index_table())
     create_table(ETS.writes_table(), :ordered_set)
     create_table(__MODULE__)
     config = build_config(opts)

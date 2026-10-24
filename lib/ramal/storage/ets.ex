@@ -9,6 +9,9 @@ defmodule Ramal.Storage.ETS do
   first one is scanned whole by `list/3` and `count/3`, which must not meet deltas. It makes a durable branch survive
   the death of its process, which is all an ETS table can promise.
 
+  A third table is an index by `{domain, status, id}`, so that `list/3` reads the ids of the branches it returns and
+  copies those, not every overlay of every domain. `put/2` and `mark_merged/2` keep it in step with the branch's status.
+
   The table belongs to one node, so this backend cannot be shared by a cluster. It still fences by epoch
   (`c:Ramal.Storage.claim/2`), which lets `Ramal.Supervisor` run with `cluster: true` on a single node, for tests. The
   epochs are counters in the supervisor's own table, and a check and the write that follows it are not one atomic step.
@@ -35,6 +38,18 @@ defmodule Ramal.Storage.ETS do
   def table, do: __MODULE__
 
   @doc """
+  The name of the index table: `{domain, status, id}` of every stored branch, so `list/3` does not copy the branches it
+  leaves out. `Ramal.Supervisor` creates it.
+
+  ## Example
+
+      iex> Ramal.Storage.ETS.index_table()
+      Ramal.Storage.ETS.Index
+  """
+  @spec index_table() :: atom
+  def index_table, do: Module.concat(__MODULE__, Index)
+
+  @doc """
   The name of the table of the write logs. `Ramal.Supervisor` creates it.
 
   ## Example
@@ -48,7 +63,7 @@ defmodule Ramal.Storage.ETS do
   @impl true
   def put(%{epoch: epoch} = branch, _config) when is_integer(epoch) do
     with :ok <- check_epoch(branch.id, epoch) do
-      :ets.insert(table(), {branch.id, %{branch | epoch: nil}})
+      store(%{branch | epoch: nil})
       drop_covered(branch)
       :ok
     end
@@ -57,11 +72,28 @@ defmodule Ramal.Storage.ETS do
   end
 
   def put(branch, _config) do
-    :ets.insert(table(), {branch.id, branch})
+    store(branch)
     drop_covered(branch)
     :ok
   rescue
     ArgumentError -> unavailable()
+  end
+
+  # The row and its place in the index together. A branch is written again under a new status when it is proposed,
+  # rejected or discarded, so the entry under the old key goes first; the lookup is a copy of one row that the caller
+  # holds anyway.
+  defp store(branch) do
+    case :ets.lookup(table(), branch.id) do
+      [{_id, %{domain: domain, status: status}}] ->
+        :ets.delete(index_table(), {domain, status, branch.id})
+
+      [] ->
+        :ok
+    end
+
+    :ets.insert(table(), {branch.id, branch})
+    :ets.insert(index_table(), {{branch.domain, branch.status, branch.id}})
+    :ok
   end
 
   @impl true
@@ -128,7 +160,7 @@ defmodule Ramal.Storage.ETS do
           {:error, Ramal.Storage.already_merged(branch.id)}
 
         _open_or_missing ->
-          :ets.insert(table(), {branch.id, %{branch | status: :merged, epoch: nil}})
+          store(%{branch | status: :merged, epoch: nil})
           :ok
       end
     end
@@ -151,6 +183,14 @@ defmodule Ramal.Storage.ETS do
 
   @impl true
   def delete(id, _config) do
+    case :ets.lookup(table(), id) do
+      [{_id, %{domain: domain, status: status}}] ->
+        :ets.delete(index_table(), {domain, status, id})
+
+      [] ->
+        :ok
+    end
+
     :ets.delete(table(), id)
     :ets.select_delete(writes_table(), [{{{id, :_}, :_}, [], [true]}])
     :ok
@@ -160,20 +200,32 @@ defmodule Ramal.Storage.ETS do
 
   @impl true
   def list(domain, filters, _config) do
-    status = Keyword.get(filters, :status)
-
     branches =
-      table()
-      |> :ets.tab2list()
-      |> Enum.map(fn {_id, branch} -> branch end)
-      |> Enum.filter(
-        &(&1.domain == domain and (is_nil(status) or &1.status == status) and owned?(&1, filters))
-      )
+      domain
+      |> index_ids(Keyword.get(filters, :status))
+      |> Enum.flat_map(&row/1)
+      |> Enum.filter(&owned?(&1, filters))
       |> Enum.sort_by(& &1.inserted_at, DateTime)
 
     {:ok, branches}
   rescue
     ArgumentError -> unavailable()
+  end
+
+  # Only ids come out of the index, so a list copies the branches it returns and not the overlays of the ones it leaves
+  # out. `:_` is the ETS wildcard, for a list of any status.
+  defp index_ids(domain, nil),
+    do: :ets.select(index_table(), [{{{domain, :_, :"$1"}}, [], [:"$1"]}])
+
+  defp index_ids(domain, status),
+    do: :ets.select(index_table(), [{{{domain, status, :"$1"}}, [], [:"$1"]}])
+
+  # A branch can be deleted between the index read and this lookup; `list/3` is a snapshot either way.
+  defp row(id) do
+    case :ets.lookup(table(), id) do
+      [{^id, branch}] -> [branch]
+      [] -> []
+    end
   end
 
   @impl true
