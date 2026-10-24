@@ -16,7 +16,7 @@ and still keep Ramal's guarantee that the base did not move under the branch. St
 Option 1 of the issue: expose the check, and let the host store the outcome. No replay hook.
 
 - `Ramal.stale(branch, opts)` returns `{:ok, []}` or `{:ok, rows}`, each row `%{resource, key, reason: :changed | :deleted}`,
-  the rows `merge/2` reports as `:stale`. It calls the same `Ramal.Merge.stale_rows/2` that the merge's
+  the rows `merge/2` reports as `:stale`. It calls the same Ramal.Merge.stale_rows/2 that the merge's
   `check_staleness/2` calls, so the two cannot disagree; the only difference is that the lock is a parameter.
 - `lock: true` reads with `FOR UPDATE` where the data layer supports it, as the merge does. The locks live as long as
   the caller's transaction, so with `lock: true` the call is refused with `:not_in_transaction` when a resource whose

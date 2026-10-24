@@ -445,7 +445,7 @@ Limits and the reasons for these choices are in [ADR 0007](adr/0007-merge.md).
 
 A host with a command layer above Ash (plain modules that validate across resources, write an audit entry and call
 several actions) can use step 2 alone. `Ramal.stale(branch, lock: true)` inside the host's own `Ash.transact/3` returns the
-stale rows, taking the same locks, through the same `Ramal.Merge.stale_rows/2` the merge calls; the host then runs its
+stale rows, taking the same locks, through the same Ramal.Merge.stale_rows/2 the merge calls; the host then runs its
 commands in that transaction, and after the commit calls `Ramal.mark_merged(branch)`, which claims the branch and stores
 it as `:merged` (steps 1 and 5 without the replay) so `list/2` and the inspector show it. The merge's exactly-once
 guarantee (ADR 0035) does not cover the host's commit. The formal models need no new step: the check is the read-only part
