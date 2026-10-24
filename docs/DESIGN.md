@@ -335,6 +335,11 @@ This is the section that decides correctness. In a read action's preparation, wh
 # Ash.load/3 that follows the branch's foreign keys (ADR 0031)
 
 @spec discard(branch | id) :: :ok | {:error, Ramal.Error.t()}
+@spec discard(branch | id, keyword) :: :ok | {:error, Ramal.Error.t()}
+# purge: true also deletes the record and its write log, as delete/1 does
+
+@spec delete(branch | id) :: :ok | {:error, Ramal.Error.t()}
+# removes the record of a :discarded, :merged or :rejected branch; :not_terminal for an open or proposed one
 
 @spec get(id) :: {:ok, Ramal.Branch.t()} | {:error, Ramal.Error.t()}
 @spec list(domain, keyword) :: {:ok, [Ramal.Branch.t()]} | {:error, Ramal.Error.t()}
@@ -491,7 +496,7 @@ Events, all with `%{branch_id, domain}` metadata:
 `[:ramal, :branch, :create]`, `[:ramal, :branch, :fork]`, `[:ramal, :branch, :unload]`, `[:ramal, :branch, :load]`,
 `[:ramal, :branch, :persist_failed]` (storage refused a write on `:idle`, `:shutdown`, `:merged`, `:append` or `:compact`, with the `error`),
 `[:ramal, :branch, :append]` (a durable branch stored an action's delta: `seq`, `rows`, measurement `duration`), `[:ramal, :branch, :compact]` (a snapshot covering the write log: `wal`, `duration`),
-`[:ramal, :branch, :discard]`, `[:ramal, :branch, :propose]`, `[:ramal, :branch, :approve]`, `[:ramal, :branch, :reject]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
+`[:ramal, :branch, :discard]`, `[:ramal, :branch, :delete]`, `[:ramal, :branch, :propose]`, `[:ramal, :branch, :approve]`, `[:ramal, :branch, :reject]`, `[:ramal, :branch, :too_large]`, `[:ramal, :merge, :start | :stop | :exception]` (span; `stop` adds `result: :ok | :error` and `replayed` or `reason`),
 `[:ramal, :read, :patch]` with measurements `%{base_rows, overlay_rows, result_rows, duration}`,
 `[:ramal, :read, :unpatched_aggregate]`, `[:ramal, :write, :capture]` with `%{action_type, resource, action, nested?}`.
 
