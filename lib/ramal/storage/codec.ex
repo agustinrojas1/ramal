@@ -29,7 +29,9 @@ defmodule Ramal.Storage.Codec do
     * Atoms are read back with `String.to_existing_atom/1`, never created. Module names are found through the code
       path when the atom does not exist yet (a fresh VM has not loaded the host's modules), so a module that is not on
       the path is an error, not a new atom. Modules are loaded as they are named, before the values that follow them
-      are read, which brings in the atoms they mention. An atom that no loaded module mentions (a metadata key that
+      are read, which brings in the atoms they mention. Loading a module runs its `@on_load` callback, so a stored module
+      name runs that module's code; SECURITY.md ("Code loading") names this trust boundary and why loading is not limited
+      to modules already loaded. An atom that no loaded module mentions (a metadata key that
       only a host controller uses, say, in a VM that has not loaded that controller) fails the load with
       `:storage` and names the atom; string keys never have this problem.
 
@@ -909,6 +911,10 @@ defmodule Ramal.Storage.Codec do
   # code path is a module of the host, not data, so creating its atom is bounded by what the host compiled. Loading the
   # module also brings in the atoms it mentions (attribute names, roles in its policies), which the atoms stored in
   # action input and actors usually are.
+  #
+  # Loading runs the module's `@on_load` callback. That is accepted, not an oversight (SECURITY.md, "Code loading"):
+  # the only loaded code a stored name can reach is code the host compiled or depends on, and limiting the load to
+  # modules already loaded would make a fresh VM fail to decode a resource it has not loaded yet.
   defp module!(name) do
     # `:code.where_is_file/1` joins the name onto each code path directory, so a stored `Elixir.../../x` would probe
     # files outside of them. A module name has no separators.

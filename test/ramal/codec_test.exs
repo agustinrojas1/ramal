@@ -706,6 +706,53 @@ defmodule Ramal.Storage.CodecTest do
       assert {:error, %Error{reason: :storage}} = Codec.decode_state(columns(branch), state)
     end
 
+    # The documented trust boundary (SECURITY.md, "Code loading"): loading a stored module name runs its @on_load. If
+    # this stops holding, change SECURITY.md and the codec moduledoc with it.
+    @tag :tmp_dir
+    test "a stored module name loads that module, which runs its @on_load", %{tmp_dir: dir} do
+      module = Ramal.Storage.CodecTest.OnLoadProbe
+      ran = {module, :ran}
+
+      [{^module, binary}] =
+        Code.compile_string("""
+        defmodule Ramal.Storage.CodecTest.OnLoadProbe do
+          @on_load :mark
+
+          def mark do
+            :persistent_term.put({__MODULE__, :ran}, true)
+            :ok
+          end
+        end
+        """)
+
+      # Compiling loads the module and runs its @on_load. Unload it and keep only the beam, so decoding has to load it.
+      :code.purge(module)
+      :code.delete(module)
+      :code.purge(module)
+      :persistent_term.erase(ran)
+      File.write!(Path.join(dir, "#{module}.beam"), binary)
+      Code.prepend_path(dir)
+
+      on_exit(fn ->
+        Code.delete_path(dir)
+        :persistent_term.erase(ran)
+      end)
+
+      refute :code.is_loaded(module)
+
+      branch = Branch.new(Farm)
+      {:ok, state} = Codec.encode_state(branch)
+
+      state =
+        Map.put(state, "overlay", [
+          %{"resource" => Atom.to_string(module), "key" => 1, "op" => "deleted", "record" => nil}
+        ])
+
+      assert {:ok, %Branch{}} = Codec.decode_state(columns(branch), state)
+      assert :persistent_term.get(ran, false)
+      assert :code.is_loaded(module)
+    end
+
     test "refuses a stored struct whose module is not a struct" do
       branch = Branch.new(Farm)
       {:ok, state} = Codec.encode_state(branch)
