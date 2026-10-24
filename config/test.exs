@@ -16,7 +16,13 @@ config :ramal, Ramal.TestRepo,
 
 config :ramal,
   ecto_repos: [Ramal.TestRepo],
-  ash_domains: [Ramal.Test.Farm, Ramal.Test.PgTenants, Ramal.Test.Serial, Ramal.Test.Texts]
+  ash_domains: [
+    Ramal.Test.Farm,
+    Ramal.Test.PgTenants,
+    Ramal.Test.Serial,
+    Ramal.Test.Texts,
+    Ramal.Test.Customs
+  ]
 
 config :ash, :sat_solver, {SimpleSat, []}
 config :ash, :missed_notifications, :ignore
