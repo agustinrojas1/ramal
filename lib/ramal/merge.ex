@@ -43,6 +43,13 @@ defmodule Ramal.Merge do
   resources in `details.not_rolled_back`. `Ash.transact/3` runs the function as it is for such a data layer and returns
   its `{:error, _}` inside `{:ok, _}`, which the merge unwraps.
 
+  ## Checking staleness without merging (experimental, ADR 0051)
+
+  `stale/2` runs the check of step 2 and nothing else, and `mark_merged/1` is the claim and the `:merged` write of
+  steps 1 and 4 without the replay. A host that commits through its own command layer calls `stale/2` with `lock: true`
+  inside its own transaction, runs its commands, commits, and then calls `mark_merged/1`. The check is the one
+  `merge/2` runs (`stale_rows/2`), not a copy of it.
+
   ## Nested forks
 
   A branch made with `Ramal.fork(parent, nested: true)` merges into its parent instead of the database (ADR 0043). The
@@ -112,6 +119,125 @@ defmodule Ramal.Merge do
         result = claim_and_merge(id, opts, from, decide)
         {result, stop_metadata(id, domain, result)}
       end)
+    end
+  end
+
+  @doc """
+  The rows the branch read or wrote whose fingerprint no longer matches the database: the check `run/2` makes, on its
+  own (experimental, ADR 0051). Each row is `%{resource: module, key: term, reason: :changed | :deleted}`, sorted.
+
+  The branch is not claimed and not changed, so it may be checked again, and it stays open. Actions still running in it
+  are waited for, as for a merge.
+
+  ## Options
+
+    * `:lock` - `true` reads the rows with `FOR UPDATE` where the data layer supports it, as the merge does, so a
+      concurrent writer waits until the transaction ends. The locks are held by the caller's transaction, so the call
+      must be inside one (`Ash.transact/3` or the repo's): outside one the locks would be gone on return, and the call
+      is refused with `:not_in_transaction`. Default `false`.
+
+  ## Example
+
+      {:ok, []} = Ramal.Merge.stale(branch_id)
+  """
+  @spec stale(String.t(), keyword) ::
+          {:ok, [%{resource: module, key: term, reason: :changed | :deleted}]}
+          | {:error, Error.t()}
+  def stale(id, opts \\ []) when is_binary(id) do
+    lock? = Keyword.get(opts, :lock, false)
+
+    unless is_boolean(lock?) do
+      raise ArgumentError, "`lock` must be true or false, got: #{inspect(lock?)}"
+    end
+
+    with :ok <- ensure_outside_branch(id),
+         {:ok, branch, _version} <- Server.merge_source(id),
+         :ok <- ensure_database_branch(branch, "Ramal.stale/2"),
+         :ok <- ensure_transaction(branch, lock?) do
+      {rows, _fetched} = stale_rows(branch, lock?)
+      {:ok, rows}
+    end
+  rescue
+    error in [Ash.Error.Invalid, Ash.Error.Unknown, Ash.Error.Forbidden, Ash.Error.Framework] ->
+      {:error, to_error(error)}
+  end
+
+  @doc """
+  Stores an open branch as `:merged` without replaying its log (experimental, ADR 0051), for a host that applied the
+  work through its own commands after `stale/2` found nothing stale.
+
+  Call it after the host's transaction committed: the branch is claimed, written as `:merged`, and its process stops, as
+  at the end of `run/2`. Returns the merged branch. If the storage refuses the write the process keeps the branch as
+  merged and stores it when it is idle (ADR 0023), and the call returns the storage's error.
+
+  ## Example
+
+      {:ok, %Ramal.Branch{status: :merged}} = Ramal.Merge.mark_merged(branch_id)
+  """
+  @spec mark_merged(String.t()) :: {:ok, Branch.t()} | {:error, Error.t()}
+  def mark_merged(id) when is_binary(id) do
+    with :ok <- ensure_outside_branch(id),
+         {:ok, branch} <- Server.begin_merge(id, :open),
+         :ok <- claimed_database_branch(id, branch) do
+      case Server.finish_merge(id, :merged) do
+        :ok ->
+          Telemetry.branch(:mark_merged, branch)
+          {:ok, %{branch | status: :merged}}
+
+        {:persist_failed, error} ->
+          {:error, error}
+
+        {:error, error} ->
+          {:error, error}
+      end
+    end
+  end
+
+  # A nested fork merges into its parent, never into the database, so neither check nor mark means anything for it.
+  defp ensure_database_branch(%Branch{parent: nil}, _call), do: :ok
+
+  defp ensure_database_branch(%Branch{id: id, parent: parent}, call) do
+    {:error,
+     Error.new(
+       :nested_fork,
+       "#{call} is for branches that merge into the database; #{inspect(id)} is a nested fork of #{inspect(parent.id)} " <>
+         "and merges into it with Ramal.merge/2",
+       %{id: id, parent: parent.id}
+     )}
+  end
+
+  defp claimed_database_branch(id, branch) do
+    with {:error, _} = error <- ensure_database_branch(branch, "Ramal.mark_merged/1") do
+      Server.finish_merge(id, :aborted)
+      error
+    end
+  end
+
+  # Locks last until the transaction that took them ends, so a locking read outside one protects nothing. Only the
+  # resources whose data layer locks need it: ETS has no transactions and no locks.
+  defp ensure_transaction(_branch, false), do: :ok
+
+  defp ensure_transaction(branch, true) do
+    outside =
+      for {resource, _key} <- Map.keys(branch.base),
+          Ash.DataLayer.data_layer_can?(resource, {:lock, @lock}),
+          not Ash.DataLayer.in_transaction?(resource),
+          uniq: true,
+          do: resource
+
+    case outside do
+      [] ->
+        :ok
+
+      resources ->
+        {:error,
+         Error.new(
+           :not_in_transaction,
+           "Ramal.stale/2 with `lock: true` must run inside the transaction that runs the commands; " <>
+             "#{Enum.map_join(resources, ", ", &inspect/1)} is not in one. Wrap the check and the commands in " <>
+             "Ash.transact/3, or pass `lock: false`",
+           %{resources: resources}
+         )}
     end
   end
 
@@ -315,7 +441,7 @@ defmodule Ramal.Merge do
   end
 
   # The stale rows, and the rows as the transaction read them (by `{resource, key}`), which the replay reuses.
-  defp stale_rows(branch) do
+  defp stale_rows(branch, lock? \\ true) do
     {stale, fetched} =
       branch.base
       |> Enum.filter(fn {_ref, row} -> row.fingerprint != nil end)
@@ -323,7 +449,7 @@ defmodule Ramal.Merge do
         {key, row.fingerprint}
       end)
       |> Enum.map_reduce(%{}, fn {resource, expected}, fetched ->
-        {stale, rows} = stale_in(resource, Map.new(expected), branch.tenant)
+        {stale, rows} = stale_in(resource, Map.new(expected), branch.tenant, lock?)
 
         {stale,
          Enum.reduce(rows, fetched, &Map.put(&2, {resource, Resource.key(resource, &1)}, &1))}
@@ -332,13 +458,13 @@ defmodule Ramal.Merge do
     {stale |> Enum.concat() |> Enum.sort_by(&{inspect(&1.resource), &1.key}), fetched}
   end
 
-  defp stale_in(resource, expected, tenant) do
+  defp stale_in(resource, expected, tenant, lock?) do
     rows =
       resource
       |> Ash.Query.new()
       |> Ash.Query.set_tenant(Resource.read_tenant(resource, tenant))
       |> filter_keys(resource, Map.keys(expected))
-      |> lock()
+      |> lock(lock?)
       |> Resource.read_all(authorize?: false)
       |> case do
         {:ok, rows} -> rows
@@ -380,8 +506,8 @@ defmodule Ramal.Merge do
     end
   end
 
-  defp lock(query) do
-    if Ash.DataLayer.data_layer_can?(query.resource, {:lock, @lock}) do
+  defp lock(query, lock?) do
+    if lock? and Ash.DataLayer.data_layer_can?(query.resource, {:lock, @lock}) do
       Ash.Query.lock(query, @lock)
     else
       query

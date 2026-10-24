@@ -45,7 +45,9 @@ These work and are covered by tests. They may change in a minor release before 1
 
 ## Experimental
 
-None. Nothing in the code or the docs is marked experimental, and every public feature is listed under Stable or Extended above.
+These may change or go in any release, and the changelog says so. They are not part of the nine stable calls.
+
+- **The staleness check without the merge**: `Ramal.stale/2` and `Ramal.mark_merged/1` (ADR 0051), for a host that commits a branch through its own command layer instead of letting `merge/2` replay the Ash log. `stale/2` returns the rows the base changed under the branch, with the same `FOR UPDATE` locks as the merge when called with `lock: true` inside the host's transaction. `mark_merged/1` stores the branch as merged afterwards. The reasons `:nested_fork` and `:not_in_transaction` belong to them.
 
 ## Release cadence
 
