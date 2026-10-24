@@ -7,7 +7,7 @@ Ramal is pre-1.0. This page says what is promised now, so you know what a minor 
 From Ramal 0.8.0, these nine calls keep their names, their required arguments and their return shapes through 0.x and into 1.0:
 
 - `Ramal.branch/2`
-- `Ramal.run/2`
+- `Ramal.run/2` (`Ramal.run/3` adds the `:atomic` option)
 - `Ramal.fork/2`
 - `Ramal.diff/2`
 - `Ramal.merge/2`
