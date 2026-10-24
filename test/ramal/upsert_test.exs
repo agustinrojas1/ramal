@@ -2,6 +2,9 @@ defmodule Ramal.UpsertTest do
   # Ramal.Supervisor is one per node and named, so these tests cannot run concurrently.
   use Ramal.DataCase, async: false
 
+  require Ash.Query
+
+  alias Ecto.Adapters.SQL
   alias Ramal.Error
   alias Ramal.Merge.Result
 
@@ -258,6 +261,88 @@ defmodule Ramal.UpsertTest do
       assert %Error{reason: :upsert_unsupported} = Error.find(error)
       assert Exception.message(Error.find(error)) =~ "upsert_condition"
       assert diff(branch) == []
+    end
+  end
+
+  # What docs/limits.md says about "insert if missing, otherwise leave it alone".
+  describe "insert if missing, otherwise leave it alone" do
+    defp ctid(paddock) do
+      %{rows: [[ctid]]} =
+        SQL.query!(TestRepo, "SELECT ctid::text FROM paddocks WHERE id = $1", [
+          Ecto.UUID.dump!(paddock.id)
+        ])
+
+      ctid
+    end
+
+    test "upsert_fields [] still rewrites the row in AshPostgres, which is why a branch cannot skip it",
+         %{paddocks: paddocks} do
+      before_ctid = ctid(paddocks.l07)
+
+      returned = upsert!(%{name: "L07", capacity_head: 999}, :upsert_nothing)
+
+      assert returned.id == paddocks.l07.id
+      assert base(paddocks.l07).capacity_head == 100
+      assert ctid(paddocks.l07) != before_ctid
+    end
+
+    test "upsert_fields [] in a branch returns the existing row and changes nothing", %{
+      branch: branch,
+      paddocks: paddocks
+    } do
+      returned =
+        inside(branch, fn -> upsert!(%{name: "L07", capacity_head: 999}, :upsert_nothing) end)
+
+      assert returned.id == paddocks.l07.id
+      assert returned.capacity_head == 100
+
+      # No attribute of the input is taken, but the update timestamp is still touched and replayed.
+      assert [%{kind: :updated, changes: changes}] = diff(branch)
+      assert Map.keys(changes) == [:updated_at]
+      assert {:ok, _result} = Ramal.merge(branch, authorize?: false)
+      assert base(paddocks.l07).capacity_head == 100
+    end
+
+    test "upsert_fields [] in a branch creates the row when it is missing", %{branch: branch} do
+      created =
+        inside(branch, fn -> upsert!(%{name: "L99", capacity_head: 5}, :upsert_nothing) end)
+
+      assert created.capacity_head == 5
+      assert [%{kind: :created}] = diff(branch)
+      assert base_count() == 2
+    end
+
+    test "a condition that is never true is refused in a branch, with :upsert_unsupported", %{
+      branch: branch
+    } do
+      assert {:error, error} =
+               inside(branch, fn -> upsert(%{name: "L07", capacity_head: 999}, :upsert_never) end)
+
+      assert %Error{reason: :upsert_unsupported} = Error.find(error)
+      assert diff(branch) == []
+    end
+
+    test "a read in the branch first, then a plain create, leaves an existing row alone", %{
+      branch: branch,
+      paddocks: paddocks
+    } do
+      insert_if_missing = fn name ->
+        case Paddock |> Ash.Query.filter(name == ^name) |> Ash.read_one!(authorize?: false) do
+          nil -> Ash.create!(Paddock, %{name: name, capacity_head: 5}, authorize?: false)
+          existing -> existing
+        end
+      end
+
+      inside(branch, fn ->
+        assert insert_if_missing.("L07").id == paddocks.l07.id
+        created = insert_if_missing.("L99")
+        assert insert_if_missing.("L99").id == created.id
+      end)
+
+      assert [%{kind: :created}] = diff(branch)
+      assert {:ok, _result} = Ramal.merge(branch, authorize?: false)
+      assert base_count() == 3
+      assert base(paddocks.l07).capacity_head == 100
     end
   end
 

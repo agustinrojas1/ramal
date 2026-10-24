@@ -148,6 +148,7 @@ st = fn name -> ["Ramal.Storage.#{name}", "Ramal.Storage.ETS.#{name}", "Ramal.St
     "lib/ramal/preparation/aggregates.ex" => "read side, tests: test/ramal/aggregate_test.exs",
     "lib/ramal/preparation/lateral.ex" => "read side, tests: test/ramal/through_test.exs",
     "lib/ramal/preparation/many_to_many.ex" => "read side, tests: test/ramal/many_to_many_test.exs",
+    "lib/ramal/preparation/placeholders.ex" => "read side, tests: test/ramal/placeholder_order_test.exs",
     "lib/ramal/preparation/paged.ex" => "read side, tests: test/ramal/paginated_read_test.exs",
     "lib/ramal/preparation/related.ex" => "read side, tests: test/ramal/relationship_filter_test.exs",
     "lib/ramal/resource.ex" => "the Spark extension that installs the read preparation and the write change",
