@@ -16,6 +16,7 @@ defmodule Ramal.Preparation.Paged do
 
   alias Ash.Page.Keyset
   alias Ash.Resource.Info
+  alias Ramal.Preparation.Placeholders
   alias Ramal.Resource
 
   require Ash.Query
@@ -180,7 +181,9 @@ defmodule Ramal.Preparation.Paged do
       {:ok, rows}
     else
       with {:ok, filter} <- Keyset.filter(query, cursor, query.sort, side) do
-        keep(query, rows, Ramal.Ash.do_filter(Ash.Query.new(query.resource), filter).filter)
+        # A placeholder key is compared as the key it becomes at the merge: after every real one (ADR 0042).
+        {view, filter} = Placeholders.keyset_view(filter, query.resource)
+        keep(query, rows, Ramal.Ash.do_filter(Ash.Query.new(query.resource), filter).filter, view)
       end
     end
   end
@@ -189,10 +192,11 @@ defmodule Ramal.Preparation.Paged do
 
   # The same expression the database would have been given, judged by `Ash.Filter.Runtime` on the patched rows, in
   # their order.
-  defp keep(query, rows, filter) do
-    with {:ok, matches} <- Ramal.Ash.filter_matches(query.domain, rows, filter) do
+  # `view` is how a row is shown to the filter, which is not how it is returned.
+  defp keep(query, rows, filter, view \\ & &1) do
+    with {:ok, matches} <- Ramal.Ash.filter_matches(query.domain, Enum.map(rows, view), filter) do
       keys = MapSet.new(matches, &Resource.key(query.resource, &1))
-      {:ok, Enum.filter(rows, &MapSet.member?(keys, Resource.key(query.resource, &1)))}
+      {:ok, Enum.filter(rows, &MapSet.member?(keys, Resource.key(query.resource, view.(&1))))}
     end
   end
 end
