@@ -567,13 +567,16 @@ defmodule Ramal.Preparation do
        )
        when removed != nil do
     key = Resource.key_fun(query.resource)
-    {changed, untouched} = Enum.split_with(results, &Map.has_key?(slice, key.(&1)))
+    untouched = Enum.reject(results, &Map.has_key?(slice, key.(&1)))
 
     with {:ok, loaded} <- load_for_filter(untouched, removed, query),
          {:ok, loaded} <- load_aggregates(loaded, Related.aggregates(removed), query, id),
          {:ok, matches} <- Ramal.Ash.filter_matches(query.domain, loaded, removed) do
       keys = MapSet.new(matches, key)
-      {:ok, Enum.filter(results, &(&1 in changed or MapSet.member?(keys, key.(&1))))}
+
+      # By key, not by record: a list membership test would compare whole structs, R rows against R changed rows.
+      {:ok,
+       Enum.filter(results, &(Map.has_key?(slice, key.(&1)) or MapSet.member?(keys, key.(&1))))}
     end
   end
 

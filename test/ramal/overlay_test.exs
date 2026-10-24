@@ -174,6 +174,14 @@ defmodule Ramal.OverlayTest do
       assert patch([row(1)], %{}, &all/1, limit: 0) == []
     end
 
+    test "a negative limit returns nothing, as Ash.Query.limit clamps it to zero" do
+      base = [row(1), row(2)]
+      slice = %{3 => {:created, row(3)}}
+
+      assert patch(base, slice, &all/1, limit: -1) == []
+      assert patch(base, slice, &all/1, limit: -5, offset: 1) == []
+    end
+
     test "requires a key function" do
       assert_raise KeyError, fn -> Overlay.patch([row(1)], %{}, &all/1, []) end
     end

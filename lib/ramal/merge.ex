@@ -544,18 +544,14 @@ defmodule Ramal.Merge do
       fun.()
     catch
       :throw, {DBConnection, _conn_ref, reason} ->
-        {:error, Ash.Error.to_ash_error(reason)}
+        refuse(savepoints, queued, covered?, {:error, Ash.Error.to_ash_error(reason)})
 
       kind, reason ->
         back_to(savepoints, queued)
         :erlang.raise(kind, reason, __STACKTRACE__)
     else
       {:error, _} = error ->
-        back_to(savepoints, queued)
-
-        # When every repo has a savepoint there is nothing left to roll back, and an `{:error, _}` would make Ash roll
-        # the caller's transaction back.
-        if covered?, do: {:refused, error}, else: error
+        refuse(savepoints, queued, covered?, error)
 
       result ->
         Enum.each(savepoints, fn {repo, name} ->
@@ -564,6 +560,13 @@ defmodule Ramal.Merge do
 
         result
     end
+  end
+
+  # When every repo has a savepoint there is nothing left to roll back, and an `{:error, _}` would make Ash roll the
+  # caller's transaction back.
+  defp refuse(savepoints, queued, covered?, error) do
+    back_to(savepoints, queued)
+    if covered?, do: {:refused, error}, else: error
   end
 
   defp back_to(savepoints, queued) do
@@ -868,13 +871,18 @@ defmodule Ramal.Merge do
          renames,
          {opts, plans}
        ) do
+    # The copy is dropped here, not kept. A nested entry is a write a hook made while its outer action ran, and
+    # replaying that action runs the hook again. The outer entry comes before or after this one, depending on whether
+    # the hook ran before or after the action's own write (ADR 0041), so the rows in `fetched` may be out of date from
+    # here on. Keeping the copy loses writes: test "a later update reads the row again instead of using the copy the
+    # check locked". The entry does not say which rows the hook changed, so the drop is not conditional on it.
     if entry_opts[:nested?] do
       {:skip, %{}}
     else
       entry = rename_entry(entry, renames)
       {row, fetched} = take_fetched(fetched, entry)
 
-      case replay_entry(entry, row, opts, Map.get(plans, entry_opts[:root], [])) do
+      case replay_entry_guarded(entry, row, opts, Map.get(plans, entry_opts[:root], [])) do
         {:ok, kind, ref, record} ->
           renames =
             renames
@@ -887,6 +895,16 @@ defmodule Ramal.Merge do
           {:error, merge_failed(entry, index, error, written_before(entries, index))}
       end
     end
+  end
+
+  # An action that fails inside a transaction rolls it back with a throw (`DBConnection.rollback/2`, lib/db_connection.ex)
+  # that no `Ash.create` on the way catches, as when the database refuses the write with a constraint Ash does not map to
+  # an error (a unique index the resource declares no identity for). Caught here, the failure is the failure of this log
+  # entry, with its index, resource and key (#250), and the merge's savepoint or transaction takes the rows back.
+  defp replay_entry_guarded(entry, row, opts, plan) do
+    replay_entry(entry, row, opts, plan)
+  catch
+    :throw, {DBConnection, _conn_ref, reason} -> {:error, Ash.Error.to_ash_error(reason)}
   end
 
   # -- placeholder keys ---------------------------------------------------------------------------------------------
@@ -1155,24 +1173,59 @@ defmodule Ramal.Merge do
   defp record_in(records, :deleted, ref, _record), do: Overlay.put_deleted(records, ref)
 
   defp merge_failed(
-         {type, resource, action, _params, _actor, _opts, _at},
+         {type, resource, action, _params, _actor, opts, _at},
          index,
          error,
          not_rolled_back
        ) do
+    key = opts[:key]
+    constraint = constraint_of(error)
+
     Error.new(
       :merge_failed,
-      "replaying log entry #{index} (#{type} #{inspect(resource)}.#{action}) failed: #{Exception.message(error)}; " <>
-        written_note(not_rolled_back) <> "the branch is still open",
+      "replaying log entry #{index} (#{type} #{inspect(resource)}.#{action}) failed: " <>
+        failure_text(error, constraint, key) <>
+        "; " <> written_note(not_rolled_back) <> "the branch is still open",
       %{
         index: index,
         type: type,
         resource: resource,
         action: action,
+        key: key,
         error: error,
         not_rolled_back: not_rolled_back
       }
+      |> put_constraint(constraint)
     )
+  end
+
+  defp put_constraint(details, nil), do: details
+  defp put_constraint(details, constraint), do: Map.put(details, :constraint, constraint)
+
+  # A constraint the resource declares no identity for reaches Ash as an exception, which it wraps in an unknown error
+  # whose message is the text of the Ecto exception (`Ecto.ConstraintError`, deps/ecto/lib/ecto/exceptions.ex): the name
+  # of the violated constraint is the first one it lists.
+  defp constraint_of(%Ecto.ConstraintError{constraint: name}), do: name
+
+  defp constraint_of(%{errors: errors}) when is_list(errors),
+    do: Enum.find_value(errors, &constraint_of/1)
+
+  defp constraint_of(%{error: %_{} = error}), do: constraint_of(error)
+
+  defp constraint_of(%{error: text}) when is_binary(text) do
+    case Regex.run(~r/constraint error when attempting to \w+ struct:\s+\* "([^"]+)"/, text) do
+      [_, name] -> name
+      nil -> nil
+    end
+  end
+
+  defp constraint_of(_error), do: nil
+
+  defp failure_text(error, nil, _key), do: Exception.message(error)
+
+  defp failure_text(_error, constraint, key) do
+    "the database refused the write with the constraint #{inspect(constraint)}, so the key #{inspect(key)} is " <>
+      "probably taken since the branch was made"
   end
 
   defp written_note([]), do: "nothing was written and "

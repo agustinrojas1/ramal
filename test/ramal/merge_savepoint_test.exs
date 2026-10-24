@@ -16,7 +16,7 @@ defmodule Ramal.MergeSavepointTest do
   defp herd_names, do: Herd |> Ash.read!(authorize?: false) |> Enum.map(& &1.name) |> Enum.sort()
 
   defp in_transaction(:repo, fun), do: Ramal.TestRepo.transaction(fun)
-  defp in_transaction(:ash, fun), do: Ash.transact(Herd, fun)
+  defp in_transaction(:ash, fun), do: Ash.transact([Herd, Ramal.Test.Named.NamedPaddock], fun)
   defp repo_transaction(fun), do: in_transaction(:repo, fun)
 
   describe "a refused merge inside the caller's transaction" do
@@ -98,5 +98,60 @@ defmodule Ramal.MergeSavepointTest do
     result = Ramal.merge(branch, on_stale: :error)
     Ash.create!(Herd, %{name: "AFTER", head: 1}, authorize?: false)
     {:done, result}
+  end
+
+  describe "a replayed write the database refuses with a constraint Ash does not map" do
+    alias Ramal.Test.Named
+    alias Ramal.Test.Named.NamedPaddock
+
+    # The branch makes "K2" with a key it chose; another writer takes the key before the merge.
+    setup do
+      {:ok, branch} = Ramal.branch(Named)
+      Ramal.run!(branch, fn -> Ash.create!(NamedPaddock, %{name: "K2", capacity_head: 1}) end)
+      Ash.create!(NamedPaddock, %{name: "K2", capacity_head: 2}, authorize?: false)
+      {:ok, taken: branch}
+    end
+
+    defp paddock_names,
+      do:
+        NamedPaddock
+        |> Ash.read!(authorize?: false)
+        |> Enum.map(& &1.name)
+        |> Enum.sort()
+        |> Kernel.--(["L07", "L18"])
+
+    test "returns an error that names the key and the constraint, and leaves the branch open", %{
+      taken: branch
+    } do
+      assert {:error, %Error{reason: :merge_failed, details: details}} =
+               Ramal.merge(branch, on_stale: :ignore)
+
+      assert %{constraint: "paddocks_unique_name_index", resource: NamedPaddock, key: "K2"} =
+               details
+
+      assert {:ok, %{status: :open}} = Ramal.get(branch.id)
+      assert paddock_names() == ["K2"]
+    end
+
+    for {name, wrap} <- [{"Repo.transaction", :repo}, {"Ash.transact", :ash}] do
+      test "under #{name} it returns, keeps the caller's writes and runs the code after the call",
+           %{
+             taken: branch
+           } do
+        wrapped =
+          in_transaction(unquote(wrap), fn ->
+            Ash.create!(NamedPaddock, %{name: "BEFORE", capacity_head: 1}, authorize?: false)
+            result = Ramal.merge(branch, on_stale: :ignore)
+            Ash.create!(NamedPaddock, %{name: "AFTER", capacity_head: 1}, authorize?: false)
+            {:done, result}
+          end)
+
+        assert {:ok, {:done, {:error, %Error{reason: :merge_failed, details: %{key: "K2"}}}}} =
+                 wrapped
+
+        assert paddock_names() == ["AFTER", "BEFORE", "K2"]
+        assert {:ok, %{status: :open}} = Ramal.get(branch.id)
+      end
+    end
   end
 end

@@ -104,6 +104,30 @@ defmodule Ramal.PlaceholderOrderTest do
            end) == ["changed", "base 2"]
   end
 
+  test "a page filter on the generated key keeps the rows the merged database keeps", %{
+    branch: branch
+  } do
+    threshold =
+      Note |> Ash.Query.sort(id: :desc) |> Ash.read_first!(authorize?: false) |> Map.fetch!(:id)
+
+    filtered = fn ->
+      page =
+        Ash.read!(Note,
+          action: :paged,
+          page: [limit: 10, filter: [id: [greater_than: threshold]]],
+          authorize?: false
+        )
+
+      Enum.map(page.results, & &1.body)
+    end
+
+    inside = Ramal.run!(branch, fn -> create_new() && filtered.() end)
+    assert inside == ["new 1", "new 2"]
+
+    {:ok, _} = Ramal.merge(branch, authorize?: false)
+    assert filtered.() == inside
+  end
+
   test "the rows keep their placeholder keys in what the read returns", %{branch: branch} do
     ids =
       Ramal.run!(branch, fn ->

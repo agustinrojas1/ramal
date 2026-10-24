@@ -319,7 +319,11 @@ defmodule Ramal.Overlay do
   defp sort(rows, comparator) when is_function(comparator, 2), do: Enum.sort(rows, comparator)
 
   defp take(rows, nil), do: rows
-  defp take(rows, limit) when is_integer(limit) and limit >= 0, do: Enum.take(rows, limit)
+  # A negative limit is clamped to zero, as Ash does: `Ash.Query.limit/2` sets `max(0, limit)`
+  # (deps/ash/lib/ash/query/query.ex:3832). Ash's offset page schema rejects a negative page limit
+  # outright (deps/ash/lib/ash/page/offset.ex, `limit: :pos_integer`), so this clause is reached only by a
+  # direct caller. Passing a negative count to Enum.take/2 would take rows from the end instead.
+  defp take(rows, limit) when is_integer(limit), do: Enum.take(rows, max(0, limit))
 
   @doc """
   The overlay as a list of `Ramal.Change` structs, computed against the base rows as the branch first saw them.
