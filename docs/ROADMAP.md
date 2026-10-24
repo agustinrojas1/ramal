@@ -76,6 +76,7 @@ Done; released in 0.3.0.
 - 0.9.0: Ramal checks its Ash contract where it runs: `mix ramal.doctor` and, outside the tested range, a boot check that refuses branch work a broken assumption would affect with `:ash_incompatible` ([ADR 0049](adr/0049-ash-contract-checked-where-ramal-runs.md)). Every Ash internal Ramal touches now has a check. Ready for the next Ash's `through` paths, and a crash fixed on a `through` load left to the database.
 - 0.9.1: A branch refuses an update or destroy of another tenant's record (`:tenant_mismatch`), a stored branch it cannot decode is an error for `get/1` and skipped by `list/2` instead of a crash, and reads in a branch look up the primary key once.
 - 0.10.0: A branch holds a row to the resource's identities, a `fragment` filter sees the branch's changes ([ADR 0054](adr/0054-fragment-filters-judged-by-the-database.md)), new rows sort last by a generated key, and new APIs: `run(atomic: true)` ([ADR 0052](adr/0052-atomic-run-takes-back-a-failed-runs-writes.md)), `discard(purge: true)` and `delete/1`, `stale/2` and `mark_merged/1` ([ADR 0051](adr/0051-staleness-check-without-the-merge.md)), and the raw query guard ([ADR 0053](adr/0053-raw-query-guard.md)).
+- 0.10.1: A merge inside the caller's transaction returns its error when refused and keeps the caller's writes (a savepoint), `merge/2` and `approve/2` take `context:`, `Result.entries` lists the replayed writes in log order, and `stale/2` and `mark_merged` accept a proposed branch.
 
 ## Formal verification
 

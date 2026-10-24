@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-24
+
+A small release for hosts that merge inside their own transaction or commit through their own commands. A merge called inside `Repo.transaction/1` or `Ash.transact/3` now returns its error when it is refused instead of rolling the caller's writes back, a merge can pass a `context:` to the replayed actions and returns its replayed writes in `Result.entries`, and `stale/2` and `mark_merged` accept a proposed branch. Upgrading from 0.10.0 needs no step beyond the version (and `ramal_live ~> 0.10.0`, which shares it); the new options and the new `Result` field are additive.
+
 ### Added
 
 - **`Ramal.stale/2` and `Ramal.mark_merged/2` accept a `:proposed` branch**, so a host that commits through its own commands can keep a branch under review and still use them. `stale/2` only reads, with or without `lock: true`. `mark_merged(branch, decided_by: who, reason: why)` on a proposed branch stores it as `:merged` and records the approval (who, why, when, nothing replayed) as `approve/2` does, so `list/2` and the inspector show it; it emits `[:ramal, :branch, :approve]` as well as `[:ramal, :branch, :mark_merged]`. An open branch behaves as before ([#225](https://github.com/agustinrojas1/ramal/issues/225)).

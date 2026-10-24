@@ -25,7 +25,7 @@ defmodule Mix.Tasks.Ramal.Doctor do
   ## Example
 
       $ mix ramal.doctor
-      Ramal 0.10.0 on Ash 3.37.0 (tested: ~> 3.36.0 or ~> 3.37.0) and AshPostgres 2.15.1 (tested: ~> 2.15.0)
+      Ramal 0.10.1 on Ash 3.37.0 (tested: ~> 3.36.0 or ~> 3.37.0) and AshPostgres 2.15.1 (tested: ~> 2.15.0)
 
         ok           core      core               set_result_create               a set_result in a before_action skips the data layer on create
         ok           core      core               set_result_update               a set_result in a before_action skips the data layer on update
