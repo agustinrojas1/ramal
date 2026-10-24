@@ -446,7 +446,8 @@ defmodule Ramal.Branch.Server do
   @doc """
   Marks the branch as it is now for the calling process, so that `rollback/2` can take back everything written since
   (`Ramal.run/3` with `atomic: true`). Until the savepoint is rolled back or dropped with `keep/2` the process does not
-  unload, since the savepoint would be lost with it; if the calling process dies the savepoint is dropped.
+  unload, since the savepoint would be lost with it. If the calling process dies first, the writes since are taken back
+  as if it had been rolled back, unless the branch is then being merged (see `handle_info/2`).
   """
   @spec savepoint(String.t()) :: {:ok, reference} | {:error, Error.t()}
   def savepoint(id), do: call(id, :savepoint)
@@ -887,7 +888,7 @@ defmodule Ramal.Branch.Server do
     cond do
       savepoint == nil -> reply(state, {:error, savepoint_lost(state)})
       not usable?(state) -> reply(state, {:error, unavailable(state)})
-      true -> rolled_back(state, savepoint)
+      true -> answer_rollback(rolled_back(state, savepoint))
     end
   end
 
@@ -1085,11 +1086,18 @@ defmodule Ramal.Branch.Server do
     end
   end
 
-  # The process of an atomic run died: nobody is left to roll it back or to keep it, and its writes stand as they are.
-  def handle_info({:DOWN, token, :process, _pid, _reason}, %{savepoints: savepoints} = state)
+  # The process of an atomic run died before the run settled, so nobody will keep its writes: they are taken back, as a
+  # database rolls back the transaction of a connection whose owner died (`Ramal.run/3`). Only while the branch is open
+  # and not being merged: a merge that is replaying the log has already read the writes, and a rollback would leave the
+  # state it stores different from the one it replayed.
+  def handle_info({:DOWN, token, :process, pid, _reason}, %{savepoints: savepoints} = state)
       when is_map_key(savepoints, token) do
-    state = %{state | savepoints: Map.delete(savepoints, token)}
-    {:noreply, state, timeout(state)}
+    {savepoint, state} = pop_savepoint(state, token)
+    state = abandon(state, pid)
+
+    if usable?(state),
+      do: settle_death(rolled_back(state, savepoint)),
+      else: settle_death({:ok, state})
   end
 
   # A process died in the middle of an action: the action did not happen, so its writes are taken back, as a database
@@ -1119,6 +1127,9 @@ defmodule Ramal.Branch.Server do
         {:noreply, state, timeout(state)}
     end
   end
+
+  # Sent by `serve/2` after it answered a waiting request whose handler asked to stop; `state.stop` says why.
+  def handle_info(:stop, %{stop: stop} = state) when stop != nil, do: {:stop, :normal, state}
 
   def handle_info(_message, state), do: {:noreply, state, timeout(state)}
 
@@ -1217,6 +1228,15 @@ defmodule Ramal.Branch.Server do
 
   defp take_back(state, _undos), do: state
 
+  # The undos of a process that died mid-action, taken back before a savepoint of the same process is rolled back: an
+  # undo restores the rows as they were before its action, which only means something while the log still holds it.
+  defp abandon(state, pid) do
+    case state.running do
+      %{^pid => %{undos: undos}} -> state |> take_back(undos) |> drop_running(pid)
+      _none -> state
+    end
+  end
+
   defp drop_undos(state, pid, undos) do
     case state.running do
       %{^pid => running} ->
@@ -1259,6 +1279,7 @@ defmodule Ramal.Branch.Server do
   # is now, which deletes them (`c:Ramal.Storage.put/2`); the snapshot leaves out the writes of actions still running,
   # as a compaction does. A snapshot the storage refuses leaves the deltas where they are until the next compaction
   # stores one (`{:continue, :compact}`), which is the only time a crash would bring the rolled-back writes back.
+  # Answers `{:ok, state}`, `{:compact, state}` (the snapshot was refused: compact again) or `{:fenced, state, error}`.
   defp rolled_back(state, savepoint) do
     before = state.branch
     state = bump(%{state | branch: Branch.rollback(before, savepoint)})
@@ -1269,19 +1290,35 @@ defmodule Ramal.Branch.Server do
 
       case persist(state, snapshot) do
         :ok ->
-          reply(%{state | appended: 0}, :ok)
+          {:ok, %{state | appended: 0}}
 
         {:error, %Error{reason: :fenced} = error} ->
-          {:stop, :normal, {:error, error}, fence(state, error)}
+          {:fenced, fence(state, error), error}
 
         {:error, error} ->
           Telemetry.branch(:persist_failed, snapshot, %{reason: :rollback, error: error})
-          {:reply, :ok, state, {:continue, :compact}}
+          {:compact, state}
       end
     else
-      reply(state, :ok)
+      {:ok, state}
     end
   end
+
+  defp answer_rollback({:ok, state}), do: reply(state, :ok)
+  defp answer_rollback({:compact, state}), do: {:reply, :ok, state, {:continue, :compact}}
+  defp answer_rollback({:fenced, state, error}), do: {:stop, :normal, {:error, error}, state}
+
+  # After a death, nobody is waiting for an answer, so the state is only handed on: the merges and proposals that waited
+  # for the dead process's actions are served, and a refused snapshot is compacted.
+  defp settle_death({:ok, state}) do
+    state = serve_waiting(state)
+    {:noreply, state, timeout(state)}
+  end
+
+  defp settle_death({:compact, state}),
+    do: {:noreply, serve_waiting(state), {:continue, :compact}}
+
+  defp settle_death({:fenced, state, _error}), do: {:stop, :normal, state}
 
   defp savepoint_lost(state) do
     Error.new(
@@ -1397,15 +1434,31 @@ defmodule Ramal.Branch.Server do
   # Once no action runs, the waiting requests are handled in the order they came, as if they had come now.
   defp serve_waiting(%{running: running, waiting: [_ | _] = waiting} = state)
        when map_size(running) == 0 do
-    Enum.reduce(waiting, %{state | waiting: []}, fn {_tag, from, request, timer}, state ->
-      Process.cancel_timer(timer)
-      {:reply, reply, state, _timeout} = handle_call(request, from, state)
-      GenServer.reply(from, reply)
-      state
-    end)
+    serve(waiting, %{state | waiting: []})
   end
 
   defp serve_waiting(state), do: state
+
+  # A request that stops the process (a proposal the storage refused as fenced) is answered first. The process leaves
+  # through a message to itself because `serve_waiting/1` is called from callbacks that each return their own tuple;
+  # the requests still waiting get no answer, and their callers retry through `call/4` as they do for any stop.
+  defp serve([], state), do: state
+
+  defp serve([{_tag, from, request, timer} | rest], state) do
+    Process.cancel_timer(timer)
+
+    case handle_call(request, from, state) do
+      {:reply, reply, state, _timeout} ->
+        GenServer.reply(from, reply)
+        serve(rest, state)
+
+      {:stop, _reason, reply, state} ->
+        GenServer.reply(from, reply)
+        Enum.each(rest, fn {_tag, _from, _request, timer} -> Process.cancel_timer(timer) end)
+        send(self(), :stop)
+        state
+    end
+  end
 
   defp closing(state) do
     Error.new(

@@ -82,6 +82,42 @@ defmodule Ramal.ClusterTest do
     end
   end
 
+  describe "a proposal queued behind an action in a branch that another load fenced" do
+    alias Ramal.Test.Capture
+    alias Ramal.Test.Capture.Gated
+
+    test "is answered with the fenced error, and the process stops" do
+      start_cluster([])
+      Process.register(self(), :ramal_test_gate)
+      {:ok, branch} = Ramal.branch(Capture)
+
+      test = self()
+
+      action =
+        spawn(fn ->
+          send(
+            test,
+            {:ended, self(),
+             Ramal.run(branch, fn -> Ash.create(Gated, %{text: "x"}, action: :gated_create) end)}
+          )
+        end)
+
+      assert_receive {:at_gate, ^action}, 1_000
+
+      propose = Task.async(fn -> Ramal.propose(branch) end)
+      assert Task.yield(propose, 100) == nil
+
+      # What another node does after a netsplit: load the branch, which takes its epoch.
+      {:ok, _other} = ETS.claim(branch.id, [])
+
+      Process.unregister(:ramal_test_gate)
+      send(action, {:gate, :pass})
+
+      assert {:ok, {:error, %Error{reason: :fenced}}} = Task.yield(propose, 2_000)
+      eventually(fn -> not loaded?(branch.id) end)
+    end
+  end
+
   describe "a process that lost the branch to another load" do
     setup do
       capture_branch_events()
