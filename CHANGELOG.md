@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- **A read sorted by a database-generated integer key puts the branch's new rows where the merge will.** Inside a branch the rows had negative placeholder keys, so `sort(id: :asc)` listed them before every real row and, after the merge, last. They now sort after every real key in creation order (before them for `:desc`), and a keyset page by that key (`after` and `before` cursors) returns the rows the same page returns after the merge. UUID keys are unchanged: their order is not creation order (ADR 0042, #206).
+
 ### Changed
 
 - **Documented what a custom Ash type must satisfy in a branch, and tested it.** The embedded form (`dump_to_embedded/3` and `cast_from_embedded/3`) must round-trip, or a branch reads a value the database does not. New tests run a `NewType` over `:string` (`trim?: false`, `allow_empty?: true`), a JSON type with nested lists of maps and a struct with a different database form through create, update, read, diff, fork, ETS, Postgres and durable storage, and merge. See `docs/limits.md`.

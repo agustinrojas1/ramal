@@ -26,6 +26,11 @@ defmodule Ramal.Test.Serial.Note do
   actions do
     defaults([:read, :destroy, create: :*, update: :*])
 
+    # Pages by keyset, for the order of placeholder keys in a page (ADR 0042).
+    read :paged do
+      pagination(keyset?: true, offset?: true, countable: true, required?: false)
+    end
+
     # A hook that creates a row whose key the database generates: the Note that annotates this one.
     update :annotate do
       require_atomic?(false)
