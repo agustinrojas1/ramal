@@ -4,14 +4,24 @@ defmodule Ramal.EtsCompressedTest do
   alias Ramal.Supervisor, as: RamalSupervisor
 
   test "default tables are not compressed" do
-    for table <- [Ramal.Storage.ETS.table(), Ramal.Storage.ETS.index_table(), Ramal.Storage.ETS.writes_table(), RamalSupervisor.table()] do
+    for table <- [
+          Ramal.Storage.ETS.table(),
+          Ramal.Storage.ETS.index_table(),
+          Ramal.Storage.ETS.writes_table(),
+          RamalSupervisor.table()
+        ] do
       assert :ets.info(table, :compressed) == false
     end
   end
 
   @tag supervisor: [ets_compressed: true]
   test "compressed tables when requested" do
-    for table <- [Ramal.Storage.ETS.table(), Ramal.Storage.ETS.index_table(), Ramal.Storage.ETS.writes_table(), RamalSupervisor.table()] do
+    for table <- [
+          Ramal.Storage.ETS.table(),
+          Ramal.Storage.ETS.index_table(),
+          Ramal.Storage.ETS.writes_table(),
+          RamalSupervisor.table()
+        ] do
       assert :ets.info(table, :compressed) == true
     end
   end
