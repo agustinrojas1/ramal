@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- **A read sorted by a database-generated integer key puts the branch's new rows where the merge will.** Inside a branch the rows had negative placeholder keys, so `sort(id: :asc)` listed them before every real row and, after the merge, last. They now sort after every real key in creation order (before them for `:desc`), and a keyset page by that key (`after` and `before` cursors) returns the rows the same page returns after the merge. UUID keys are unchanged: their order is not creation order (ADR 0042, #206).
+
 ## [0.9.1] - 2026-10-23
 
 A patch release with two fixes: a branch no longer accepts an update or destroy of another tenant's record, and a damaged stored branch no longer crashes `Ramal.get/1` or hides every branch from `Ramal.list/2`. Reads in a branch are also a little faster. Upgrading from 0.9.0 needs no step beyond the version (and `ramal_live ~> 0.9.1`, which shares it).
