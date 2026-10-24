@@ -43,6 +43,14 @@ defmodule Ramal.Merge do
   resources in `details.not_rolled_back`. `Ash.transact/3` runs the function as it is for such a data layer and returns
   its `{:error, _}` inside `{:ok, _}`, which the merge unwraps.
 
+  ## Inside the caller's transaction
+
+  Called inside a `Repo.transaction/1` or `Ash.transact/3` of the host, the merge sets a `SAVEPOINT` (AshPostgres only)
+  and goes back to it when it is refused, so a stale refusal or a failed replay returns `{:error, %Ramal.Error{}}`, the
+  host's earlier writes stay in its transaction, the code after the call runs, and the branch stays open. A merge that
+  succeeds commits with the host's transaction. The host decides whether to roll its own transaction back. Another data
+  layer keeps the behaviour of a nested transaction: a refusal rolls back the host's transaction (#223).
+
   ## Checking staleness without merging (experimental, ADR 0051)
 
   `stale/2` runs the check of step 2 and nothing else, and `mark_merged/1` is the claim and the `:merged` write of
@@ -79,6 +87,7 @@ defmodule Ramal.Merge do
   """
 
   alias Ash.Resource.Info
+  alias Ecto.Adapters.SQL
   alias Ramal.{Branch, Current, Error, Overlay, Resource, Supervisor, Telemetry}
   alias Ramal.Branch.Server
   alias Ramal.{Capture, Current, Error, Overlay, Resource, Supervisor, Telemetry}
@@ -389,7 +398,7 @@ defmodule Ramal.Merge do
       |> Enum.uniq()
 
     resources
-    |> Ash.transact(fn ->
+    |> transact(fn ->
       with {:ok, stale, fetched} <- check_staleness(branch, opts),
            {:ok, records, replayed, keys} <- replay(entries, fetched, opts),
            :ok <- mark_merged(branch, config) do
@@ -412,10 +421,93 @@ defmodule Ramal.Merge do
       {:ok, {:error, error}} ->
         {:error, to_error(error)}
 
+      {:ok, {:refused, {:error, error}}} ->
+        {:error, to_error(error)}
+
       {:error, error} ->
         {:error, to_error(error)}
     end
   end
+
+  # Inside the caller's own transaction a refused merge would roll the caller's writes back with it: the merge runs in
+  # the caller's transaction, and Ash's `rollback` is a throw that DBConnection turns into a failed outermost
+  # transaction (#223). `repo.transaction(fun, mode: :savepoint)` does not help, because DBConnection runs a nested
+  # transaction without a savepoint. So the merge sets a real `SAVEPOINT` on each repo that is already in a
+  # transaction, catches the rollback throw itself (`DBConnection.rollback/2` throws `{DBConnection, conn_ref, reason}`,
+  # lib/db_connection.ex), goes back to the savepoint and returns the error: the caller's earlier writes are kept and
+  # the branch stays open. Notifications the rolled-back writes queued are dropped with them. Outside a transaction
+  # `Ash.transact/2` opens the real one and nothing changes. Only AshPostgres is known to have savepoints; for another
+  # data layer the merge keeps the behaviour of the caller's transaction, which `docs/limits.md` describes.
+  defp transact(resources, fun) do
+    case savepoint_repos(resources) do
+      [] ->
+        Ash.transact(resources, fun)
+
+      repos ->
+        covered? =
+          Enum.all?(resources, &(not transactional?(&1) or Ash.DataLayer.in_transaction?(&1)))
+
+        Ash.transact(resources, fn -> with_savepoints(repos, covered?, fun) end)
+    end
+  end
+
+  defp transactional?(resource), do: Ash.DataLayer.data_layer_can?(resource, :transact)
+
+  defp savepoint_repos(resources) do
+    if Code.ensure_loaded?(AshPostgres.DataLayer.Info) do
+      for resource <- resources,
+          Info.data_layer(resource) == AshPostgres.DataLayer,
+          Ash.DataLayer.in_transaction?(resource),
+          uniq: true,
+          do: AshPostgres.DataLayer.Info.repo(resource, :mutate)
+    else
+      []
+    end
+  end
+
+  defp with_savepoints(repos, covered?, fun) do
+    savepoints =
+      repos |> Enum.with_index() |> Enum.map(fn {repo, i} -> {repo, "ramal_merge_#{i}"} end)
+
+    Enum.each(savepoints, fn {repo, name} -> savepoint_sql(repo, "SAVEPOINT #{name}") end)
+    queued = Ramal.Ash.queued_notifications()
+
+    try do
+      fun.()
+    catch
+      :throw, {DBConnection, _conn_ref, reason} ->
+        {:error, Ash.Error.to_ash_error(reason)}
+
+      kind, reason ->
+        back_to(savepoints, queued)
+        :erlang.raise(kind, reason, __STACKTRACE__)
+    else
+      {:error, _} = error ->
+        back_to(savepoints, queued)
+
+        # When every repo has a savepoint there is nothing left to roll back, and an `{:error, _}` would make Ash roll
+        # the caller's transaction back.
+        if covered?, do: {:refused, error}, else: error
+
+      result ->
+        Enum.each(savepoints, fn {repo, name} ->
+          savepoint_sql(repo, "RELEASE SAVEPOINT #{name}")
+        end)
+
+        result
+    end
+  end
+
+  defp back_to(savepoints, queued) do
+    for {repo, name} <- Enum.reverse(savepoints) do
+      savepoint_sql(repo, "ROLLBACK TO SAVEPOINT #{name}")
+      savepoint_sql(repo, "RELEASE SAVEPOINT #{name}")
+    end
+
+    Ramal.Ash.restore_notifications(queued)
+  end
+
+  defp savepoint_sql(repo, sql), do: SQL.query!(repo, sql, [])
 
   defp to_error(error) do
     Error.find(error) || Error.new(:merge_failed, Exception.message(error), %{error: error})

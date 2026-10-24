@@ -41,7 +41,7 @@ Ramal is comprehensive, and every limit it has is listed here. Each line is one 
 
 ### Merge is slower than SQL
 
-Merge runs the replay in one transaction, and each change goes through your real action, so its validations, policies and hooks run again. In the published benchmark a replayed change costs about 0.4 ms, while one set-based `UPDATE` of the same rows is 15 to 64 times faster ([bench/README.md](https://github.com/agustinrojas1/ramal/blob/main/bench/README.md)). A database merge cannot apply your own rules, which is why Ramal pays this cost ([ADR 0007](adr/0007-merge.md)).
+Merge runs the replay in one transaction (inside the host's own transaction it runs in a savepoint, so a refused merge returns its error and keeps the host's earlier writes; with AshPostgres only), and each change goes through your real action, so its validations, policies and hooks run again. In the published benchmark a replayed change costs about 0.4 ms, while one set-based `UPDATE` of the same rows is 15 to 64 times faster ([bench/README.md](https://github.com/agustinrojas1/ramal/blob/main/bench/README.md)). A database merge cannot apply your own rules, which is why Ramal pays this cost ([ADR 0007](adr/0007-merge.md)).
 
 ### Durable branches cost a write per action
 

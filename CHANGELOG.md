@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- **A refused merge inside the caller's transaction returns its error instead of rolling the caller back.** Called inside `Repo.transaction/1` or `Ash.transact/3`, a merge that was refused (rows changed, or a replayed action failed) did not return: the rollback unwound to the caller's outermost transaction and took the caller's earlier writes with it. The merge now runs in a `SAVEPOINT` there (AshPostgres) and goes back to it, so it returns `{:error, %Ramal.Error{}}`, the caller's writes are kept, and the branch stays open ([#223](https://github.com/agustinrojas1/ramal/issues/223)). Outside a transaction nothing changes.
+
 ## [0.10.0] - 2026-10-24
 
 A feature release. A branch now holds a row to the resource's unique identities, so a duplicate fails when it is made instead of at the merge, and a `fragment(...)` in a filter sees the branch's changes. New: `Ramal.run(..., atomic: true)` takes back a failed run's writes, `Ramal.discard(branch, purge: true)` and `Ramal.delete/1` remove the record of a finished branch, `Ramal.stale/2` and `Ramal.mark_merged/1` (experimental) serve hosts that commit through their own commands, and `warn_raw_queries` reports raw Ecto queries made inside a branch. A read sorted by a database-generated integer key now lists the branch's new rows last, as the merge does. Upgrading from 0.9.1 needs no step beyond the version (and `ramal_live ~> 0.10.0`, which shares it); a create that the database would have refused at the merge now fails in the branch.

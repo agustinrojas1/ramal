@@ -629,6 +629,9 @@ defmodule Ramal do
   A nested fork (`fork/2` with `nested: true`) merges into its parent branch instead: the entries it wrote itself are
   replayed there, and the database is not touched until the parent is merged.
 
+  Called inside your own `Repo.transaction/1` or `Ash.transact/3`, a refused merge returns `{:error, %Ramal.Error{}}` and
+  keeps your earlier writes (it runs in a savepoint, AshPostgres only); a successful one commits with your transaction.
+
   ## Options
 
     * `:actor` - the actor for every replayed action. Default: the actor each write was captured with.

@@ -469,6 +469,12 @@ defmodule Ramal.AshContractTest do
         # Ramal: lib/ramal/preparation/related.ex (filter rewriting). Ash: deps/ash/lib/ash/filter/filter.ex (map/2, l.1618).
         {Ash.Filter, :map, 2, "lib/ramal/preparation/related.ex",
          "deps/ash/lib/ash/filter/filter.ex"},
+        # Ramal: lib/ramal/ash.ex (a merge refused inside the caller's transaction drops the notifications it queued). Ash: deps/ash/lib/ash/actions/helpers.ex (peek_queued_notifications/0).
+        {Ash.Actions.Helpers, :peek_queued_notifications, 0, "lib/ramal/ash.ex",
+         "deps/ash/lib/ash/actions/helpers.ex"},
+        # Ramal: lib/ramal/ash.ex, as above. Ash: deps/ash/lib/ash/actions/helpers.ex (restore_queued_notifications/1).
+        {Ash.Actions.Helpers, :restore_queued_notifications, 1, "lib/ramal/ash.ex",
+         "deps/ash/lib/ash/actions/helpers.ex"},
         # Ramal: lib/ramal/preparation.ex and lib/ramal/preparation/related.ex. Ash: deps/ash/lib/ash/filter/runtime.ex (filter_matches/4, l.19).
         {Ash.Filter.Runtime, :filter_matches, 4, "lib/ramal/preparation.ex",
          "deps/ash/lib/ash/filter/runtime.ex"},

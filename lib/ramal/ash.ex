@@ -2,6 +2,7 @@ defmodule Ramal.Ash do
   @tested_ash "~> 3.36.0 or ~> 3.37.0"
   @tested_ash_postgres "~> 2.15.0"
 
+  alias Ash.Actions.Helpers
   alias Ash.Actions.Read
   alias Ash.Actions.Read.Relationships
   alias Ash.Actions.Sort
@@ -57,7 +58,8 @@ defmodule Ramal.Ash do
     * `stream_max_page_size`: a streamed read's page queries carry `context.private.bypass_max_page_size?`, and an
       ordinary read's do not (the page size of a branch read, see `Ramal.Preparation`).
     * `export_runtime_sort`, `export_sorting_on_identity`, `export_list_refs`, `export_filter_map`,
-      `export_hydrate_refs`, `export_do_filter`, `export_filter_matches`, `export_filter_flat_map`: the internal functions Ramal calls exist with the
+      `export_hydrate_refs`, `export_do_filter`, `export_filter_matches`, `export_filter_flat_map`, `export_peek_queued_notifications`,
+      `export_restore_queued_notifications`: the internal functions Ramal calls exist with the
       arity it calls them with (text sorts, reads and writes, see `Ramal.Preparation` and `Ramal.Capture`). They are
       written without code quotes because Ash hides them from its docs.
 
@@ -416,6 +418,19 @@ defmodule Ramal.Ash do
     do: tuple |> Tuple.to_list() |> holds_fragment?()
 
   defp holds_fragment?(_other), do: false
+
+  # Tripwires: "assumption: Ash.Actions.Helpers.peek_queued_notifications/0 is exported" and
+  # "assumption: Ash.Actions.Helpers.restore_queued_notifications/1 is exported". Ash: deps/ash/lib/ash/actions/helpers.ex
+  # (both @doc false). A merge inside the caller's transaction goes back to a savepoint when it is refused, and the
+  # notifications the undone writes queued go with it, as when Ash rolls a transaction back (Ramal.Merge).
+  @doc false
+  @spec queued_notifications() :: [term]
+  def queued_notifications, do: Helpers.peek_queued_notifications()
+
+  @doc false
+  @spec restore_notifications([term]) :: term
+  def restore_notifications([]), do: Helpers.restore_queued_notifications(nil)
+  def restore_notifications(queued), do: Helpers.restore_queued_notifications(queued)
 
   # Tripwire: "assumption: Ash.Query.do_filter/2 is exported". Ash: deps/ash/lib/ash/query/query.ex (do_filter/3,
   # @doc false). Ash's own filter step with no validation of the filter, which the keyset cursor and the lookups of
