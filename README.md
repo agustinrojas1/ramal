@@ -120,7 +120,7 @@ Ramal is on [Hex](https://hex.pm/packages/ramal), with docs on [HexDocs](https:/
 
 ```elixir
 def deps do
-  [{:ramal, "~> 0.9.0"}]
+  [{:ramal, "~> 0.10.0"}]
 end
 ```
 

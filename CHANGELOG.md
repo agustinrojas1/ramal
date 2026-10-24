@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-24
+
+A feature release. A branch now holds a row to the resource's unique identities, so a duplicate fails when it is made instead of at the merge, and a `fragment(...)` in a filter sees the branch's changes. New: `Ramal.run(..., atomic: true)` takes back a failed run's writes, `Ramal.discard(branch, purge: true)` and `Ramal.delete/1` remove the record of a finished branch, `Ramal.stale/2` and `Ramal.mark_merged/1` (experimental) serve hosts that commit through their own commands, and `warn_raw_queries` reports raw Ecto queries made inside a branch. A read sorted by a database-generated integer key now lists the branch's new rows last, as the merge does. Upgrading from 0.9.1 needs no step beyond the version (and `ramal_live ~> 0.10.0`, which shares it); a create that the database would have refused at the merge now fails in the branch.
+
 ### Added
 
 - **`warn_raw_queries: true | :raise` on `Ramal.Supervisor`** (with `repo:`) reports a raw Ecto query on the table of a branched resource made inside `Ramal.run/2`, which reads the base data and never sees the branch. It emits `[:ramal, :raw_query, :detected]` with the branch id, table, SQL, call site and stack trace in its metadata, and logs nothing (attach a handler to warn or log; `docs/limits.md` has one); with `:raise`, `Ramal.run/2` also returns `{:error, %Ramal.Error{reason: :raw_query}}` (and `run!/2` raises) when its function returns. Queries of Ash actions, Ramal's own reads and the merge are not reported. Off by default, meant for development and test ([ADR 0053](docs/adr/0053-raw-query-guard.md), [#207](https://github.com/agustinrojas1/ramal/issues/207)).
@@ -345,7 +349,8 @@ Proposals, fast aggregates, many-to-many join resources, the `ramal_live` inspec
 - A multitenant resource used with a tenant inside a branch is refused with `:multitenancy_unsupported` (the `ensure_untenanted/2` check), instead of mixing tenants in one overlay or failing at merge.
 - Stored branches no longer hold the `sensitive?` attributes of an actor that is an Ash record (they are stored as `nil`); other actors are stored as before.
 
-[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/agustinrojas1/ramal/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/agustinrojas1/ramal/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/agustinrojas1/ramal/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/agustinrojas1/ramal/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/agustinrojas1/ramal/compare/v0.7.0...v0.8.0
