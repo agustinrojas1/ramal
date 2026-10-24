@@ -259,13 +259,16 @@ defmodule Ramal.Supervisor do
   # the whole table. `read_concurrency` stays on for the lookups on every call.
   defp create_table(name, type, compressed?) do
     if :ets.whereis(name) == :undefined do
-      :ets.new(name, [
-        :named_table,
-        :public,
-        type,
-        read_concurrency: true,
-        write_concurrency: :auto
-      ] ++ if(compressed?, do: [:compressed], else: []))
+      :ets.new(
+        name,
+        [
+          :named_table,
+          :public,
+          type,
+          read_concurrency: true,
+          write_concurrency: :auto
+        ] ++ if(compressed?, do: [:compressed], else: [])
+      )
     end
   end
 

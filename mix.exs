@@ -111,8 +111,7 @@ defmodule Ramal.MixProject do
         "Ramal.Storage.ETS.list/3",
         "Ramal.Ash.do_filter/2",
         "Ash.Query.do_filter/2"
-      ],
-
+      ]
     ]
   end
 
