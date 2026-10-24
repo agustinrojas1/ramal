@@ -158,7 +158,10 @@ defmodule Ramal.Supervisor do
     :persistent_term.put(@config_key, config)
 
     children = [
-      {Registry, keys: :unique, name: @registry},
+      # One partition per scheduler: every call into a branch looks its process up here, and a single table serialises
+      # those writes. The `Registry` docs recommend it for a highly concurrent environment, which thousands of branches
+      # on a many-core node is.
+      {Registry, keys: :unique, name: @registry, partitions: System.schedulers_online()},
       {DynamicSupervisor, strategy: :one_for_one, name: @dynamic}
     ]
 
