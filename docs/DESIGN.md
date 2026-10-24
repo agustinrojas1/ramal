@@ -228,6 +228,13 @@ This is the section that decides correctness. In a read action's preparation, wh
    through one changed `belongs_to` or `has_one`: the data-layer query keeps `(leaf and fk not in ^changed) or fk in ^matching`
    (`has_one`: the leaf plus the sources the branch's related rows point at), and the Elixir check stays the final word
    ([ADR 0047](adr/0047-relationship-filter-narrowing.md)).
+10. **Fragments in a filter:** `Ash.Filter.Runtime` cannot evaluate `fragment(...)`, so the rows a branch created or
+   changed never matched one. Ramal.Preparation.Fragments (internal, lib/ramal/preparation/fragments.ex, with its Ecto half
+   in fragments/postgres.ex) sends the conjuncts that hold a fragment to the database with the overlay's records as an
+   inline `VALUES` table that shadows the resource's table in one read-only query, and the rest of the filter is judged in
+   Elixir as before. It refuses with `:fragment_unsupported` where the database cannot judge right: another data layer, a
+   table in a schema, a conjunct that reaches a resource the branch changed
+   ([ADR 0054](adr/0054-fragment-filters-judged-by-the-database.md)).
 
 ### 4.2 How writes are captured
 
@@ -643,3 +650,4 @@ action (ADR 0016).
 | 40 | The staleness check is public and experimental: `Ramal.stale/2` runs it alone (with the merge's locks inside the caller's transaction) and `Ramal.mark_merged/1` stores the branch as merged; there is no replay hook | A host with a command layer wants to run its own commands but keep the guarantee that the base did not move. Exposing the check composes with any host and leaves the merge path in one place. [ADR 0051](adr/0051-staleness-check-without-the-merge.md) |
 | 39 | A branch can be durable: the outermost action's end is a call that appends the action's delta (its own rows, never a running action's) to the storage's write log, conditional on the epoch in a cluster, before the action returns; a load is the snapshot plus the log; a snapshot compacts the log | Writes since the last save were lost on a node crash, and storing on every write would store the writes of running actions (ADR 0033). The cost is a storage write per action. [ADR 0048](adr/0048-durable-branches.md) |
 | 40 | `Ramal.run(branch, fun, atomic: true)` takes a savepoint of the branch (its maps, log length and placeholder counter) and, when `fun` raises, throws, exits or returns `{:error, _}`, cuts the log back and restores the overlay entries of the rows the cut entries touched; a durable branch stores a snapshot, which deletes the deltas it covers | A branch has no transaction, so the writes before a failure stayed; a fork per unit of work costs a branch and a `:discarded` record each. It is not isolation: one process at a time. [ADR 0052](adr/0052-atomic-run-takes-back-a-failed-runs-writes.md) |
+| 41 | A filter conjunct that holds a `fragment(...)` is judged by the database on the branch's rows, sent as an inline `VALUES` table that shadows the resource's table in one read-only query; the read is refused with `:fragment_unsupported` where that cannot be right (another data layer, a table in a schema, a conjunct that reaches a changed resource) | Ash's runtime cannot evaluate SQL text, so rows a branch created or changed never matched a fragment and a changed row that still matched vanished, with no error (#218). Asking the database keeps fragments working; refusing everywhere would have made jsonb, full-text and PostGIS filters unusable in a branch. [ADR 0054](adr/0054-fragment-filters-judged-by-the-database.md) |

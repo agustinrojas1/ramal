@@ -57,7 +57,7 @@ defmodule Ramal.Ash do
     * `stream_max_page_size`: a streamed read's page queries carry `context.private.bypass_max_page_size?`, and an
       ordinary read's do not (the page size of a branch read, see `Ramal.Preparation`).
     * `export_runtime_sort`, `export_sorting_on_identity`, `export_list_refs`, `export_filter_map`,
-      `export_hydrate_refs`, `export_do_filter`, `export_filter_matches`: the internal functions Ramal calls exist with the
+      `export_hydrate_refs`, `export_do_filter`, `export_filter_matches`, `export_filter_flat_map`: the internal functions Ramal calls exist with the
       arity it calls them with (text sorts, reads and writes, see `Ramal.Preparation` and `Ramal.Capture`). They are
       written without code quotes because Ash hides them from its docs.
 
@@ -370,6 +370,52 @@ defmodule Ramal.Ash do
   @spec filter_matches(module | nil, [struct], term) :: {:ok, [struct]} | {:error, term}
   def filter_matches(domain, records, filter),
     do: Runtime.filter_matches(domain, records, filter)
+
+  # Tripwire: "assumption: Ash.Filter.flat_map/2 is exported". Ash:
+  # deps/ash/lib/ash/filter/filter.ex (flat_map/2, ~l.1699: it calls the function on every node, and on an `exists` or a
+  # `parent` without going inside) and deps/ash/lib/ash/query/function/fragment.ex. A fragment is a `Fragment` once
+  # hydrated and an `Ash.Query.Call` named `:fragment` before, which is how a calculation's expression holds it.
+  # Whether the filter judges anything by SQL text that only the database can evaluate (ADR 0054).
+  @doc false
+  @spec fragment?(term) :: boolean
+  def fragment?(expression) do
+    Ash.Filter.flat_map(expression, fn
+      %Ash.Query.Function.Fragment{} ->
+        [:fragment]
+
+      %Ash.Query.Call{name: :fragment} ->
+        [:fragment]
+
+      %Ash.Query.Exists{expr: inner} ->
+        if fragment?(inner), do: [:fragment], else: []
+
+      %Ash.Query.Ref{attribute: %Ash.Query.Calculation{} = calculation} ->
+        calculation_fragment(calculation)
+
+      _other ->
+        []
+    end) != []
+  end
+
+  # The expression of a calculation is not hydrated, and `flat_map/2` does not call its function on a `Call`, so the
+  # expression is walked as plain data for the call or the function.
+  defp calculation_fragment(%{module: module, opts: opts, context: context}) do
+    if Ash.Resource.Calculation.has_expression?(module) and
+         holds_fragment?(Ash.Resource.Calculation.expression(module, opts, context)),
+       do: [:fragment],
+       else: []
+  end
+
+  defp holds_fragment?(%Ash.Query.Function.Fragment{}), do: true
+  defp holds_fragment?(%Ash.Query.Call{name: :fragment}), do: true
+  defp holds_fragment?(%_{} = struct), do: struct |> Map.from_struct() |> holds_fragment?()
+  defp holds_fragment?(map) when is_map(map), do: map |> Map.values() |> holds_fragment?()
+  defp holds_fragment?(list) when is_list(list), do: Enum.any?(list, &holds_fragment?/1)
+
+  defp holds_fragment?(tuple) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> holds_fragment?()
+
+  defp holds_fragment?(_other), do: false
 
   # Tripwire: "assumption: Ash.Query.do_filter/2 is exported". Ash: deps/ash/lib/ash/query/query.ex (do_filter/3,
   # @doc false). Ash's own filter step with no validation of the filter, which the keyset cursor and the lookups of

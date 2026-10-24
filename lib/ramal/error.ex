@@ -40,6 +40,7 @@ defmodule Ramal.Error do
   | `:not_started` | `Ramal.Supervisor` is not running |
   | `:collation_failed` | the query that asks the database how it orders text failed, so a sort or a `:min`/`:max` of a string in a branch could not follow it (`details.error`) |
   | `:raw_query` | `Ramal.run/2` with `warn_raw_queries: :raise` on `Ramal.Supervisor`: a raw Ecto query touched the table of a branched resource inside the run, so it read or wrote the database, not the branch (`details.table`, `resource`, `call_site`, `query`); the run's function had returned, and its branch writes stay |
+  | `:fragment_unsupported` | a read in a branch filters with a `fragment(...)` that the database cannot judge on the branch's rows: another data layer than AshPostgres, a table in a schema or a schema-per-tenant tenant, a fragment in a conjunct that reaches a resource the branch changed, or an attribute type with no SQL parameter type (`details.resource`, ADR 0054) |
   | `:storage` | the storage backend failed; for a durable branch, an action whose writes could not be appended to the write log fails with it |
   | `:fenced` | a process of a cluster tried to write a branch that another process loaded after it did (`details.epoch`, ADR 0044); what it held since its last save is lost |
   | `:timeout` | the branch process did not answer in time (`details.timeout` in ms); the request may still be carried out |
@@ -82,6 +83,7 @@ defmodule Ramal.Error do
           | :savepoint_lost
           | :limit_reached
           | :collation_failed
+          | :fragment_unsupported
           | :durability_unsupported
           | :not_started
           | :storage
