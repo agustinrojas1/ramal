@@ -74,6 +74,10 @@ defmodule Ramal.Capture do
   @key_plan :ramal_key_plan
   @learned_keys :ramal_learned_keys
   @wrapped :ramal_wrapped
+  # The states of the `gate` between a captured write and a caller that stops waiting for it (`:atomics` cell 1).
+  @pending 0
+  @started 1
+  @given_up 2
 
   @impl true
   def change(changeset, _opts, _context) do
@@ -386,19 +390,16 @@ defmodule Ramal.Capture do
       key = Resource.key(resource, record)
       entry = log_entry(changeset, key, nested?, extra)
 
-      # If the call times out the process may still carry the write out, with no one left to remember how to undo it, so
-      # the write sends its undo to this process as well; see `settle_late_write/2`.
+      # If the call times out the process may still carry the write out, with no one left to remember how to undo it.
+      # The write therefore starts only if it wins the `gate` against the caller giving up (`settle_late_write/4`); one
+      # that started sends its undo to this process as well, so a timed-out caller can take it back.
       tag = make_ref()
-      caller = self()
-
-      put = fn branch ->
-        {reply, branch} = put_write(branch, kind, {resource, key}, record, base_row, entry)
-        send(caller, {tag, reply})
-        {reply, branch}
-      end
+      gate = :atomics.new(1, [])
+      write = fn branch -> put_write(branch, kind, {resource, key}, record, base_row, entry) end
+      put = gated_put(write, gate, tag)
 
       result = Server.capture(id, {resource, key}, put)
-      settle_late_write(result, id, tag)
+      settle_late_write(result, id, tag, gate)
 
       case result do
         {:ok, {:ok, undo}, summary} ->
@@ -431,25 +432,64 @@ defmodule Ramal.Capture do
     end
   end
 
-  # A write that timed out is taken back. The process handles requests in order, so once it answers a later request it
-  # has handled the write too, and the undo it sent is in the mailbox if it was made. After a write that was answered
-  # the message is only discarded.
-  defp settle_late_write({:error, %Error{reason: :timeout}}, id, tag) do
-    with :ok <- Server.settle(id) do
+  # `Server.capture/3` sends the request again when the process stopped while handling it (a new process, which may not
+  # have run it), so a write that has started once is written again, and only a caller that gave up refuses it. An
+  # `:atomics` reference is valid on the node that made it only: a process on another node (ADR 0044) cannot read the
+  # gate, and writes as it always did, so the caller leaves the gate alone for it (`give_up/2`).
+  defp gated_put(write, gate, tag) do
+    caller = self()
+
+    fn branch ->
+      if given_up?(gate) do
+        {{:error, :given_up}, branch}
+      else
+        {reply, branch} = write.(branch)
+        send(caller, {tag, reply})
+        {reply, branch}
+      end
+    end
+  end
+
+  defp given_up?(gate) do
+    :atomics.compare_exchange(gate, 1, @pending, @started) == @given_up
+  rescue
+    ArgumentError -> false
+  end
+
+  # A write that timed out is taken back. The caller first gives up its place at the `gate`: if the process has not
+  # started the write, it never will, whether or not it answers again. Otherwise the process handles requests in order,
+  # so once it answers a later request it has handled the write too, and the undo it sent is in the mailbox if it was
+  # made. After a write that was answered the message is only discarded.
+  defp settle_late_write({:error, %Error{reason: :timeout}}, id, tag, gate) do
+    with :started <- give_up(gate, id),
+         :ok <- Server.settle(id) do
       receive do
         {^tag, {:ok, undo}} -> Server.undo(id, [undo])
         {^tag, _refused} -> :ok
       after
         0 -> :ok
       end
+    else
+      :given_up -> :ok
+      {:error, _} -> :ok
     end
   end
 
-  defp settle_late_write(_result, _id, tag) do
+  defp settle_late_write(_result, _id, tag, _gate) do
     receive do
       {^tag, _reply} -> :ok
     after
       0 -> :ok
+    end
+  end
+
+  defp give_up(gate, id) do
+    with pid when is_pid(pid) <- Ramal.Supervisor.whereis(id),
+         true <- node(pid) == node(),
+         :ok <- :atomics.compare_exchange(gate, 1, @pending, @given_up) do
+      :given_up
+    else
+      _remote_or_started -> :started
     end
   end
 
