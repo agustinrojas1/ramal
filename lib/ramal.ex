@@ -754,14 +754,61 @@ defmodule Ramal do
   The record stays in storage with status `:discarded`, so `list/2` can show it and later calls return
   `:not_open`. Discarding an already discarded branch is a no-op. A merged branch cannot be discarded.
 
+  ## Options
+
+    * `:purge` - `true` also deletes the record and its write log once the branch is discarded, as `delete/1` does, so
+      nothing is left in storage or in `list/2`. Default `false`.
+
+  A host that opens a branch (or a fork) per request as scratch space should discard it with `purge: true`: a kept
+  record is about 1 KB in ETS and nothing else ever removes it, so the table and `list/2` grow without bound. Keep the
+  record only for a branch someone will look at later, and `delete/1` it when they are done.
+
   ## Example
 
       {:ok, branch} = Ramal.branch(MyApp.Farm)
       :ok = Ramal.discard(branch)
       {:error, %Ramal.Error{reason: :not_open}} = Ramal.run(branch, fn -> :never end)
+
+      {:ok, scratch} = Ramal.branch(MyApp.Farm)
+      :ok = Ramal.discard(scratch, purge: true)
+      {:error, %Ramal.Error{reason: :not_found}} = Ramal.get(scratch.id)
   """
   @spec discard(branch_or_id) :: :ok | {:error, Error.t()}
   def discard(branch_or_id), do: branch_or_id |> id_of() |> Server.discard()
+
+  @doc """
+  `discard/1` with options: `discard(branch, purge: true)` also deletes the record, as `delete/1` does. See `discard/1`
+  for what discarding does and for the options.
+
+  ## Example
+
+      :ok = Ramal.discard(branch, purge: true)
+  """
+  @spec discard(branch_or_id, keyword) :: :ok | {:error, Error.t()}
+  def discard(branch_or_id, opts) when is_list(opts) do
+    with :ok <- discard(branch_or_id) do
+      if Keyword.get(opts, :purge, false), do: delete(branch_or_id), else: :ok
+    end
+  end
+
+  @doc """
+  Deletes the record of a branch that is `:discarded`, `:merged` or `:rejected` from storage, with its write log.
+
+  Afterwards `get/1` returns `:not_found` and `list/2` no longer shows it. An `:open` or `:proposed` branch is refused
+  with `{:error, %Ramal.Error{reason: :not_terminal}}`: discard it first, or use `discard/2` with `purge: true`.
+  Deleting a branch that is not in storage returns `:not_found`.
+
+  This never touches the database the branch was made from, only the branch's own record.
+
+  ## Example
+
+      {:ok, branch} = Ramal.branch(MyApp.Farm)
+      {:error, %Ramal.Error{reason: :not_terminal}} = Ramal.delete(branch)
+      :ok = Ramal.discard(branch)
+      :ok = Ramal.delete(branch)
+  """
+  @spec delete(branch_or_id) :: :ok | {:error, Error.t()}
+  def delete(branch_or_id), do: branch_or_id |> id_of() |> Server.purge()
 
   # Writes inside a branch queue their notifications exactly as writes inside `Ash.transaction/3` do: nothing is sent
   # until the outermost transaction ends. `Ash.transaction/3` with no resources opens no database transaction and,

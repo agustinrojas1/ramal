@@ -12,6 +12,7 @@ defmodule Ramal.Error do
   |---|---|
   | `:not_found` | no branch with that id, in memory or in storage |
   | `:not_open` | the branch is not in the status the call needs: open for `run/2`, `fork/2`, `merge/2` and `propose/2`, proposed for `approve/2` and `reject/2` |
+  | `:not_terminal` | `Ramal.delete/1` of a branch that is still `:open` or `:proposed` (`details.status`); discard it first, or discard it with `purge: true` |
   | `:stale` | the base moved under rows the branch read (`details.rows`); for a nested fork, the parent branch did (`details.rows`), or changed again while the fork was being merged (`details.rows` is empty) |
   | `:merge_failed` | a replayed action failed; `details` has `index`, `type`, `resource`, `action` and the Ash `error` |
   | `:database_generated_key` | a branch cannot create a row whose primary key the database generates and that has no placeholder type (not a single integer or UUID `generated? true` key) |
@@ -54,6 +55,7 @@ defmodule Ramal.Error do
   @type reason ::
           :not_found
           | :not_open
+          | :not_terminal
           | :stale
           | :merge_failed
           | :database_generated_key

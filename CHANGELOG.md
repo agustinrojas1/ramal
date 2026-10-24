@@ -7,6 +7,16 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - **`Ramal.stale/2` and `Ramal.mark_merged/1` (experimental, ADR 0051)** for a host that commits a branch through its own command layer. `stale/2` runs the staleness check of `merge/2` on its own and returns `{:ok, []}` or the stale rows; with `lock: true` inside the host's transaction it takes the same `FOR UPDATE` locks (outside one it returns `:not_in_transaction`). `mark_merged/1` stores the branch as merged afterwards, so `list/2` and the inspector show it. A nested fork gets `:nested_fork`. New telemetry event `[:ramal, :branch, :mark_merged]`.
+- **`Ramal.discard(branch, purge: true)` and `Ramal.delete/1` remove the record of a finished branch.** Discarding kept the record in storage forever, so a host that opens a branch per request as scratch space grew its storage and `Ramal.list/2` without bound. `purge: true` stops the process and deletes the record with its write log; `delete/1` does the same for a `:discarded`, `:merged` or `:rejected` branch and refuses an `:open` or `:proposed` one with the new `:not_terminal` reason. Both emit `[:ramal, :branch, :delete]`, and work on ETS and Postgres storage. `discard/1` is unchanged.
+
+### Fixed
+
+- **A read sorted by a database-generated integer key puts the branch's new rows where the merge will.** Inside a branch the rows had negative placeholder keys, so `sort(id: :asc)` listed them before every real row and, after the merge, last. They now sort after every real key in creation order (before them for `:desc`), and a keyset page by that key (`after` and `before` cursors) returns the rows the same page returns after the merge. UUID keys are unchanged: their order is not creation order (ADR 0042, #206).
+
+### Changed
+
+- **Documented what an upsert that leaves a row alone costs.** `docs/limits.md` says that `upsert_fields []` still rewrites the row in AshPostgres, that an always-false `upsert_condition` is refused in a branch (`:upsert_unsupported`), and that the pattern for a branch is a read then a plain create. `test/ramal/upsert_test.exs` pins it.
+- **Documented what a custom Ash type must satisfy in a branch, and tested it.** The embedded form (`dump_to_embedded/3` and `cast_from_embedded/3`) must round-trip, or a branch reads a value the database does not. New tests run a `NewType` over `:string` (`trim?: false`, `allow_empty?: true`), a JSON type with nested lists of maps and a struct with a different database form through create, update, read, diff, fork, ETS, Postgres and durable storage, and merge. See `docs/limits.md`.
 
 ## [0.9.1] - 2026-10-23
 
