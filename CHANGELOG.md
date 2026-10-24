@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Changed
 
 - **Documented what an upsert that leaves a row alone costs.** `docs/limits.md` says that `upsert_fields []` still rewrites the row in AshPostgres, that an always-false `upsert_condition` is refused in a branch (`:upsert_unsupported`), and that the pattern for a branch is a read then a plain create. `test/ramal/upsert_test.exs` pins it.
+- **Documented what a custom Ash type must satisfy in a branch, and tested it.** The embedded form (`dump_to_embedded/3` and `cast_from_embedded/3`) must round-trip, or a branch reads a value the database does not. New tests run a `NewType` over `:string` (`trim?: false`, `allow_empty?: true`), a JSON type with nested lists of maps and a struct with a different database form through create, update, read, diff, fork, ETS, Postgres and durable storage, and merge. See `docs/limits.md`.
 
 ## [0.9.1] - 2026-10-23
 
