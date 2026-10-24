@@ -31,6 +31,7 @@ defmodule Ramal.Telemetry do
   | `[:ramal, :read, :unpatched_aggregate]` | a read inside a branch selected an aggregate Ramal cannot compute over the overlay (`custom`, a join filter, a custom read action, ...), so it has the database's value |
   | `[:ramal, :write, :capture]` | a create, update or destroy inside a branch was put in the overlay instead of the data layer (metadata: `action_type`, `resource`, `action`, `nested?`) |
   | `[:ramal, :ash, :contract]` | `Ramal.Supervisor` ran Ramal's Ash contract at boot, because Ash or AshPostgres is outside the range it is tested with (measurement `broken`, the number of broken assumptions; metadata `broken`, the ids of the broken ones, and `ash` and `ash_postgres`, the versions) |
+  | `[:ramal, :raw_query, :detected]` | `Ramal.Supervisor` `warn_raw_queries` saw a raw Ecto query on the table of a branched resource inside `Ramal.run/2` (metadata: `branch_id`, `repo`, `table`, `resource`, `query`, `call_site`, `stacktrace`; measurement `system_time`) |
 
   ## Example
 
@@ -120,6 +121,19 @@ defmodule Ramal.Telemetry do
       %{broken: length(broken)},
       %{broken: broken, ash: ash, ash_postgres: ash_postgres}
     )
+  end
+
+  @doc """
+  Emits `[:ramal, :raw_query, :detected]` with `metadata` (see the table above).
+
+  ## Example
+
+      iex> Ramal.Telemetry.raw_query(:detected, %{branch_id: "b1", table: "paddocks"})
+      :ok
+  """
+  @spec raw_query(atom, map) :: :ok
+  def raw_query(step, metadata) do
+    :telemetry.execute([:ramal, :raw_query, step], %{system_time: System.system_time()}, metadata)
   end
 
   @doc """

@@ -1,0 +1,35 @@
+defmodule MyApp.Reports do
+  import Ecto.Query
+
+  alias MyApp.Repo
+  alias Ramal.Test.Farm.{Herd, Paddock}
+
+  # from(p in Paddock) in a comment is not a query
+  def open_paddocks, do: from(p in Paddock, where: p.open) |> Repo.all()
+
+  def by_table, do: Repo.all(from(h in "herds", select: h.name))
+
+  def joined do
+    from(h in Herd,
+      join: p in Paddock,
+      on: p.id == h.paddock_id
+    )
+  end
+
+  def wipe, do: Repo.delete_all(Paddock)
+  def bulk(rows), do: MyApp.Repo.insert_all("paddocks", rows)
+
+  def unrelated, do: from(u in User) |> Repo.all()
+end
+
+defmodule MyApp.LegacyHerd do
+  use Ecto.Schema
+
+  schema "herds" do
+    field(:name, :string)
+  end
+end
+
+defmodule MyApp.Legacy do
+  def all, do: MyApp.Repo.all(MyApp.LegacyHerd)
+end

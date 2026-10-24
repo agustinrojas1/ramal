@@ -154,7 +154,7 @@ defmodule Ramal do
     else
       with {:ok, status} <- Server.status(id),
            :ok <- ensure_open(id, status) do
-        execute(id, fun, Keyword.get(opts, :atomic, false))
+        id |> execute(fun, Keyword.get(opts, :atomic, false)) |> refuse_raw_query(id)
       end
     end
   end
@@ -825,6 +825,16 @@ defmodule Ramal do
   """
   @spec discard(branch_or_id) :: :ok | {:error, Error.t()}
   def discard(branch_or_id), do: branch_or_id |> id_of() |> Server.discard()
+
+  # Only `warn_raw_queries: :raise` records a raw query (Ramal.RawQueryGuard); telemetry cannot raise in the query.
+  defp refuse_raw_query({:ok, _result} = ok, id) do
+    case Supervisor.take_raw_query(id) do
+      nil -> ok
+      detail -> {:error, Ramal.RawQueryGuard.error(detail)}
+    end
+  end
+
+  defp refuse_raw_query(error, _id), do: error
 
   @doc """
   `discard/1` with options: `discard(branch, purge: true)` also deletes the record, as `delete/1` does. See `discard/1`

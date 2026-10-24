@@ -56,4 +56,5 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0050](0050-models-tied-to-the-code-by-a-map.md) | The formal models are tied to the code by a map that CI reads | accepted |
 | [0051](0051-staleness-check-without-the-merge.md) | The staleness check can run without the merge, for hosts that commit through their own commands | accepted |
 | [0052](0052-atomic-run-takes-back-a-failed-runs-writes.md) | An atomic run takes back what a failed run wrote | accepted |
+| [0053](0053-raw-query-guard.md) | A guard reports raw Ecto queries on a branched table inside a branch | accepted |
 | [0054](0054-fragment-filters-judged-by-the-database.md) | A fragment filter is judged by the database on the branch's rows | accepted |

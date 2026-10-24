@@ -28,6 +28,7 @@ lib/ramal/preparation/lateral.ex  a relationship load with a multi-hop `through`
 lib/ramal/preparation/placeholders.ex  lifts the placeholder keys of generated integer keys above every real key for a sort and a keyset comparison in the branch (ADR 0042)
 lib/ramal/preparation/paged.ex   what page a query asks for and the cut of it from the patched list, so a paginated read in a branch is paged after the patch (ADR 0030)
 lib/ramal/collation.ex       the database's collation for the text a branch sorts in Elixir: ranks from one query, so a sort and min/max of text agree with Postgres (ADR 0045)
+lib/ramal/raw_query_guard.ex  the opt-in `warn_raw_queries` guard: a telemetry handler that reports a raw Ecto query on a branched table inside a branch (ADR 0053)
 lib/ramal/prefilter.ex       cheap test that rules overlay records out of a read filter before the Ash runtime does
 lib/ramal/change.ex          the Change struct that diff returns
 lib/ramal/aggregate.ex       aggregates: pure computation over records, and the database-plus-overlay delta of Ramal.aggregate/4

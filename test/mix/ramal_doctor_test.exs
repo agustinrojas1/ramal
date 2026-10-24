@@ -77,4 +77,45 @@ defmodule Mix.Tasks.Ramal.DoctorTest do
 
     assert report =~ "AshPostgres not installed"
   end
+
+  describe "the raw query scan" do
+    @fixture Path.expand("../fixtures/raw_queries.ex.txt", __DIR__)
+    @tables %{"paddocks" => Ramal.Test.Farm.Paddock, "herds" => Ramal.Test.Farm.Herd}
+
+    defp scanned(tables \\ @tables),
+      do: Doctor.scan([{"lib/my_app/reports.ex", File.read!(@fixture)}], tables)
+
+    test "lists each place a raw query touches a branched resource, with its line" do
+      # from(p in Paddock), from(h in "herds"), the multiline from and join, delete_all, insert_all on the table
+      # name, and a call on the Ecto schema over the herds table, which the scan finds in the same files.
+      assert Enum.map(scanned(), & &1.line) == [8, 10, 13, 14, 19, 20, 34]
+    end
+
+    test "skips a comment, a query on another schema and the definition of an Ecto schema" do
+      lines = Enum.map(scanned(), & &1.line)
+
+      refute 7 in lines
+      refute 22 in lines
+      refute 28 in lines
+    end
+
+    test "lists nothing when the project has no branched resource" do
+      assert scanned(%{}) == []
+    end
+
+    test "the report names path, line and text, and says it is a heuristic" do
+      report = Doctor.raw_queries_report(scanned())
+
+      assert report =~ "Raw Ecto queries (heuristic): 7 places"
+
+      assert report =~
+               "lib/my_app/reports.ex:8  def open_paddocks, do: from(p in Paddock, where: p.open) |> Repo.all()"
+
+      assert Doctor.raw_queries_report([]) =~ "none found"
+    end
+
+    test "scan_project/0 reads the project's own lib without failing" do
+      assert is_list(Doctor.scan_project())
+    end
+  end
 end

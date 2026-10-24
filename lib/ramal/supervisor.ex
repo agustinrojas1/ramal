@@ -41,6 +41,28 @@ defmodule Ramal.Supervisor do
       the database; every row an action wrote keeps its fingerprint. The storage must define `c:Ramal.Storage.append/4`
       and `c:Ramal.Storage.writes_after/2`, as `Ramal.Storage.ETS` and `Ramal.Storage.Postgres` do; the supervisor
       refuses to start otherwise. It costs one storage write per action.
+    * `:warn_raw_queries` - `true` or `:raise` to report a raw Ecto query that touches the table of a branched resource
+      inside `Ramal.run/2`, default off (issue #207). Needs `:repo`, the host's repo. Each such query emits
+      `[:ramal, :raw_query, :detected]` and Ramal logs nothing: the host attaches a handler that warns or logs, with the
+      branch id, table, resource, SQL, `call_site` (a formatted stack frame) and `stacktrace` (the frames, for
+      `Exception.format_stacktrace/1`) in the metadata. `:raise` also makes `Ramal.run/2` return
+      `{:error, %Ramal.Error{reason: :raw_query}}`, and `Ramal.run!/2` raise it, once the function has returned (the
+      query itself cannot be failed from telemetry); the branch's writes stay. Queries of Ash actions, Ramal's own reads
+      and the merge are not reported. For development and test: it costs a stack trace per such query inside a branch.
+      To log them:
+
+          :telemetry.attach(
+            "warn-raw-queries",
+            [:ramal, :raw_query, :detected],
+            fn _event, _measurements, meta, _config ->
+              Logger.warning(
+                "raw query on \#{meta.table} inside branch \#{meta.branch_id} at \#{meta.call_site}\\n" <>
+                  Exception.format_stacktrace(meta.stacktrace)
+              )
+            end,
+            nil
+          )
+
     * any other option is the storage config, for example `:repo` for the Postgres backend
 
   Both limits are off by default, so adding them is the only change; see ADR 0016 for why they exist (a client that can
@@ -112,6 +134,7 @@ defmodule Ramal.Supervisor do
           idle_timeout: timeout,
           max_heap_size: pos_integer,
           durable: boolean,
+          raw_queries: false | true | :raise,
           limits: %{max_active: pos_integer | nil, rate: {pos_integer, pos_integer} | nil}
         }
 
@@ -130,6 +153,7 @@ defmodule Ramal.Supervisor do
     check_cluster!(config)
     check_durable!(config)
     check_ash_versions()
+    setup_raw_query_guard(config)
     :persistent_term.put(@config_key, config)
 
     children = [
@@ -151,6 +175,24 @@ defmodule Ramal.Supervisor do
   end
 
   defp check_cluster!(_config), do: :ok
+
+  # The guard is attached to the repo's query event; the handler reads the mode from the config on each event, so a
+  # handler left behind by a stopped supervisor skips everything. Without the option, detach one an earlier start left.
+  defp setup_raw_query_guard(%{raw_queries: false, storage_config: storage_config}) do
+    if repo = storage_config[:repo], do: Ramal.RawQueryGuard.detach(repo)
+    :ok
+  end
+
+  defp setup_raw_query_guard(%{storage_config: storage_config}) do
+    case storage_config[:repo] do
+      nil ->
+        raise ArgumentError,
+              "Ramal.Supervisor with `warn_raw_queries` needs `repo: MyApp.Repo` to attach to"
+
+      repo ->
+        Ramal.RawQueryGuard.attach(repo)
+    end
+  end
 
   # Every branch would fail to be created, so say so once, at start, instead.
   defp check_durable!(%{durable: true, storage: storage}) do
@@ -229,7 +271,8 @@ defmodule Ramal.Supervisor do
         :max_heap_size,
         :durable,
         :max_active_branches,
-        :branch_rate
+        :branch_rate,
+        :warn_raw_queries
       ])
 
     %{
@@ -239,8 +282,17 @@ defmodule Ramal.Supervisor do
       idle_timeout: Keyword.get(known, :idle_timeout, @default_idle_timeout),
       max_heap_size: Keyword.get(known, :max_heap_size, @default_max_heap_size),
       durable: Keyword.get(known, :durable, false) == true,
+      raw_queries: raw_queries(Keyword.get(known, :warn_raw_queries, false)),
       limits: Ramal.Limits.build(known)
     }
+  end
+
+  defp raw_queries(mode) when mode in [true, :raise], do: mode
+  defp raw_queries(false), do: false
+
+  defp raw_queries(other) do
+    raise ArgumentError,
+          "Ramal.Supervisor `warn_raw_queries` is true, :raise or false, got #{inspect(other)}"
   end
 
   @doc false
@@ -297,6 +349,21 @@ defmodule Ramal.Supervisor do
       :undefined -> nil
       pid when node(pid) == node() -> if Process.alive?(pid), do: pid
       pid -> pid
+    end
+  end
+
+  # What the raw query guard keeps in the supervisor's table for `:raise`: the first query a branch's run made, which
+  # `Ramal.run/2` takes when its function returns.
+  @doc false
+  @spec record_raw_query(String.t(), map) :: true
+  def record_raw_query(id, detail), do: :ets.insert_new(__MODULE__, {{:raw_query, id}, detail})
+
+  @doc false
+  @spec take_raw_query(String.t()) :: map | nil
+  def take_raw_query(id) do
+    case :ets.take(__MODULE__, {:raw_query, id}) do
+      [{_key, detail}] -> detail
+      [] -> nil
     end
   end
 

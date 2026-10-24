@@ -11,6 +11,13 @@ defmodule Mix.Tasks.Ramal.Doctor do
   `not checked`), its tier, the feature it serves and its summary. A broken assumption gets the reason on the line
   below. The last line is the verdict.
 
+  After the contract it prints a second section, "Raw Ecto queries (heuristic)": every line of `lib/**/*.ex` that reads
+  like a `from(x in <branched resource>)` or a `Repo` call on a branched resource, on its Ecto schema or on its table
+  name, since such a query never sees a branch (docs/limits.md). It is a regular expression over single lines, so a
+  query split over several lines or built at runtime is missed and a similar line can be reported by mistake; treat it as
+  a list of places to look at, not a verdict. It never changes the exit status. To catch the queries that actually run
+  inside a branch, set `warn_raw_queries` on `Ramal.Supervisor` in development and test.
+
   The exit status is 1 when a core assumption is broken, because Ramal then refuses every read and write inside a
   branch with `:ash_incompatible`; it is 0 otherwise. A broken extended assumption refuses only its feature (bulk
   actions, upserts, or relationship loads inside a branch), and the verdict names it.
@@ -29,6 +36,9 @@ defmodule Mix.Tasks.Ramal.Doctor do
         ok           extended  relationship_pages export_has_parent_expr          Ash.Actions.Read.Relationships.has_parent_expr?/1 is exported
 
       Verdict: ok. 34 checks passed.
+
+      Raw Ecto queries (heuristic): 1 place
+        lib/my_app/reports.ex:12  from(p in Paddock, where: p.open) |> Repo.all()
 
   A broken line is `BROKEN`, with its reason on the line below it, and the verdict then names what Ramal refuses.
   """
@@ -58,6 +68,7 @@ defmodule Mix.Tasks.Ramal.Doctor do
 
     {report, status} = render(Contract.run(), env)
     Mix.shell().info(report)
+    Mix.shell().info("\n" <> raw_queries_report(scan_project()))
 
     if status != 0, do: exit({:shutdown, status})
     :ok
@@ -78,6 +89,74 @@ defmodule Mix.Tasks.Ramal.Doctor do
         ["", verdict(results, broken, env)]
 
     {Enum.join(lines, "\n"), status(broken)}
+  end
+
+  @doc false
+  # The files of the project, as `{path, source}`, scanned against the branched resources of its domains.
+  @spec scan_project() :: [map]
+  def scan_project do
+    app = Mix.Project.config()[:app]
+    tables = Ramal.RawQueryGuard.branched_tables(app)
+
+    "lib/**/*.ex"
+    |> Path.wildcard()
+    |> Enum.map(&{&1, File.read!(&1)})
+    |> scan(tables)
+  end
+
+  @doc false
+  # Lines of `files` (`{path, source}`) that look like a raw Ecto query on a table of `tables` (`%{table => resource}`):
+  # `from`/`join` over the resource, an Ecto schema of the table or the table name, or a `Repo` function called on one.
+  @spec scan([{String.t(), String.t()}], %{String.t() => module}) :: [map]
+  def scan(files, tables) do
+    names = names(files, tables)
+
+    for {path, source} <- files,
+        {line, number} <- Enum.with_index(String.split(source, "\n"), 1),
+        not comment?(line),
+        name <- names,
+        match_line?(line, name),
+        uniq: true,
+        do: %{path: path, line: number, text: String.trim(line), name: name}
+  end
+
+  # How a branched table can be written in a query: the resource, an Ecto schema over the same table found in the files,
+  # and the table name as a string. Each as a regex fragment for the thing after `in` or inside `Repo.x(`.
+  defp names(files, tables) do
+    schemas =
+      for {_path, source} <- files,
+          {table, _resource} <- tables,
+          [before, _after] <- [String.split(source, ~s(schema "#{table}"), parts: 2)],
+          [_, module] <- [List.last(Regex.scan(~r/defmodule\s+([\w.]+)/, before))],
+          do: module
+
+    modules = Enum.map(Map.values(tables), &inspect/1) ++ schemas
+    last = modules |> Enum.map(&(&1 |> String.split(".") |> List.last())) |> Enum.uniq()
+    strings = for table <- Map.keys(tables), do: ~s("#{table}")
+
+    Enum.map(last, &"(?:[A-Z]\\w*\\.)*#{Regex.escape(&1)}\\b") ++
+      Enum.map(strings, &Regex.escape/1)
+  end
+
+  defp match_line?(line, name) do
+    Regex.match?(~r/\b(?:from|join:?)\s*\(?\s*\w+\s+in\s+#{name}/, line) or
+      Regex.match?(~r/\b\w*Repo\.\w+[!?]?\(\s*#{name}/, line)
+  end
+
+  defp comment?(line), do: String.starts_with?(String.trim_leading(line), "#")
+
+  @doc false
+  @spec raw_queries_report([map]) :: String.t()
+  def raw_queries_report([]), do: "Raw Ecto queries (heuristic): none found."
+
+  def raw_queries_report(findings) do
+    places = length(findings)
+
+    Enum.join(
+      ["Raw Ecto queries (heuristic): #{places} #{if places == 1, do: "place", else: "places"}"] ++
+        for(%{path: path, line: line, text: text} <- findings, do: "  #{path}:#{line}  #{text}"),
+      "\n"
+    )
   end
 
   defp header(env) do
