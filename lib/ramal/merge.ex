@@ -35,6 +35,10 @@ defmodule Ramal.Merge do
     * `:actor` - the actor for every replayed action. Default: the actor each entry was recorded with.
     * `:authorize?` - default `true`
     * `:on_stale` - `:error` (default), `:ignore`, or a function from the stale rows to `:continue` or `:abort`
+    * `:context` - a map set as the context of every replayed changeset (`Ash.Changeset.set_context/2`), so a change or
+      hook reads it from `changeset.context`. It is how a host says what the merge is ("approved as request 42") or passes
+      data that is not an action input. The context a write was captured with is not recorded in the log, so this is the
+      only context a replayed action sees. Default: none.
     * `:mode` - only `:replay`
 
   Data layers that cannot run transactions, such as `Ash.DataLayer.Ets`, cannot roll a failed replay back. The staleness
@@ -256,6 +260,17 @@ defmodule Ramal.Merge do
             "Ramal.merge/2 only supports `mode: :replay`, got: #{inspect(opts[:mode])}"
     end
 
+    case Keyword.get(opts, :context) do
+      nil ->
+        :ok
+
+      context when is_map(context) ->
+        :ok
+
+      other ->
+        raise ArgumentError, "`context` must be a map, got: #{inspect(other)}"
+    end
+
     case Keyword.get(opts, :on_stale, :error) do
       on_stale when on_stale in [:error, :ignore] ->
         :ok
@@ -400,18 +415,19 @@ defmodule Ramal.Merge do
     resources
     |> transact(fn ->
       with {:ok, stale, fetched} <- check_staleness(branch, opts),
-           {:ok, records, replayed, keys} <- replay(entries, fetched, opts),
+           {:ok, records, replayed, keys, done} <- replay(entries, fetched, opts),
            :ok <- mark_merged(branch, config) do
-        {stale, records, replayed, keys}
+        {stale, records, replayed, keys, done}
       end
     end)
     |> case do
-      {:ok, {stale, records, replayed, keys}} ->
+      {:ok, {stale, records, replayed, keys, done}} ->
         {:ok,
          %Result{
            branch: %{branch | status: :merged},
            records: records,
            keys: keys,
+           entries: done,
            replayed: replayed,
            stale: stale
          }}
@@ -632,7 +648,7 @@ defmodule Ramal.Merge do
              Keyword.get(opts, :on_stale, :error),
              "parent branch #{inspect(parent_id)}"
            ),
-         {:ok, scratch, records, replayed, keys} <-
+         {:ok, scratch, records, replayed, keys, done} <-
            replay_in_scratch(branch, parent, opts, config) do
       case Server.adopt(parent_id, scratch, branch, version) do
         :ok ->
@@ -642,7 +658,8 @@ defmodule Ramal.Merge do
              records: records,
              replayed: replayed,
              stale: stale,
-             keys: keys
+             keys: keys,
+             entries: done
            }}
 
         {:error, :moved} when attempt == 1 ->
@@ -705,9 +722,9 @@ defmodule Ramal.Merge do
 
   defp replay_into(id, entries, opts) do
     with {:ok, replayed} <- Ramal.run(id, fn -> replay(entries, %{}, opts) end),
-         {:ok, records, count, keys} <- replayed,
+         {:ok, records, count, keys, done} <- replayed,
          {:ok, scratch} <- Server.get(id) do
-      {:ok, scratch, records, count, keys}
+      {:ok, scratch, records, count, keys, done}
     end
   end
 
@@ -744,25 +761,52 @@ defmodule Ramal.Merge do
     plans = key_plans(entries)
 
     entries
-    |> Enum.reduce_while({:ok, Overlay.new(), 0, fetched, %{}}, fn {entry, index},
-                                                                   {:ok, records, count, fetched,
-                                                                    renames} ->
+    |> Enum.reduce_while({:ok, Overlay.new(), [], fetched, %{}}, fn {entry, index},
+                                                                    {:ok, records, done, fetched,
+                                                                     renames} ->
       case replay_step(entry, index, entries, fetched, renames, {opts, plans}) do
         {:skip, fetched} ->
-          {:cont, {:ok, records, count, fetched, renames}}
+          {:cont, {:ok, records, done, fetched, renames}}
 
         {:ok, kind, ref, record, fetched, renames} ->
-          {:cont, {:ok, record_in(records, kind, ref, record), count + 1, fetched, renames}}
+          done = [result_entry(entry, index, kind, ref, record) | done]
+          {:cont, {:ok, record_in(records, kind, ref, record), done, fetched, renames}}
 
         {:error, _} = error ->
           {:halt, error}
       end
     end)
     |> case do
-      {:ok, records, count, _fetched, renames} -> {:ok, records, count, renamed_keys(renames)}
-      {:error, _} = error -> error
+      {:ok, records, done, _fetched, renames} ->
+        done = Enum.reverse(done)
+        {:ok, records, length(done), renamed_keys(renames), done}
+
+      {:error, _} = error ->
+        error
     end
   end
+
+  # One item of `Result.entries`: what the replay of the log entry at `index` returned, with the real key.
+  defp result_entry(
+         {type, resource, action, _params, _actor, _opts, _at},
+         index,
+         kind,
+         {_resource, key},
+         record
+       ) do
+    %{
+      index: index,
+      type: type,
+      resource: resource,
+      action: action,
+      key: key,
+      record: if(kind == :deleted, do: :deleted, else: record),
+      metadata: metadata_of(record)
+    }
+  end
+
+  defp metadata_of(%{__metadata__: metadata}) when is_map(metadata), do: metadata
+  defp metadata_of(_other), do: %{}
 
   defp replay_step(
          {_type, _resource, _action, _params, _actor, entry_opts, _at} = entry,
@@ -952,6 +996,10 @@ defmodule Ramal.Merge do
     actor = if Keyword.has_key?(opts, :actor), do: opts[:actor], else: recorded_actor
     authorize? = Keyword.get(opts, :authorize?, true)
     run_opts = [actor: actor, authorize?: authorize?, tenant: entry_opts[:tenant]]
+
+    run_opts =
+      if context = opts[:context], do: Keyword.put(run_opts, :context, context), else: run_opts
+
     ref = {resource, key}
 
     case type do
