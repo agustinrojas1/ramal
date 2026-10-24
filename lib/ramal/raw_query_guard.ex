@@ -111,7 +111,8 @@ defmodule Ramal.RawQueryGuard do
   defp touched(_tables, _metadata), do: nil
 
   @doc """
-  Whether `sql` reads or writes `table` in a `FROM`, `JOIN`, `UPDATE` or `INTO`, with or without a schema before it.
+  Whether `sql` reads or writes `table` in a `FROM`, `JOIN`, `UPDATE` or `INTO`, or after a comma in a `FROM` list. The
+  name may be quoted or not, in any case, with or without a schema before it, and must be the whole word.
 
   A cheap substring test comes first, so a query that does not mention the table never compiles the pattern.
 
@@ -119,13 +120,28 @@ defmodule Ramal.RawQueryGuard do
 
       iex> Ramal.RawQueryGuard.sql_names_table?(~s(UPDATE "paddocks" AS p0 SET "name" = $1), "paddocks")
       true
+      iex> Ramal.RawQueryGuard.sql_names_table?("select * from public.paddocks p, herds h", "paddocks")
+      true
   """
   @spec sql_names_table?(String.t(), String.t()) :: boolean
   def sql_names_table?(sql, table) do
-    quoted = ~s("#{table}")
+    String.contains?(String.downcase(sql), String.downcase(table)) and
+      Regex.match?(pattern(table), sql)
+  end
 
-    String.contains?(sql, quoted) and
-      Regex.match?(~r/\b(?:FROM|JOIN|UPDATE|INTO)\s+(?:"[^"]+"\.)?#{Regex.escape(quoted)}/i, sql)
+  # `FROM a, b` joins `b` without a keyword before it, so a comma counts when the `FROM` it belongs to has not ended
+  # (a `SELECT a, paddocks` list has a comma too, and its `paddocks` is a column). The name is the whole word: a quote
+  # or a word character beside it makes it another identifier (`paddocks_archive`).
+  defp pattern(table) do
+    name = Regex.escape(table)
+    schema = ~S{(?:(?:"[^"]+"|\w+)\s*\.\s*)?}
+    target = schema <> ~S{(?:"} <> name <> ~S{"|(?<![\w$"])} <> name <> ~S{(?![\w$"]))}
+    keyword = ~S{\b(?:FROM|JOIN|UPDATE|INTO)\s+(?:ONLY\s+)?}
+
+    from_list =
+      ~S{\bFROM\s+(?:(?!\b(?:WHERE|GROUP|ORDER|HAVING|LIMIT|UNION|SELECT|ON|JOIN)\b)[^;])*?,\s*}
+
+    Regex.compile!("(?:#{keyword}|#{from_list})#{target}", "i")
   end
 
   # A query runs under a dozen frames of Ecto, DBConnection and AshPostgres, so the default depth of 8 would never reach
