@@ -251,9 +251,18 @@ defmodule Ramal.Supervisor do
     end
   end
 
+  # `write_concurrency: :auto` lets ETS pick the lock granularity from the concurrency it sees: every table here takes
+  # writes from many processes (each branch process marks itself, persists, appends), and the default is one lock for
+  # the whole table. `read_concurrency` stays on for the lookups on every call.
   defp create_table(name, type \\ :set) do
     if :ets.whereis(name) == :undefined do
-      :ets.new(name, [:named_table, :public, type, read_concurrency: true])
+      :ets.new(name, [
+        :named_table,
+        :public,
+        type,
+        read_concurrency: true,
+        write_concurrency: :auto
+      ])
     end
   end
 
