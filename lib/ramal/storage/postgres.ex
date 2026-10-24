@@ -175,17 +175,29 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
       end
     end
 
+    # The same LEFT JOIN without the epoch: a branch with no writes still returns its row, so no rows means the branch
+    # is not stored (see `held_writes/3`).
+    @writes_after """
+    SELECT w.seq, w.delta FROM #{@table} b
+    LEFT JOIN #{@writes} w ON w.branch_id = b.id AND w.seq > $2
+    WHERE b.id = $1 ORDER BY w.seq
+    """
+
     def writes_after(%Branch{} = branch, config) do
       with {:ok, repo} <- repo(config),
            {:ok, id} <- dump_id(branch.id),
-           {:ok, result} <-
-             query(
-               repo,
-               "SELECT seq, delta FROM #{@writes} WHERE branch_id = $1 AND seq > $2 ORDER BY seq",
-               [id, branch.wal]
-             ) do
-        result.rows |> Enum.map(&decode_write(branch.id, &1)) |> collect()
+           {:ok, result} <- query(repo, @writes_after, [id, branch.wal]) do
+        unfenced_writes(branch, result.rows)
       end
+    end
+
+    defp unfenced_writes(branch, []), do: {:error, not_stored(branch)}
+
+    defp unfenced_writes(branch, rows) do
+      rows
+      |> Enum.reject(fn [seq, _delta] -> is_nil(seq) end)
+      |> Enum.map(&decode_write(branch.id, &1))
+      |> collect()
     end
 
     defp held_writes(branch, epoch, [[epoch | _] | _] = rows) do
@@ -197,17 +209,19 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
 
     # The LEFT JOIN of a branch with no writes still returns its row, so no rows means the branch is not stored. That is
     # not an empty log: the load would go on from a snapshot of a branch that another process deleted after the claim.
-    defp held_writes(branch, _epoch, []),
-      do:
-        {:error,
-         Error.new(
-           :not_found,
-           "branch #{inspect(branch.id)} is no longer stored, so its write log cannot be read; it was deleted after this process claimed it",
-           %{id: branch.id}
-         )}
+    defp held_writes(branch, _epoch, []), do: {:error, not_stored(branch)}
 
     defp held_writes(branch, epoch, _other_epoch),
       do: {:error, Ramal.Storage.fenced(branch.id, epoch)}
+
+    defp not_stored(branch) do
+      Error.new(
+        :not_found,
+        "branch #{inspect(branch.id)} is no longer stored, so its write log cannot be read; it was deleted after this " <>
+          "process claimed it",
+        %{id: branch.id}
+      )
+    end
 
     defp decode_write(id, [seq, stored]) do
       with {:ok, delta} <- Codec.decode_delta(id, stored), do: {:ok, {seq, delta}}

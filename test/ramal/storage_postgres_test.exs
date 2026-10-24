@@ -187,6 +187,17 @@ defmodule Ramal.Storage.PostgresTest do
     defp append_all(branch, seqs),
       do: for(seq <- seqs, do: :ok = Postgres.append(branch, seq, delta(seq), @config))
 
+    test "the write log of a branch that is not stored is :not_found, not an empty log" do
+      branch = durable()
+      assert {:error, %Error{reason: :not_found}} = Postgres.writes_after(branch, @config)
+
+      stored = stored(branch)
+      assert Postgres.writes_after(stored, @config) == {:ok, []}
+
+      :ok = Postgres.delete(stored.id, @config)
+      assert {:error, %Error{reason: :not_found}} = Postgres.writes_after(stored, @config)
+    end
+
     test "the deltas after the branch's wal come back oldest first, decoded" do
       branch = stored(durable())
       append_all(branch, [3, 1, 2])
