@@ -85,7 +85,12 @@ acknowledged write, so there it asks for all of them. An append the storage refu
 and a delta holds the write and the fingerprint of its row, the part of a delta that matters to the properties.
 The fingerprint of a row that was only read is not in a delta, so a restart loses it, as the code does; no property asks
 for it. The model is bounded: what TLC proves holds for the sizes in `MC.cfg` and `MC-durable.cfg`, and larger sizes are
-left out to keep the check to a few minutes.
+left out to keep the check to a few minutes. An atomic run (`Ramal.run/3` with `atomic: true`, `Server.rollback/2`) is
+not modelled: it takes back writes of actions that ended, which no step does, and for a durable branch it stores a
+snapshot that deletes the deltas of those actions, as `Compact` does for all of them. The steps that cite the functions it
+added a clause to (`handle_call/3`, `handle_info/2`, `handle_cast/2`, `timeout/1`) were read against the new code and still
+hold; only `timeout/1` changed what an existing step does, by keeping the process loaded while a savepoint is open, which
+`Idle` allows (it may also stay up).
 
 ### Actions that write several rows
 

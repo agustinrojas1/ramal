@@ -55,3 +55,4 @@ One file per decision, numbered, half a page at most: context, decision, consequ
 | [0049](0049-ash-contract-checked-where-ramal-runs.md) | Ramal checks its Ash contract where it runs | accepted |
 | [0050](0050-models-tied-to-the-code-by-a-map.md) | The formal models are tied to the code by a map that CI reads | accepted |
 | [0051](0051-staleness-check-without-the-merge.md) | The staleness check can run without the merge, for hosts that commit through their own commands | accepted |
+| [0052](0052-atomic-run-takes-back-a-failed-runs-writes.md) | An atomic run takes back what a failed run wrote | accepted |

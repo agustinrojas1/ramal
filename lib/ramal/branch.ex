@@ -872,6 +872,91 @@ defmodule Ramal.Branch do
     end)
   end
 
+  @typedoc """
+  What `savepoint/1` kept of a branch so that `rollback/2` can put it back: the maps themselves (immutable, so keeping
+  them costs nothing until the branch moves on), the length of the log and the placeholder counter, and the `wal` of a
+  durable branch.
+  """
+  @type savepoint :: %{
+          overlay: Overlay.t(),
+          base: map,
+          parent_seen: map,
+          log_length: non_neg_integer,
+          next_placeholder: non_neg_integer,
+          wal: non_neg_integer
+        }
+
+  @doc """
+  What `rollback/2` needs to take the branch back to how it is now.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> Ramal.Branch.savepoint(branch).log_length
+      0
+  """
+  @spec savepoint(t) :: savepoint
+  def savepoint(%__MODULE__{} = branch) do
+    %{
+      overlay: branch.overlay,
+      base: branch.base,
+      parent_seen: branch.parent_seen,
+      log_length: length(branch.log),
+      next_placeholder: branch.next_placeholder,
+      wal: branch.wal
+    }
+  end
+
+  @doc """
+  The branch with every write made since `savepoint` taken back: the log is cut back to its length then, and the
+  overlay entries, base rows and `parent_seen` of the rows those writes touched are put back as they were (or removed,
+  if the branch held nothing for the row). The placeholder counter goes back too, so the next generated key is the
+  one the rolled-back write got.
+
+  Unlike `undo/2` this takes back writes whose actions have ended, and it takes back every write of the log since,
+  whoever made it. Rows only read since stay as they are: their fingerprints say what the base held when they were
+  read, which the rolled-back work does not change.
+
+  ## Example
+
+      iex> branch = Ramal.Branch.new(MyApp.Farm)
+      iex> savepoint = Ramal.Branch.savepoint(branch)
+      iex> entry = {:create, MyApp.Herd, :create, %{}, nil, [key: 1], ~U[2026-01-01 00:00:00Z]}
+      iex> {written, _undo} = Ramal.Branch.put_write(branch, :created, {MyApp.Herd, 1}, %{id: 1}, nil, entry)
+      iex> Ramal.Branch.rollback(written, savepoint) == branch
+      true
+  """
+  @spec rollback(t, savepoint) :: t
+  def rollback(%__MODULE__{} = branch, savepoint) do
+    {dropped, log} = Enum.split(branch.log, max(length(branch.log) - savepoint.log_length, 0))
+
+    # Every log entry is one `put_write/6`, and its ref is the resource and the `:key` the entry records.
+    refs =
+      dropped
+      |> Enum.map(fn {_type, resource, _action, _input, _actor, opts, _at} ->
+        {resource, opts[:key]}
+      end)
+      |> Enum.uniq()
+
+    %{
+      branch
+      | overlay: restore_from(branch.overlay, savepoint.overlay, refs),
+        base: restore_from(branch.base, savepoint.base, refs),
+        parent_seen: restore_from(branch.parent_seen, savepoint.parent_seen, refs),
+        log: log,
+        next_placeholder: savepoint.next_placeholder
+    }
+  end
+
+  defp restore_from(map, saved, refs) do
+    Enum.reduce(refs, map, fn ref, acc ->
+      case Map.fetch(saved, ref) do
+        {:ok, value} -> Map.put(acc, ref, value)
+        :error -> Map.delete(acc, ref)
+      end
+    end)
+  end
+
   defp unsee(seen, %{ref: ref, seen: :added}), do: Map.delete(seen, ref)
   defp unsee(seen, _undo), do: seen
 

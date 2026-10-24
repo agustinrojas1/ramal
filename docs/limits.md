@@ -6,6 +6,7 @@ Ramal is comprehensive, and every limit it has is listed here. Each line is one 
 
 - A branch cannot change the schema, add indexes, or promise a query plan, because it is not a database branch ([design, section 1](DESIGN.md)).
 - `Ramal.run/2` cannot be nested, so a branch of a branch is a nested fork, run on its own and merged into its parent ([ADR 0043](adr/0043-nested-branches-merge-into-their-parent.md)).
+- `Ramal.run/3` with `atomic: true` takes back the writes of a failed run but is not a transaction: it does not isolate (use it from one process at a time on a branch), it does not undo what `fun` did outside the branch, and on a durable branch a crash before the rollback's snapshot is stored brings the writes back ([ADR 0052](adr/0052-atomic-run-takes-back-a-failed-runs-writes.md)).
 - A branch lives on one node unless you run a cluster with `cluster: true` on `Ramal.Supervisor` and the Postgres storage ([ADR 0044](adr/0044-branches-in-a-cluster.md)).
 - In a cluster, a process that lost its branch in a netsplit is fenced at its next save, and unless the branch is durable what it held since its last save is lost and announced with `[:ramal, :branch, :fenced]` ([ADR 0044](adr/0044-branches-in-a-cluster.md)).
 - In a cluster, telemetry, the `:branch_rate` window and the heap-kill marks stay on each node, so other nodes do not see them ([ADR 0044](adr/0044-branches-in-a-cluster.md)).

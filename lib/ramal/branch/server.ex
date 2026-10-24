@@ -437,6 +437,33 @@ defmodule Ramal.Branch.Server do
   def undo(id, undos), do: call(id, {:undo, undos})
 
   @doc """
+  Marks the branch as it is now for the calling process, so that `rollback/2` can take back everything written since
+  (`Ramal.run/3` with `atomic: true`). Until the savepoint is rolled back or dropped with `keep/2` the process does not
+  unload, since the savepoint would be lost with it; if the calling process dies the savepoint is dropped.
+  """
+  @spec savepoint(String.t()) :: {:ok, reference} | {:error, Error.t()}
+  def savepoint(id), do: call(id, :savepoint)
+
+  @doc """
+  Takes back every write made since `savepoint` (`Ramal.Branch.rollback/2`) and drops it. A durable branch then stores a
+  snapshot, which deletes the write log it covers, when an action ended in between: the write log can only be appended
+  to, and a snapshot is how it is cut back. Answers `:ok` once that is stored; a refused snapshot is tried again by the
+  next compaction and reported as `[:ramal, :branch, :persist_failed]`.
+  """
+  @spec rollback(String.t(), reference) :: :ok | {:error, Error.t()}
+  def rollback(id, savepoint), do: persisting_call(id, {:rollback, savepoint})
+
+  @doc """
+  Drops `savepoint`: the writes made since stand. Asynchronous, like `release/1`.
+  """
+  @spec keep(String.t(), reference) :: :ok
+  def keep(id, savepoint) do
+    if pid = Supervisor.whereis(id), do: GenServer.cast(pid, {:keep, savepoint})
+
+    :ok
+  end
+
+  @doc """
   Tells the process that the calling process's action ended and its writes stand. Asynchronous: a later call of the same
   process is handled after it. A branch with no process has no running action to end, so nothing is started for it.
   """
@@ -654,7 +681,10 @@ defmodule Ramal.Branch.Server do
       # pid => %{monitor: ref, undos: [undo]}: the writes of actions that have not ended (capture/3)
       running: %{},
       # {tag, from, request, timer}: merges and proposals waiting for the running actions to end
-      waiting: []
+      waiting: [],
+      # monitor of the run's process => `Branch.savepoint/1`: what an atomic run (`Ramal.run/3`) can take the branch back
+      # to. The monitor is the token the run holds, so its death drops the savepoint (see handle_info/2)
+      savepoints: %{}
     }
 
   @impl true
@@ -829,6 +859,29 @@ defmodule Ramal.Branch.Server do
   def handle_call({:undo, undos}, {pid, _tag}, state) do
     state = state |> take_back(undos) |> drop_undos(pid, undos)
     reply(state, :ok)
+  end
+
+  def handle_call(:savepoint, {pid, _tag}, state) do
+    if usable?(state) do
+      token = Process.monitor(pid)
+
+      reply(
+        %{state | savepoints: Map.put(state.savepoints, token, Branch.savepoint(state.branch))},
+        {:ok, token}
+      )
+    else
+      reply(state, {:error, unavailable(state)})
+    end
+  end
+
+  def handle_call({:rollback, token}, _from, state) do
+    {savepoint, state} = pop_savepoint(state, token)
+
+    cond do
+      savepoint == nil -> reply(state, {:error, savepoint_lost(state)})
+      not usable?(state) -> reply(state, {:error, unavailable(state)})
+      true -> rolled_back(state, savepoint)
+    end
   end
 
   def handle_call(:commit, {pid, _tag}, %{branch: %{durable: true}} = state) do
@@ -1019,6 +1072,13 @@ defmodule Ramal.Branch.Server do
     end
   end
 
+  # The process of an atomic run died: nobody is left to roll it back or to keep it, and its writes stand as they are.
+  def handle_info({:DOWN, token, :process, _pid, _reason}, %{savepoints: savepoints} = state)
+      when is_map_key(savepoints, token) do
+    state = %{state | savepoints: Map.delete(savepoints, token)}
+    {:noreply, state, timeout(state)}
+  end
+
   # A process died in the middle of an action: the action did not happen, so its writes are taken back, as a database
   # rolls back the transaction of a connection whose owner died.
   def handle_info({:DOWN, ref, :process, pid, _reason}, %{running: running} = state)
@@ -1053,6 +1113,11 @@ defmodule Ramal.Branch.Server do
   # `:global` kept the other process of this branch after a netsplit (`Ramal.Cluster.resolve/3`). Unloading saves the
   # branch like an idle one, which the storage refuses if this process is the one that lost the epoch.
   def handle_cast(:superseded, state), do: {:stop, :normal, %{state | stop: :superseded}}
+
+  def handle_cast({:keep, token}, state) do
+    {_savepoint, state} = pop_savepoint(state, token)
+    {:noreply, state, timeout(state)}
+  end
 
   def handle_cast({:release, pid}, state) do
     state = state |> drop_running(pid) |> serve_waiting()
@@ -1108,8 +1173,15 @@ defmodule Ramal.Branch.Server do
 
   # A branch being merged must not unload: the merge would lose its claim. Nor one with actions running: their writes
   # would be stored as if they had ended, and a death of their process would go unnoticed.
-  defp timeout(%{merging: nil, running: running, waiting: [], config: config})
-       when map_size(running) == 0,
+  # Nor one with an atomic run open: its savepoint is in the process, and a load from storage would not have it.
+  defp timeout(%{
+         merging: nil,
+         running: running,
+         waiting: [],
+         savepoints: savepoints,
+         config: config
+       })
+       when map_size(running) == 0 and map_size(savepoints) == 0,
        do: config.idle_timeout
 
   defp timeout(_state), do: :infinity
@@ -1154,6 +1226,57 @@ defmodule Ramal.Branch.Server do
         Process.demonitor(held.monitor, [:flush])
         %{state | running: running}
     end
+  end
+
+  # -- atomic runs ------------------------------------------------------------------------------------------------
+
+  defp pop_savepoint(state, token) do
+    case Map.pop(state.savepoints, token) do
+      {nil, _savepoints} ->
+        {nil, state}
+
+      {savepoint, savepoints} ->
+        Process.demonitor(token, [:flush])
+        {savepoint, %{state | savepoints: savepoints}}
+    end
+  end
+
+  # The writes since the savepoint are gone from the branch. The write log of a durable branch only grows, so when an
+  # action ended since the savepoint (`wal` moved) the deltas it appended are covered by a snapshot of the branch as it
+  # is now, which deletes them (`c:Ramal.Storage.put/2`); the snapshot leaves out the writes of actions still running,
+  # as a compaction does. A snapshot the storage refuses leaves the deltas where they are until the next compaction
+  # stores one (`{:continue, :compact}`), which is the only time a crash would bring the rolled-back writes back.
+  defp rolled_back(state, savepoint) do
+    before = state.branch
+    state = bump(%{state | branch: Branch.rollback(before, savepoint)})
+    Telemetry.branch(:rollback, before, %{entries: length(before.log) - length(state.branch.log)})
+
+    if state.branch.durable and state.branch.wal > savepoint.wal do
+      snapshot = without_running(state)
+
+      case persist(state, snapshot) do
+        :ok ->
+          reply(%{state | appended: 0}, :ok)
+
+        {:error, %Error{reason: :fenced} = error} ->
+          {:stop, :normal, {:error, error}, fence(state, error)}
+
+        {:error, error} ->
+          Telemetry.branch(:persist_failed, snapshot, %{reason: :rollback, error: error})
+          {:reply, :ok, state, {:continue, :compact}}
+      end
+    else
+      reply(state, :ok)
+    end
+  end
+
+  defp savepoint_lost(state) do
+    Error.new(
+      :savepoint_lost,
+      "branch #{inspect(state.branch.id)} no longer holds the savepoint of this atomic run (its process was restarted " <>
+        "since), so the writes made since cannot be taken back",
+      %{id: state.branch.id}
+    )
   end
 
   # Appends what the action of `pid` added to the branch (ADR 0048). The delta holds the rows that action wrote and no
