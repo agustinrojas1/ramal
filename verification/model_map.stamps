@@ -2,7 +2,7 @@
 # hash of the syntax tree of the functions the step models. A line that moved means the code of that step changed, and
 # whoever moved it checked the step in verification/tla against the new code (verification/README.md, ADR 0050).
 Cluster.tla:Crash  aba00d7436b5a919
-Cluster.tla:Heal  9f2cd4f009a7353c
+Cluster.tla:Heal  52df6911346db2fb
 Cluster.tla:Load  28a4abfe29622f5a
 Cluster.tla:Split  9bbfe9d6e6706b48
 Cluster.tla:Unload  042771e3ee4156be
@@ -11,7 +11,7 @@ Nested.tla:Abort  01af87e4cae971d4
 Nested.tla:Adopt  f8046927a9e85ccd
 Nested.tla:ChildWrite  0658134f13bd6909
 Nested.tla:Claim  8df1fa191401cf6a
-Nested.tla:Dies  f0632c59d0cf829d
+Nested.tla:Dies  57dae1a6dcaf0350
 Nested.tla:Finish  fcb5a19b07941cc4
 Nested.tla:Fork  da4090769d5072ef
 Nested.tla:NodeCrash  ef930fc65b9593ff
@@ -25,26 +25,26 @@ Ramal.tla:Close  94a3173bc07dcd5b
 Ramal.tla:Commit  3c1f4a0c9ae4a4bc
 Ramal.tla:Compact  20fea49dff2e7ade
 Ramal.tla:Crash  aba00d7436b5a919
-Ramal.tla:Down  17250b2aa5d7af24
+Ramal.tla:Down  129fc7228ca46257
 Ramal.tla:External  69674f60fd149d4a
 Ramal.tla:Fail  ef6e08e4852db684
 Ramal.tla:Finish  dc6a812471c5bb07
 Ramal.tla:Forget  192f7f8c7631ad44
 Ramal.tla:ForkIt  b667ae1a741e552e
-Ramal.tla:Idle  06e9c33a92823396
+Ramal.tla:Idle  4605b39481e5fa6e
 Ramal.tla:Kill  5dd29df0d60a5dc3
 Ramal.tla:MarkRefused  302197d2a935506e
-Ramal.tla:MergerDies  2a9b8517299b1ebf
+Ramal.tla:MergerDies  e6e900155b21f504
 Ramal.tla:NodeCrash  ef930fc65b9593ff
 Ramal.tla:Propose  d02678cc782b0d23
 Ramal.tla:Read  27adec9905c897eb
-Ramal.tla:Retract  a1a5bbd3382e8a13
+Ramal.tla:Retract  85f5dc9138153750
 Ramal.tla:Start  d4bf1052d410a691
-Ramal.tla:Succeed  37b68434ccc21f89
+Ramal.tla:Succeed  0bb0c3312bf907fa
 Ramal.tla:Usable  4ead262b1261e027
 Ramal.tla:Watcher  5a43bce3627bba19
-Ramal.tla:Write  149d8090e4a299b1
-Ramal.tla:WriteMore  d906adc6c64e23a8
+Ramal.tla:Write  821b08f4e611085c
+Ramal.tla:WriteMore  e8a04c9cdddc20f6
 model.bend:capture  620a4f2c9330ce75
 model.bend:put_created  cb2a0a9b0ef12143
 model.bend:put_deleted  542cc6caa1ec5842

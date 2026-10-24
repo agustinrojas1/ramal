@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- **`Ramal.run(branch, fun, atomic: true)`** (and `run!/3`) takes back the writes `fun` made when it raises, throws, exits or returns `{:error, _}`, and then re-raises or returns as it would without the option. A branch has no transaction, so until now the writes made before a failure stayed in it and the workaround was a fork per unit of work. The branch notes where its log and overlay stand and cuts them back, which is cheaper than a fork and leaves no `:discarded` record. It also works on a durable branch (it stores a snapshot that deletes the write log it covers) and restores the counter of generated keys. It is not isolation: use it from one process at a time on a branch. New `[:ramal, :branch, :rollback]` event and `:savepoint_lost` error reason ([ADR 0051](docs/adr/0051-atomic-run-takes-back-a-failed-runs-writes.md)).
+
 ## [0.9.1] - 2026-10-23
 
 A patch release with two fixes: a branch no longer accepts an update or destroy of another tenant's record, and a damaged stored branch no longer crashes `Ramal.get/1` or hides every branch from `Ramal.list/2`. Reads in a branch are also a little faster. Upgrading from 0.9.0 needs no step beyond the version (and `ramal_live ~> 0.9.1`, which shares it).
