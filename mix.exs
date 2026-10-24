@@ -105,7 +105,14 @@ defmodule Ramal.MixProject do
           "CHANGELOG.md"
         ] ++
           Path.wildcard("docs/adr/0*.md"),
-      groups_for_extras: [Guides: ~r/docs\/.*/]
+      groups_for_extras: [Guides: ~r/docs\/.*/],
+      skip_code_autolink_to: [
+        "Ramal.Resource.Verifier",
+        "Ramal.Storage.ETS.list/3",
+        "Ramal.Ash.do_filter/2",
+        "Ash.Query.do_filter/2"
+      ],
+
     ]
   end
 
