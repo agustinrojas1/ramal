@@ -227,15 +227,28 @@ defmodule Ramal.RelationshipFilterPropertyTest do
     Enum.at(keys, rem(index, length(keys)))
   end
 
-  defp apply_operation({:rename_paddock, index, name}, model) do
-    id = pick(model.paddocks, index)
+  defp rename_paddock(model, id, name) do
     Ash.update!(Ash.get!(Paddock, id, authorize?: false), %{name: name}, authorize?: false)
     put_in(model.paddocks[id], name)
   end
 
-  defp apply_operation({:create_paddock, name}, model) do
+  defp create_paddock(model, name) do
     paddock = Ash.create!(Paddock, %{name: name, capacity_head: 10}, authorize?: false)
     put_in(model.paddocks[paddock.id], name)
+  end
+
+  # A name another paddock holds is refused by the identity, in a branch as on the database: the operation is skipped.
+  defp taken?(model, name, id),
+    do: Enum.any?(model.paddocks, fn {other, taken} -> other != id and taken == name end)
+
+  defp apply_operation({:rename_paddock, index, name}, model) do
+    id = pick(model.paddocks, index)
+
+    if taken?(model, name, id), do: model, else: rename_paddock(model, id, name)
+  end
+
+  defp apply_operation({:create_paddock, name}, model) do
+    if taken?(model, name, nil), do: model, else: create_paddock(model, name)
   end
 
   defp apply_operation({:move_herd, herd_index, paddock_index}, model) do
