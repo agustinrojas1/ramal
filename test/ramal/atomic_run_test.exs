@@ -445,6 +445,64 @@ defmodule Ramal.AtomicRunTest do
       assert names(branch) == ["L07", "L18"]
     end
 
+    # A merge that took the writes of an atomic run before it ended would commit what the run is about to take back.
+    defp open_run(branch, outcome) do
+      test = self()
+
+      pid =
+        spawn(fn ->
+          atomic(branch, fn ->
+            paddock!(%{name: "half"})
+            send(test, :written)
+            receive do: (:go -> outcome)
+          end)
+        end)
+
+      assert_receive :written, 2_000
+      pid
+    end
+
+    defp paddock_names do
+      Paddock |> Ash.read!(authorize?: false) |> Enum.map(& &1.name) |> Enum.sort()
+    end
+
+    test "a merge waits for an open atomic run and replays nothing of one that failed", %{
+      branch: branch
+    } do
+      pid = open_run(branch, {:error, :nope})
+      merge = Task.async(fn -> Ramal.merge(branch, authorize?: false) end)
+      assert Task.yield(merge, 100) == nil
+
+      send(pid, :go)
+
+      assert {:ok, {:ok, %Ramal.Merge.Result{replayed: 0}}} = Task.yield(merge, 2_000)
+      assert paddock_names() == ["L07", "L18"]
+    end
+
+    test "a merge waits for an open atomic run and replays the writes it kept", %{branch: branch} do
+      pid = open_run(branch, {:ok, :done})
+      merge = Task.async(fn -> Ramal.merge(branch, authorize?: false) end)
+      assert Task.yield(merge, 100) == nil
+
+      send(pid, :go)
+
+      assert {:ok, {:ok, %Ramal.Merge.Result{replayed: 1}}} = Task.yield(merge, 2_000)
+      assert paddock_names() == ["L07", "L18", "half"]
+    end
+
+    test "a merge that waited for an atomic run whose caller died replays nothing of it", %{
+      branch: branch
+    } do
+      pid = open_run(branch, :unused)
+      merge = Task.async(fn -> Ramal.merge(branch, authorize?: false) end)
+      assert Task.yield(merge, 100) == nil
+
+      Process.exit(pid, :kill)
+
+      assert {:ok, {:ok, %Ramal.Merge.Result{replayed: 0}}} = Task.yield(merge, 2_000)
+      assert paddock_names() == ["L07", "L18"]
+    end
+
     test "answers :savepoint_lost for a branch that was restarted since", %{branch: branch} do
       {:ok, token} = Server.savepoint(branch.id)
       crash(branch.id)

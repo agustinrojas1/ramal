@@ -447,7 +447,7 @@ defmodule Ramal.Branch.Server do
   Marks the branch as it is now for the calling process, so that `rollback/2` can take back everything written since
   (`Ramal.run/3` with `atomic: true`). Until the savepoint is rolled back or dropped with `keep/2` the process does not
   unload, since the savepoint would be lost with it. If the calling process dies first, the writes since are taken back
-  as if it had been rolled back, unless the branch is then being merged (see `handle_info/2`).
+  as if it had been rolled back. A merge or a proposal waits for an open savepoint.
   """
   @spec savepoint(String.t()) :: {:ok, reference} | {:error, Error.t()}
   def savepoint(id), do: call(id, :savepoint)
@@ -902,9 +902,16 @@ defmodule Ramal.Branch.Server do
 
   def handle_call(:commit, _from, state), do: reply(state, :ok)
 
-  # A merge or a proposal of a branch with actions running waits for them, as a lock would; see wait/3.
-  def handle_call({kind, _arg} = request, from, %{running: running} = state)
-      when kind in [:begin_merge, :propose, :merge_source] and map_size(running) > 0 do
+  # A merge or a proposal of a branch with actions running, or an atomic run open, waits for them, as a lock would; see
+  # wait/3. An atomic run's writes stand until it keeps or rolls them back, so a merge that took them would commit
+  # what a failed run, or one whose owner dies, is about to take back (#252).
+  def handle_call(
+        {kind, _arg} = request,
+        from,
+        %{running: running, savepoints: savepoints} = state
+      )
+      when kind in [:begin_merge, :propose, :merge_source] and
+             (map_size(running) > 0 or map_size(savepoints) > 0) do
     if usable?(state),
       do: wait(state, from, request),
       else: reply(state, {:error, unavailable(state)})
@@ -1087,9 +1094,9 @@ defmodule Ramal.Branch.Server do
   end
 
   # The process of an atomic run died before the run settled, so nobody will keep its writes: they are taken back, as a
-  # database rolls back the transaction of a connection whose owner died (`Ramal.run/3`). Only while the branch is open
-  # and not being merged: a merge that is replaying the log has already read the writes, and a rollback would leave the
-  # state it stores different from the one it replayed.
+  # database rolls back the transaction of a connection whose owner died (`Ramal.run/3`). A merge waits for an open
+  # savepoint, so none is replaying the log now; the branch can still have been discarded or rejected meanwhile, and
+  # then there is nothing to roll back.
   def handle_info({:DOWN, token, :process, pid, _reason}, %{savepoints: savepoints} = state)
       when is_map_key(savepoints, token) do
     {savepoint, state} = pop_savepoint(state, token)
@@ -1140,6 +1147,7 @@ defmodule Ramal.Branch.Server do
 
   def handle_cast({:keep, token}, state) do
     {_savepoint, state} = pop_savepoint(state, token)
+    state = serve_waiting(state)
     {:noreply, state, timeout(state)}
   end
 
@@ -1304,8 +1312,11 @@ defmodule Ramal.Branch.Server do
     end
   end
 
-  defp answer_rollback({:ok, state}), do: reply(state, :ok)
-  defp answer_rollback({:compact, state}), do: {:reply, :ok, state, {:continue, :compact}}
+  defp answer_rollback({:ok, state}), do: state |> serve_waiting() |> reply(:ok)
+
+  defp answer_rollback({:compact, state}),
+    do: {:reply, :ok, serve_waiting(state), {:continue, :compact}}
+
   defp answer_rollback({:fenced, state, error}), do: {:stop, :normal, {:error, error}, state}
 
   # After a death, nobody is waiting for an answer, so the state is only handed on: the merges and proposals that waited
@@ -1431,9 +1442,12 @@ defmodule Ramal.Branch.Server do
     {:noreply, state, timeout(state)}
   end
 
-  # Once no action runs, the waiting requests are handled in the order they came, as if they had come now.
-  defp serve_waiting(%{running: running, waiting: [_ | _] = waiting} = state)
-       when map_size(running) == 0 do
+  # Once no action runs and no atomic run is open, the waiting requests are handled in the order they came, as if they
+  # had come now.
+  defp serve_waiting(
+         %{running: running, savepoints: savepoints, waiting: [_ | _] = waiting} = state
+       )
+       when map_size(running) == 0 and map_size(savepoints) == 0 do
     serve(waiting, %{state | waiting: []})
   end
 
@@ -1489,7 +1503,8 @@ defmodule Ramal.Branch.Server do
   defp busy_error(state) do
     Error.new(
       :timeout,
-      "branch #{inspect(state.branch.id)} still had actions running after #{@wait_timeout} ms; nothing was done",
+      "branch #{inspect(state.branch.id)} still had actions running or an atomic run open after #{@wait_timeout} ms; " <>
+        "nothing was done",
       %{id: state.branch.id, timeout: @wait_timeout}
     )
   end

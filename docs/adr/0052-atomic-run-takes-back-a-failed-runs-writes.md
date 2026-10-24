@@ -19,9 +19,9 @@ runs: once it ends, its undos are gone.
   touched (`Ramal.Branch.rollback/2`); the failure then goes on as it would have (re-raised, or returned unchanged).
   Anything else keeps the writes.
 - The savepoint is keyed by a monitor of the calling process: its death rolls the branch back to the savepoint, as if the
-  run had failed, unless the branch is being merged at that moment (the merge has already read the writes). The branch
-  process does not unload for being idle while one is open, since a load from storage would not have it. A restarted process answers
-  `:savepoint_lost`.
+  run had failed. A merge or a proposal waits for an open savepoint, as it waits for a running action, so it never takes
+  the writes of a run that has not ended (#252). The branch process does not unload for being idle while one is open,
+  since a load from storage would not have it. A restarted process answers `:savepoint_lost`.
 - A durable branch has already appended the deltas of the actions that ended in `fun`, and the write log only grows. The
   rollback stores a snapshot of the branch, which deletes the deltas it covers (the `Compact` rule), before it answers. A
   snapshot the storage refuses is reported as `[:ramal, :branch, :persist_failed]` with `reason: :rollback` and retried by
