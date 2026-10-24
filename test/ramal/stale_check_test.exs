@@ -189,6 +189,66 @@ defmodule Ramal.StaleCheckTest do
     end
   end
 
+  describe "a proposed branch" do
+    setup %{branch: branch} do
+      {:ok, _} = Ramal.propose(branch, proposed_by: "ana", reason: "count")
+      :ok
+    end
+
+    test "stale/2 checks it, with and without locks", %{branch: branch, herds: herds} do
+      assert {:ok, []} = Ramal.stale(branch)
+      assert {:ok, {:ok, []}} = TestRepo.transaction(fn -> Ramal.stale(branch, lock: true) end)
+
+      assert locking_selects(fn ->
+               TestRepo.transaction(fn -> Ramal.stale(branch, lock: true) end)
+             end) == 1
+
+      Ash.update!(herds.r9, %{head: 50}, authorize?: false)
+      assert {:ok, [%{resource: Herd, reason: :changed}]} = Ramal.stale(branch)
+      assert {:ok, %{status: :proposed}} = Ramal.get(branch.id)
+    end
+
+    test "mark_merged/2 stores it as merged with the decision recorded", %{branch: branch} do
+      test = self()
+
+      :telemetry.attach_many(
+        "mark-merged-#{inspect(test)}",
+        [[:ramal, :branch, :mark_merged], [:ramal, :branch, :approve]],
+        fn event, _measurements, %{branch_id: id}, _config -> send(test, {:event, event, id}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach("mark-merged-#{inspect(test)}") end)
+      before = snapshot()
+
+      assert {:ok, %Ramal.Branch{status: :merged, proposal: %{decision: decision}}} =
+               Ramal.mark_merged(branch, decided_by: "bo", reason: "committed by hand")
+
+      assert %{status: :approved, by: "bo", reason: "committed by hand", replayed: 0, stale: []} =
+               decision
+
+      assert %DateTime{} = decision.at
+      assert snapshot() == before
+
+      assert_received {:event, [:ramal, :branch, :mark_merged], id} when id == branch.id
+      assert_received {:event, [:ramal, :branch, :approve], id} when id == branch.id
+
+      assert {:ok, %{status: :merged, proposal: %{decision: %{status: :approved}}}} =
+               Ramal.get(branch.id)
+
+      assert {:ok, listed} = Ramal.list(Farm, status: :merged)
+      assert branch.id in Enum.map(listed, & &1.id)
+      assert {:error, %Error{reason: :not_open}} = Ramal.mark_merged(branch)
+      assert {:error, %Error{reason: :not_open}} = Ramal.approve(branch, authorize?: false)
+    end
+
+    test "a rejected branch is not taken", %{branch: branch} do
+      {:ok, _} = Ramal.reject(branch, decided_by: "bo")
+      assert {:error, %Error{reason: :not_open}} = Ramal.mark_merged(branch)
+      assert {:error, %Error{reason: :not_open}} = Ramal.stale(branch)
+    end
+  end
+
   describe "a nested fork" do
     test "merges into its parent, so neither call applies", %{branch: branch} do
       {:ok, fork} = Ramal.fork(branch, nested: true)

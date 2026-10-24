@@ -655,6 +655,8 @@ defmodule Ramal do
   branch first saw them: the staleness check `merge/2` runs, on its own, for a host that commits through its own
   command layer instead of letting `merge/2` replay the Ash log.
 
+  The branch may be open or proposed.
+
   Returns `{:ok, []}` when nothing is stale, or `{:ok, rows}` with `%{resource: module, key: term, reason: :changed |
   :deleted}` for each stale row. The branch stays open and unchanged. Use `mark_merged/1` after the host's own commit.
 
@@ -683,19 +685,34 @@ defmodule Ramal do
   def stale(branch_or_id, opts \\ []), do: branch_or_id |> id_of() |> Ramal.Merge.stale(opts)
 
   @doc """
-  Experimental (ADR 0051, `docs/STABILITY.md`). Stores an open branch as `:merged` without replaying its log, after the
-  host applied the branch's work through its own commands (see `stale/2`), so `list/2` and the inspector show it as
-  merged. Its process stops. Returns the merged branch.
+  Experimental (ADR 0051, `docs/STABILITY.md`). Stores an open or proposed branch as `:merged` without replaying its log,
+  after the host applied the branch's work through its own commands (see `stale/2`), so `list/2` and the inspector show
+  it as merged. Its process stops. Returns the merged branch.
+
+  A proposed branch is approved as `approve/2` does it, without the replay: the decision (who, why, when) is recorded on
+  the branch and shows in `list/2` and the inspector, and the `[:ramal, :branch, :approve]` event is emitted as well as
+  `[:ramal, :branch, :mark_merged]`. That lets a host keep a branch `:proposed` while it is under review and still commit
+  it through its own commands.
 
   Call it after the host's transaction committed. It is a separate step from that commit, so a crash between the two
   leaves the branch open: running `stale/2` on it then reports the rows the host's commands changed.
 
+  ## Options
+
+    * `:decided_by` - who approves a proposed branch, default `nil`
+    * `:reason` - why, a string, default `nil`
+
+  Both are ignored for an open branch.
+
   ## Example
 
       {:ok, %Ramal.Branch{status: :merged}} = Ramal.mark_merged(branch)
+
+      {:ok, %Ramal.Branch{status: :merged}} = Ramal.mark_merged(proposed, decided_by: manager, reason: "checked")
   """
-  @spec mark_merged(branch_or_id) :: {:ok, Branch.t()} | {:error, Error.t()}
-  def mark_merged(branch_or_id), do: branch_or_id |> id_of() |> Ramal.Merge.mark_merged()
+  @spec mark_merged(branch_or_id, keyword) :: {:ok, Branch.t()} | {:error, Error.t()}
+  def mark_merged(branch_or_id, opts \\ []),
+    do: branch_or_id |> id_of() |> Ramal.Merge.mark_branch_merged(opts)
 
   @doc """
   Proposes an open branch for a decision: the branch is frozen (status `:proposed`, no more reads, writes or forks) and

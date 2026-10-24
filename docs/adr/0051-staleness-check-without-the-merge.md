@@ -61,3 +61,11 @@ are unchanged). The new path is made of modelled steps and one step outside the 
   extend to the host's commit.
 - The host must not call `merge/2` on a branch it committed itself: after `mark_merged/1` it is `:not_open`, before it
   the replay would write the same changes twice.
+
+## Update: proposed branches (0.10.1, #225)
+
+`stale/2` and `mark_merged` accept a `:proposed` branch as well as an open one, so a host can keep a branch frozen for
+review (`propose/2`) and still commit it through its own commands. `stale/2` only reads. `mark_merged(branch,
+decided_by: who, reason: why)` claims a proposed branch from `:proposed`, and its `:merged` write adds the approval
+`approve/2` records (who, why, when, `replayed: 0`, no stale rows), without a replay. The claim, the persistence and the
+failure handling are the merge's own, so `Ramal.tla` is unchanged.
