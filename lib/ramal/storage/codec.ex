@@ -29,9 +29,9 @@ defmodule Ramal.Storage.Codec do
     * Atoms are read back with `String.to_existing_atom/1`, never created. Module names are found through the code
       path when the atom does not exist yet (a fresh VM has not loaded the host's modules), so a module that is not on
       the path is an error, not a new atom. Modules are loaded as they are named, before the values that follow them
-      are read, which brings in the atoms they mention. Loading a module runs its `@on_load` callback, so a stored module
-      name runs that module's code; SECURITY.md ("Code loading") names this trust boundary and why loading is not limited
-      to modules already loaded. An atom that no loaded module mentions (a metadata key that
+      are read, which brings in the atoms they mention. A module whose code has an `@on_load` callback is not loaded from
+      stored state (its callback would run), so it fails the load with `:storage` unless the host loaded it first; the
+      check reads the beam file and runs nothing (SECURITY.md, "Code loading"). An atom that no loaded module mentions (a metadata key that
       only a host controller uses, say, in a VM that has not loaded that controller) fails the load with
       `:storage` and names the atom; string keys never have this problem.
 
@@ -912,9 +912,11 @@ defmodule Ramal.Storage.Codec do
   # module also brings in the atoms it mentions (attribute names, roles in its policies), which the atoms stored in
   # action input and actors usually are.
   #
-  # Loading runs the module's `@on_load` callback. That is accepted, not an oversight (SECURITY.md, "Code loading"):
-  # the only loaded code a stored name can reach is code the host compiled or depends on, and limiting the load to
-  # modules already loaded would make a fresh VM fail to decode a resource it has not loaded yet.
+  # A module that is not loaded yet is loaded only when its code has no `@on_load` callback, which would run the moment
+  # it loads (issue #237). The check reads the beam file with `:erlang.prepare_loading/2` and asks
+  # `:erlang.has_prepared_code_on_load/1`, which loads nothing and runs nothing; the beam's
+  # attributes do not list `@on_load`. A fresh VM, or one that loads modules on first use, still decodes the host's own
+  # resources and types, and a module that is already loaded is not looked at again: its `@on_load` has run.
   defp module!(name) do
     # `:code.where_is_file/1` joins the name onto each code path directory, so a stored `Elixir.../../x` would probe
     # files outside of them. A module name has no separators.
@@ -934,7 +936,31 @@ defmodule Ramal.Storage.Codec do
           end
       end
 
-    Code.ensure_loaded(module)
+    load!(module, name)
     module
+  end
+
+  # A name that is an atom without a module behind it (a calendar module named in a date, say) is a value like any
+  # other and is accepted, as `Code.ensure_loaded/1` would have found nothing to load.
+  defp load!(module, name) do
+    unless Code.loaded?(module) do
+      with {^module, binary, _file} <- :code.get_object_code(module),
+           prepared when is_reference(prepared) <- :erlang.prepare_loading(module, binary),
+           false <- :erlang.has_prepared_code_on_load(prepared) do
+        Code.ensure_loaded(module)
+      else
+        true ->
+          throw(
+            {:codec,
+             "the module #{name} has an @on_load callback, and reading stored state does not run one; load it " <>
+               "before reading the branch"}
+          )
+
+        _no_beam_or_bad_beam ->
+          :ok
+      end
+    end
+
+    :ok
   end
 end
