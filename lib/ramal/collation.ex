@@ -246,7 +246,9 @@ defmodule Ramal.Collation do
     if per_tenant? do
       catalog(repo, schema, table, column)
     else
-      cached({__MODULE__, repo, schema, table, column}, fn ->
+      # The dynamic repo is part of the key: one repo module can run on several databases (`put_dynamic_repo/1`), and
+      # each may collate the column differently.
+      cached({__MODULE__, repo, repo.get_dynamic_repo(), schema, table, column}, fn ->
         catalog(repo, schema, table, column)
       end)
     end

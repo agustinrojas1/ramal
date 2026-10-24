@@ -474,7 +474,7 @@ defmodule Ramal.CollationTest do
 
     test "the collation of a column is read once", %{branch: branch} do
       seed!(branch)
-      :persistent_term.erase({Collation, TestRepo, nil, "tags", "name"})
+      :persistent_term.erase({Collation, TestRepo, TestRepo, nil, "tags", "name"})
       capture_queries()
 
       inside(branch, fn ->
@@ -485,6 +485,33 @@ defmodule Ramal.CollationTest do
       queries = all_queries()
       assert length(Enum.filter(queries, fn {sql, _} -> sql =~ "pg_attribute" end)) == 1
       assert length(ranking_queries(queries)) == 2
+    end
+
+    test "each dynamic repo reads the collation of its own database", %{branch: branch} do
+      seed!(branch)
+      :persistent_term.erase({Collation, TestRepo, TestRepo, nil, "tags", "name"})
+
+      start_supervised!(
+        {TestRepo, name: :collation_other_repo, pool: DBConnection.ConnectionPool, pool_size: 1}
+      )
+
+      on_exit(fn ->
+        TestRepo.put_dynamic_repo(TestRepo)
+        :persistent_term.erase({Collation, TestRepo, :collation_other_repo, nil, "tags", "name"})
+      end)
+
+      capture_queries()
+
+      inside(branch, fn ->
+        sorted(name: :asc)
+        TestRepo.put_dynamic_repo(:collation_other_repo)
+        sorted(name: :asc)
+        sorted(name: :desc)
+        TestRepo.put_dynamic_repo(TestRepo)
+      end)
+
+      queries = all_queries()
+      assert length(Enum.filter(queries, fn {sql, _} -> sql =~ "pg_attribute" end)) == 2
     end
 
     test "a failing query is an error and not a wrong order", %{branch: branch} do
@@ -622,7 +649,7 @@ defmodule Ramal.CollationTest do
 
   # Makes the collation of a column of `tags` come from a repo whose queries fail.
   defp break_collation_of(column) do
-    key = {Collation, TestRepo, nil, "tags", to_string(column)}
+    key = {Collation, TestRepo, TestRepo, nil, "tags", to_string(column)}
     cached = :persistent_term.get(key, nil)
     :persistent_term.put(key, %{repo: Ramal.Test.BrokenRepo, collate: nil, lower?: false})
 
