@@ -130,8 +130,10 @@ defmodule Ramal.Preparation.ManyToMany do
   defp parent_expr?(relationship),
     do: Ramal.Ash.has_parent_expr?(relationship)
 
+  # `offset` is 0 until one is set (`Ash.Query` gives it that default), so it is the one key that says nothing by being
+  # non-nil.
   defp paging?(query),
-    do: query.page not in [nil, false] or query.limit != nil or query.offset != nil
+    do: query.page not in [nil, false] or query.limit != nil or query.offset > 0
 
   # Whether the branch changed a resource the load reads: the join resource, or the destination of a load that is
   # limited per source (the database's join is right for an unlimited one, which Ramal patches like any read).

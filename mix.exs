@@ -19,7 +19,9 @@ defmodule Ramal.MixProject do
       source_url: @source_url,
       homepage_url: @source_url,
       docs: docs(),
-      package: package()
+      package: package(),
+      # The `mix` tasks call `Mix.*`, which is not in the PLT Dialyxir builds from the project's dependencies.
+      dialyzer: [plt_add_apps: [:mix]]
     ]
   end
 
@@ -51,7 +53,10 @@ defmodule Ramal.MixProject do
       # only uses it in the property tests.
       {:stream_data, "~> 1.1"},
       {:ex_doc, "~> 0.38", only: :dev, runtime: false},
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      # Success typing on top of the compiler: the seams into Ash internals and the storage backends are where a wrong
+      # arity or a forgotten `{:error, _}` branch would not show until a branch is running. CI job `dialyzer`.
+      {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
     ]
   end
 
@@ -100,7 +105,13 @@ defmodule Ramal.MixProject do
           "CHANGELOG.md"
         ] ++
           Path.wildcard("docs/adr/0*.md"),
-      groups_for_extras: [Guides: ~r/docs\/.*/]
+      groups_for_extras: [Guides: ~r/docs\/.*/],
+      skip_code_autolink_to: [
+        "Ramal.Resource.Verifier",
+        "Ramal.Storage.ETS.list/3",
+        "Ramal.Ash.do_filter/2",
+        "Ash.Query.do_filter/2"
+      ]
     ]
   end
 

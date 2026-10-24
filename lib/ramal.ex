@@ -902,14 +902,14 @@ defmodule Ramal do
   @spec delete(branch_or_id) :: :ok | {:error, Error.t()}
   def delete(branch_or_id), do: branch_or_id |> id_of() |> Server.purge()
 
-  # Writes inside a branch queue their notifications exactly as writes inside `Ash.transaction/3` do: nothing is sent
-  # until the outermost transaction ends. `Ash.transaction/3` with no resources opens no database transaction and,
-  # with `return_notifications?: true`, hands the queue back instead of sending it. Only resources that opted in with
-  # `notify_in_branch? true` get theirs sent.
+  # Writes inside a branch queue their notifications exactly as writes inside `Ash.transact/3` do: nothing is sent
+  # until the outermost transaction ends. `Ash.transact/3` with no resources opens no database transaction (the clause
+  # for `[]` in `Ash.DataLayer.transaction/5` just runs the function) and, with `return_notifications?: true`, hands
+  # the queue back instead of sending it. Only resources that opted in with `notify_in_branch? true` get theirs sent.
   # `keep?` decides from the result whether the notifications are sent: those of a rolled-back run never are.
   defp collect_notifications(id, fun, keep?) do
     {:ok, result, notifications} =
-      Ash.transaction([], fn -> Current.with_branch(id, fun) end, return_notifications?: true)
+      Ash.transact([], fn -> Current.with_branch(id, fun) end, return_notifications?: true)
 
     if keep?.(result) do
       notifications

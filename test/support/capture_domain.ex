@@ -59,6 +59,12 @@ defmodule Ramal.Test.Capture.Slug do
     data_layer: Ash.DataLayer.Ets,
     extensions: [Ramal.Resource]
 
+  # This key is the case the resource exists for: a create inside a branch must fail with `:database_generated_key`
+  # (test/ramal/capture_test.exs). The compile-time warning would repeat on every build of the suite.
+  ramal do
+    warnings?(false)
+  end
+
   actions do
     defaults([:read, :destroy, create: :*, update: :*])
   end

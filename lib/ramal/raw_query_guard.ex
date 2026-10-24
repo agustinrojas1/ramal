@@ -145,21 +145,18 @@ defmodule Ramal.RawQueryGuard do
   end
 
   # A query runs under a dozen frames of Ecto, DBConnection and AshPostgres, so the default depth of 8 would never reach
-  # the call site. OTP 26 and later take a depth for `current_stacktrace`; before that the only way is the node-wide
-  # `backtrace_depth` flag, raised for the one call and put back.
+  # the call site. There is no per-call depth: `{:current_stacktrace, depth}` is not a `process_info_item()` and raises
+  # on OTP 28 (`erlang.erl`, the type of `process_info/2`), so the node-wide `backtrace_depth` flag is raised for this
+  # one call and put back. This guard is opt-in development tooling, so the cost is paid only where it is turned on.
   defp stacktrace do
-    {:current_stacktrace, stacktrace} = Process.info(self(), {:current_stacktrace, @depth})
-    stacktrace
-  rescue
-    ArgumentError ->
-      previous = :erlang.system_flag(:backtrace_depth, @depth)
+    previous = :erlang.system_flag(:backtrace_depth, @depth)
 
-      try do
-        {:current_stacktrace, stacktrace} = Process.info(self(), :current_stacktrace)
-        stacktrace
-      after
-        :erlang.system_flag(:backtrace_depth, previous)
-      end
+    try do
+      {:current_stacktrace, stacktrace} = Process.info(self(), :current_stacktrace)
+      stacktrace
+    after
+      :erlang.system_flag(:backtrace_depth, previous)
+    end
   end
 
   defp report(mode, branch_id, repo, table, resource, metadata, stacktrace) do

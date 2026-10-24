@@ -1,6 +1,6 @@
 # Ramal design
 
-Status: describes Ramal 0.9. First written 2026-10-22. This document is the current state of the design; the history of
+Status: describes Ramal 0.10. First written 2026-10-22. This document is the current state of the design; the history of
 decisions lives in `docs/adr/`. Where this document and the code disagree, open an issue: one of them is wrong.
 
 Marks: **[confirm]** flagged an Ash behaviour the implementer had to verify against the locked version before relying
@@ -52,7 +52,13 @@ module that captures writes, section 4.2, is `Ramal.Capture`; the name `Ramal.Ch
 ## 3. Process model
 
 - `Ramal.Supervisor` (a `DynamicSupervisor` plus a `Registry` keyed by branch id). The host adds it to its tree:
-  `{Ramal.Supervisor, storage: Ramal.Storage.Postgres, repo: MyApp.Repo}`.
+  `{Ramal.Supervisor, storage: Ramal.Storage.Postgres, repo: MyApp.Repo}`. Its tables are created once, with
+  `read_concurrency` and `write_concurrency: :auto`, because they take reads and writes from every branch process.
+- `:persistent_term` holds what is written once and read on every path: the supervisor's configuration, the collation
+  of a column (section 4.1) and the ids of the Ash assumptions found broken at boot. Mutable state never goes there:
+  the rate counters of the limits, the marks and the storage live in ETS or in the storage itself. An update of an
+  existing `:persistent_term` key forces a global GC pass over every process, which is the cost a counter must not
+  pay.
 - Ramal.Cluster (internal): with `cluster: true` the branch registry is `:global` instead of the `Registry`, and
   this is its `:via` module and the resolver that decides which process keeps a name two nodes both registered
   (section 6, ADR 0044).
@@ -103,7 +109,10 @@ preparation to every read action and one global change to every create, update a
 never be branchable, for example). `Ramal.branch/2` refuses a domain with no branchable resource (`:no_branchable_resources`). That check runs when the
 branch is created, not as a compile-time domain verifier: a verifier would need the domain to opt into an extension
 of its own, which 0.1 does not ask of the host. The transformer is Ramal.Resource.Transformer (`@moduledoc false`);
-Spark needs a module for it.
+Spark needs a module for it. A verifier, Ramal.Resource.Verifier (`@moduledoc false`), warns at compile time about the
+parts of a resource a branch can handle only in part (a database-generated key with no placeholder, a `custom`
+aggregate); a resource that keeps such a limitation on purpose sets `warnings? false`, and the warning changes no
+behaviour.
 
 Both hooks are no-ops when no branch is current. A test per hook proves that: the same action, with and without the
 extension, produces byte-identical results when no branch is active.

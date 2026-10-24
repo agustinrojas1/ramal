@@ -46,6 +46,26 @@ defmodule Ramal.Storage.ETSTest do
     assert ETS.list(MyApp.Other, [], []) == {:ok, [other_domain]}
   end
 
+  test "a branch that changes status is listed under the new one only" do
+    branch = Branch.new(MyApp.Farm)
+    :ok = ETS.put(branch, [])
+    assert ETS.list(MyApp.Farm, [status: :open], []) == {:ok, [branch]}
+
+    proposed = %{branch | status: :proposed}
+    :ok = ETS.put(proposed, [])
+    assert ETS.list(MyApp.Farm, [status: :open], []) == {:ok, []}
+    assert ETS.list(MyApp.Farm, [status: :proposed], []) == {:ok, [proposed]}
+
+    # `mark_merged/2` writes the row without going through `put/2`, so it moves the index entry itself.
+    :ok = ETS.mark_merged(proposed, [])
+    assert ETS.list(MyApp.Farm, [status: :proposed], []) == {:ok, []}
+    assert {:ok, [%{status: :merged}]} = ETS.list(MyApp.Farm, [status: :merged], [])
+    assert {:ok, [%{status: :merged}]} = ETS.list(MyApp.Farm, [], [])
+
+    :ok = ETS.delete(branch.id, [])
+    assert ETS.list(MyApp.Farm, [], []) == {:ok, []}
+  end
+
   test "count returns how many branches of one domain have one of the statuses" do
     branches = [
       Branch.new(MyApp.Farm),

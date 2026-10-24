@@ -23,6 +23,14 @@ defmodule Ramal.Resource do
   The extension only installs hooks. They do nothing unless the calling process is inside `Ramal.run/2`, so a
   resource behaves exactly as before outside a branch.
 
+  Compiling the resource also warns about the parts of it a branch can handle only in part: a primary key the database
+  generates with no placeholder a branch can use, or a `custom` aggregate, whose value a branch keeps from the
+  database. A resource that keeps such a limitation on purpose turns the warning off:
+
+      ramal do
+        warnings?(false)
+      end
+
   What the transformer installs, confirmed against the locked Ash 3.37 source:
 
     * a global preparation, appended with `Ash.Resource.Builder.add_preparation/2`, which Ash applies to every read
@@ -55,13 +63,21 @@ defmodule Ramal.Resource do
         doc:
           "Whether notifications for writes to this resource are sent when `Ramal.run/2` returns. Off by default: " <>
             "a notifier that sends an email for \"herd moved\" must not fire for a what-if."
+      ],
+      warnings?: [
+        type: :boolean,
+        default: true,
+        doc:
+          "Whether compiling this resource warns about the parts of it a branch can only handle in part, such as a " <>
+            "primary key the database generates. Set to `false` for a resource that keeps such a limitation on purpose."
       ]
     ]
   }
 
   use Spark.Dsl.Extension,
     sections: [@ramal],
-    transformers: [Ramal.Resource.Transformer]
+    transformers: [Ramal.Resource.Transformer],
+    verifiers: [Ramal.Resource.Verifier]
 
   alias Ramal.Branch.Server
   alias Spark.Dsl.Extension

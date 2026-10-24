@@ -412,6 +412,34 @@ defmodule Ramal.BranchProcessesTest do
     end
   end
 
+  describe "the tables" do
+    test "take concurrent readers and writers" do
+      for table <- [ETS, ETS.index_table(), ETS.writes_table(), RamalSupervisor] do
+        assert :ets.info(table, :read_concurrency) == true
+        assert :ets.info(table, :write_concurrency) == :auto
+      end
+    end
+  end
+
+  describe "the process of a branch" do
+    test "is labelled with its id and its domain" do
+      {:ok, branch} = Ramal.branch(Farm)
+      pid = RamalSupervisor.whereis(branch.id)
+
+      assert :proc_lib.get_label(pid) == {:ramal_branch, branch.id, Farm}
+    end
+
+    test "carries the supervisor's heap limit" do
+      {:ok, branch} = Ramal.branch(Farm)
+      pid = RamalSupervisor.whereis(branch.id)
+      config = Ramal.Supervisor.build_config([])
+
+      assert {:garbage_collection, gc} = Process.info(pid, :garbage_collection)
+      assert %{size: size, kill: true} = gc[:max_heap_size]
+      assert size == config.max_heap_size
+    end
+  end
+
   describe "max_heap_size" do
     @describetag supervisor: [max_heap_size: 40_000]
 
