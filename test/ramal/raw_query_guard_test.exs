@@ -91,6 +91,19 @@ defmodule Ramal.RawQueryGuardTest do
       assert_received {:detected, %{table: "paddocks"}}
     end
 
+    test "hand-written SQL is reported whether or not it quotes the table" do
+      for sql <- [
+            "select count(*) from paddocks",
+            "SELECT 1 FROM public.paddocks",
+            "UPDATE paddocks SET name = name WHERE false",
+            "SELECT 1 FROM pg_tables t, paddocks p WHERE false",
+            "WITH p AS (SELECT id FROM paddocks) SELECT * FROM p"
+          ] do
+        assert {:ok, _} = in_branch(fn -> SQL.query!(TestRepo, sql) end)
+        assert_received {:detected, %{table: "paddocks"}}
+      end
+    end
+
     test "a raw write is reported too" do
       assert {:ok, _} =
                in_branch(fn ->
@@ -222,6 +235,38 @@ defmodule Ramal.RawQueryGuardTest do
             ~s(DELETE FROM "paddocks" AS p0)
           ] do
         assert RawQueryGuard.sql_names_table?(sql, "paddocks"), sql
+      end
+    end
+
+    test "sees a table whose name is not quoted, in any case, and one after a comma in a FROM list" do
+      for sql <- [
+            "SELECT 1 FROM paddocks",
+            "select * from paddocks where name = $1",
+            "SELECT 1 FROM public.paddocks p",
+            ~s(SELECT 1 FROM "public".paddocks p),
+            "update paddocks set name = $1",
+            "UPDATE ONLY paddocks SET name = $1",
+            "INSERT INTO PADDOCKS (name) VALUES ($1)",
+            "SELECT 1 FROM herds h, paddocks p WHERE h.paddock_id = p.id",
+            ~s(SELECT 1 FROM herds h, "public"."paddocks" p),
+            "SELECT 1 FROM herds h, other o, paddocks p",
+            "WITH old AS (SELECT id FROM paddocks) SELECT * FROM old",
+            "SELECT 1 FROM herds h JOIN paddocks p ON true"
+          ] do
+        assert RawQueryGuard.sql_names_table?(sql, "paddocks"), sql
+      end
+    end
+
+    test "ignores a name that is only part of another one, or a column after a comma" do
+      for sql <- [
+            "SELECT 1 FROM paddocks_archive",
+            "SELECT 1 FROM old_paddocks",
+            "SELECT 1 FROM herds h WHERE h.name = 'paddocks'",
+            "SELECT name, paddocks FROM herds",
+            "SELECT 1 FROM herds h, other WHERE other.paddocks = 1",
+            ~s(SELECT 1 FROM "paddocks_archive")
+          ] do
+        refute RawQueryGuard.sql_names_table?(sql, "paddocks"), sql
       end
     end
 

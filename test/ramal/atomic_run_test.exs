@@ -3,7 +3,7 @@ defmodule Ramal.AtomicRunTest do
   # and named, so these tests cannot run concurrently.
   use Ramal.DataCase, async: false
 
-  import Ramal.BranchCase, only: [capture_branch_events: 0, crash: 1]
+  import Ramal.BranchCase, only: [capture_branch_events: 0, crash: 1, eventually: 1]
 
   alias Ramal.Branch.Server
   alias Ramal.Error
@@ -421,6 +421,30 @@ defmodule Ramal.AtomicRunTest do
       assert {:error, %Error{reason: :savepoint_lost}} = Server.rollback(branch.id, token)
     end
 
+    test "takes back the writes of an atomic run whose caller died before it ended", %{
+      branch: branch
+    } do
+      test = self()
+
+      pid =
+        spawn(fn ->
+          atomic(branch, fn ->
+            paddock!(%{name: "half"})
+            send(test, :written)
+            receive do: (:never -> :ok)
+          end)
+        end)
+
+      assert_receive :written, 2_000
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+
+      eventually(fn -> diff(branch) == [] end)
+      assert state(branch).log == []
+      assert names(branch) == ["L07", "L18"]
+    end
+
     test "answers :savepoint_lost for a branch that was restarted since", %{branch: branch} do
       {:ok, token} = Server.savepoint(branch.id)
       crash(branch.id)
@@ -473,6 +497,34 @@ defmodule Ramal.AtomicRunTest do
       assert recovered.overlay == before.overlay
       assert recovered.log == before.log
       assert recovered.wal == before.wal
+      assert [%{kind: :created}] = diff(branch)
+    end
+
+    test "takes back the actions of a run whose caller died, also after a crash", %{
+      durable: branch
+    } do
+      Ramal.run!(branch, fn -> paddock!(%{name: "kept"}) end)
+      test = self()
+
+      pid =
+        spawn(fn ->
+          atomic(branch, fn ->
+            paddock!(%{name: "second"})
+            send(test, :written)
+            receive do: (:never -> :ok)
+          end)
+        end)
+
+      assert_receive :written, 2_000
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+
+      eventually(fn -> match?([%{kind: :created}], diff(branch)) end)
+      before = state(branch)
+      crash(branch.id)
+
+      assert state(branch).overlay == before.overlay
       assert [%{kind: :created}] = diff(branch)
     end
 

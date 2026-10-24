@@ -114,7 +114,8 @@ defmodule Ramal.Storage do
   Optional, with `c:append/4`. A stored snapshot makes the deltas it covers (`seq <= wal`) dead: `c:put/2` deletes
   them, and this callback never returns them, even if the delete did not happen. For a branch whose `epoch` is not `nil`
   it answers `{:error, %Ramal.Error{reason: :fenced}}` when the stored epoch is another one, instead of a log that the
-  newer holder may have changed.
+  newer holder may have changed, and `{:error, %Ramal.Error{reason: :not_found}}` when the branch is no longer stored:
+  a log read of a deleted branch is not an empty one.
   """
   @callback writes_after(Branch.t(), config) ::
               {:ok, [{pos_integer, Branch.delta()}]} | {:error, Error.t()}

@@ -588,7 +588,8 @@ defmodule Ramal do
         outside_branch(query, spec, opts)
 
       {:ok, keys} ->
-        if kind not in [:first, :list] and Ramal.Aggregate.applies?(query, length(keys)) do
+        if kind not in [:first, :list] and not distinct_count?(spec) and
+             Ramal.Aggregate.applies?(query, length(keys)) do
           Ramal.Aggregate.delta(query, kind, field, opts, keys)
         else
           read_every_row(query, spec, opts)
@@ -609,7 +610,16 @@ defmodule Ramal do
     end
   end
 
-  defp outside_branch(query, {:count, _field, _shape}, opts), do: Ash.count(query, opts)
+  # The counts of distinct values of the base rows and of the overlay overlap, so they cannot be added: the delta path
+  # leaves a distinct count to the read path, which counts the values themselves (ADR 0039).
+  defp distinct_count?({:count, field, shape}), do: field != nil and shape[:uniq?] == true
+  defp distinct_count?(_spec), do: false
+
+  defp outside_branch(query, {:count, field, _shape} = spec, opts) do
+    distinct = if distinct_count?(spec), do: [field: field, uniq?: true], else: []
+    Ash.count(query, distinct ++ opts)
+  end
+
   defp outside_branch(query, {:exists, _field, _shape}, opts), do: Ash.exists(query, opts)
 
   defp outside_branch(query, {:list, field, shape}, opts),

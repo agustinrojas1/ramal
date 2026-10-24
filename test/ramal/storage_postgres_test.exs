@@ -129,6 +129,16 @@ defmodule Ramal.Storage.PostgresTest do
       assert {:error, %Error{reason: :storage}} = Postgres.count(Farm, [:open], [])
     end
 
+    test "a status or domain that is not an atom is a :storage error, not a raise" do
+      assert {:error, %Error{reason: :storage, message: message}} =
+               Postgres.list(Farm, [status: "open"], @config)
+
+      assert message =~ ":open"
+      assert {:error, %Error{reason: :storage}} = Postgres.count(Farm, ["open"], @config)
+      assert {:error, %Error{reason: :storage}} = Postgres.list("Farm", [], @config)
+      assert {:error, %Error{reason: :storage}} = Postgres.list(Farm, [owner: self()], @config)
+    end
+
     test "a missing :repo is a :storage error that says how to configure it" do
       assert {:error, %Error{reason: :storage, message: message}} = Postgres.put(branch(), [])
       assert message =~ "repo: MyApp.Repo"
@@ -269,6 +279,14 @@ defmodule Ramal.Storage.PostgresTest do
 
       assert Postgres.append(held, 1, delta(1), @config) == :ok
       assert Postgres.writes_after(held, @config) == {:ok, [{1, delta(1)}]}
+    end
+
+    test "the write log of a branch that was deleted after its claim is :not_found, not an empty log",
+         %{branch: branch} do
+      {:ok, held} = Postgres.claim(branch.id, @config)
+      :ok = Postgres.delete(branch.id, @config)
+
+      assert {:error, %Error{reason: :not_found}} = Postgres.writes_after(held, @config)
     end
 
     test "the holder of an older epoch is refused, stores nothing, and cannot read the log", %{
@@ -785,6 +803,20 @@ defmodule Ramal.Storage.PostgresTest do
 
       assert {:error, %Error{reason: :not_open, details: %{status: :merged}}} =
                Postgres.mark_merged(current, @config)
+    end
+
+    test "a claim of a branch whose stored epoch is NULL still takes an integer epoch", %{
+      branch: branch
+    } do
+      {:ok, uuid} = Ecto.UUID.dump(branch.id)
+
+      # The migration makes the column NOT NULL, so a NULL epoch needs a hand-edited table. Claimed as nil, it would
+      # turn the fencing off for the branch. The ALTER is rolled back with the test's transaction.
+      SQL.query!(TestRepo, "ALTER TABLE ramal_branches ALTER COLUMN epoch DROP NOT NULL", [])
+      SQL.query!(TestRepo, "UPDATE ramal_branches SET epoch = NULL WHERE id = $1", [uuid])
+
+      assert {:ok, %{epoch: 1}} = Postgres.claim(branch.id, @config)
+      assert {:ok, %{epoch: 2}} = Postgres.claim(branch.id, @config)
     end
 
     test "claiming an unknown id, or one that is not a UUID, is :not_found" do

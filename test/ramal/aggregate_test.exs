@@ -212,6 +212,27 @@ defmodule Ramal.AggregateTest do
       assert Ramal.aggregate!(Herd, :sum, :head, authorize?: false) == 90
     end
 
+    test "count with uniq? counts distinct values on every path", %{branch: branch} do
+      count = &Ramal.aggregate(&1, :count, :head, uniq?: true, authorize?: false)
+
+      # The three base herds have the heads 30, 35 and 25.
+      assert count.(Herd) == {:ok, 3}
+
+      Ramal.run!(branch, fn ->
+        Ash.create!(Herd, %{name: "R10", head: 30}, authorize?: false)
+
+        # A row that repeats a head adds a row and no value, with or without the delta path.
+        assert Ramal.aggregate(Herd, :count, :head, authorize?: false) == {:ok, 4}
+        assert count.(Herd) == {:ok, 3}
+        assert count.(Ash.Query.limit(Herd, 100)) == {:ok, 3}
+
+        Ash.create!(Herd, %{name: "R11", head: 40}, authorize?: false)
+        assert count.(Herd) == {:ok, 4}
+      end)
+
+      assert count.(Herd) == {:ok, 3}
+    end
+
     test "first and list follow the query's sort, outside a branch and inside", %{
       branch: branch,
       herds: herds

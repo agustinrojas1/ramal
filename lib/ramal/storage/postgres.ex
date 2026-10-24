@@ -195,7 +195,16 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
       |> collect()
     end
 
-    defp held_writes(_branch, _epoch, []), do: {:ok, []}
+    # The LEFT JOIN of a branch with no writes still returns its row, so no rows means the branch is not stored. That is
+    # not an empty log: the load would go on from a snapshot of a branch that another process deleted after the claim.
+    defp held_writes(branch, _epoch, []),
+      do:
+        {:error,
+         Error.new(
+           :not_found,
+           "branch #{inspect(branch.id)} is no longer stored, so its write log cannot be read; it was deleted after this process claimed it",
+           %{id: branch.id}
+         )}
 
     defp held_writes(branch, epoch, _other_epoch),
       do: {:error, Ramal.Storage.fenced(branch.id, epoch)}
@@ -257,8 +266,11 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     end
 
     # Bumps the epoch and reads the row in one statement, so the state returned is the state as of the epoch it names.
+    # The migration makes epoch NOT NULL, but a NULL epoch would be bumped to NULL, and a branch with a nil epoch is
+    # written unconditionally (c:Ramal.Storage.claim/2), so the fencing would be off for it. COALESCE keeps the epoch an
+    # integer whatever the column holds.
     @claim """
-    UPDATE #{@table} SET epoch = epoch + 1 WHERE id = $1
+    UPDATE #{@table} SET epoch = COALESCE(epoch, 0) + 1 WHERE id = $1
     RETURNING #{@columns}, epoch
     """
 
@@ -352,9 +364,9 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     # `owner` key and counts as unowned. `Ramal.list/2` checks the decoded owner again, so a term whose JSON form is not
     # canonical can only make this miss, never leak.
     defp list_filter(domain, filters) do
-      base = {"domain = $1", [Atom.to_string(domain)]}
-
-      with {:ok, filtered} <- by_status(base, Keyword.get(filters, :status)) do
+      with {:ok, domain_text} <- atom_text(domain),
+           {:ok, filtered} <-
+             by_status({"domain = $1", [domain_text]}, Keyword.get(filters, :status)) do
         by_owner(filtered, Keyword.fetch(filters, :owner))
       end
     end
@@ -362,7 +374,23 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     defp by_status(filter, nil), do: {:ok, filter}
 
     defp by_status({where, params}, status) do
-      {:ok, {where <> " AND status = $#{length(params) + 1}", params ++ [Atom.to_string(status)]}}
+      with {:ok, text} <- atom_text(status) do
+        {:ok, {where <> " AND status = $#{length(params) + 1}", params ++ [text]}}
+      end
+    end
+
+    # Domains and statuses are stored by name, so a value that is not an atom has no stored row to match. It is
+    # refused here, as a :storage error, because `query/3` does not rescue an exception raised while its arguments are
+    # built.
+    defp atom_text(atom) when is_atom(atom), do: {:ok, Atom.to_string(atom)}
+
+    defp atom_text(other) do
+      {:error,
+       Error.new(
+         :storage,
+         "#{inspect(other)} is not an atom, and domains and statuses are stored by atom name; pass the atom, such as :open for a status",
+         %{value: other}
+       )}
     end
 
     defp by_owner({where, params}, :error), do: {:ok, where, params}
@@ -378,11 +406,13 @@ if Code.ensure_loaded?(Ecto.Adapters.SQL) do
     @impl true
     def count(domain, statuses, config) do
       with {:ok, repo} <- repo(config),
+           {:ok, domain_text} <- atom_text(domain),
+           {:ok, status_texts} <- statuses |> Enum.map(&atom_text/1) |> collect(),
            {:ok, result} <-
              query(
                repo,
                "SELECT count(*) FROM #{@table} WHERE domain = $1 AND status = ANY($2::text[])",
-               [Atom.to_string(domain), Enum.map(statuses, &Atom.to_string/1)]
+               [domain_text, status_texts]
              ) do
         [[count]] = result.rows
         {:ok, count}

@@ -170,8 +170,15 @@ defmodule Ramal.Preparation.Paged do
   # The `filter` option of a page narrows the rows the page is cut from, not the count.
   defp narrow(_query, rows, nil), do: {:ok, rows}
 
+  # A placeholder key is judged as the key it becomes at the merge, as the cursor is (ADR 0042).
   defp narrow(query, rows, filter) do
-    keep(query, rows, Ash.Query.filter(Ash.Query.new(query.resource), ^filter).filter)
+    {view, filter} =
+      Placeholders.keyset_view(
+        Ash.Query.filter(Ash.Query.new(query.resource), ^filter).filter,
+        query.resource
+      )
+
+    keep(query, rows, filter, view)
   end
 
   defp after_cursor(query, rows, %{type: :keyset} = plan) do
@@ -193,7 +200,7 @@ defmodule Ramal.Preparation.Paged do
   # The same expression the database would have been given, judged by `Ash.Filter.Runtime` on the patched rows, in
   # their order.
   # `view` is how a row is shown to the filter, which is not how it is returned.
-  defp keep(query, rows, filter, view \\ & &1) do
+  defp keep(query, rows, filter, view) do
     with {:ok, matches} <- Ramal.Ash.filter_matches(query.domain, Enum.map(rows, view), filter) do
       keys = MapSet.new(matches, &Resource.key(query.resource, &1))
       {:ok, Enum.filter(rows, &MapSet.member?(keys, Resource.key(query.resource, view.(&1))))}
